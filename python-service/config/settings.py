@@ -25,19 +25,23 @@ def _optional(name: str, default: str | None = None) -> str | None:
     return value if value else default
 
 
+def _env(name: str, default: str = "") -> str:
+    return os.getenv(name) or default
+
+
 @dataclass
 class Settings:
     # ---- Kotak SDK credentials ----
-    client_id: str = field(default_factory=lambda: _required("CLIENT_ID"))
-    consumer_key: str = field(default_factory=lambda: _required("CONSUMER_KEY"))
-    consumer_secret: str = field(default_factory=lambda: _required("CONSUMER_SECRET"))
-    mobile_number: str = field(default_factory=lambda: _required("MOBILE_NUMBER"))
-    mpin: str = field(default_factory=lambda: _required("MPIN"))
-    totp_secret: str = field(default_factory=lambda: _required("TOTP_SECRET"))
+    client_id: str = field(default_factory=lambda: _env("CLIENT_ID"))
+    consumer_key: str = field(default_factory=lambda: _env("CONSUMER_KEY"))
+    consumer_secret: str = field(default_factory=lambda: _env("CONSUMER_SECRET"))
+    mobile_number: str = field(default_factory=lambda: _env("MOBILE_NUMBER"))
+    mpin: str = field(default_factory=lambda: _env("MPIN"))
+    totp_secret: str = field(default_factory=lambda: _env("TOTP_SECRET"))
 
     # ---- MongoDB ----
-    mongodb_uri: str = field(default_factory=lambda: _optional("MONGODB_URI", "mongodb://localhost:27017/kaustubh"))
-    mongodb_database: str = field(default_factory=lambda: _optional("MONGODB_DATABASE", "kaustubh"))
+    mongodb_uri: str = field(default_factory=lambda: _env("MONGODB_URI", "mongodb://localhost:27017/kaustubh"))
+    mongodb_database: str = field(default_factory=lambda: _env("MONGODB_DATABASE", "kaustubh"))
 
     # ---- Service ----
     host: str = field(default_factory=lambda: _optional("HOST", "0.0.0.0"))
