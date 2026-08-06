@@ -1,0 +1,46 @@
+# Dependencies
+
+## Frontend (Next.js + PWA)
+
+| Package | Purpose |
+|---------|---------|
+| next | React framework (App Router) |
+| react / react-dom | UI library |
+| tailwindcss | CSS framework |
+| tailwindcss-animate | Tailwind animation plugin |
+| next-themes | Theme provider (dark/light) |
+| lucide-react | Icons |
+| recharts | Charts (portfolio page) |
+| class-variance-authority | Component variants |
+| clsx | Class merging |
+| tailwind-merge | Tailwind class merging |
+| @radix-ui/* | Headless UI primitives (40+ components) |
+
+## Backend (Node.js)
+
+| Package | Purpose |
+|---------|---------|
+| express | HTTP server |
+| mongoose | MongoDB ODM |
+| node-fetch (built-in) | HTTP client to Python service |
+| node:events | EventEmitter for SSE tick streaming |
+| node:os | System metrics (CPU, RAM) |
+
+## Python Service
+
+| Package | Purpose |
+|---------|---------|
+| fastapi | HTTP API framework |
+| uvicorn | ASGI server |
+| neo_api_client | Official Kotak Neo SDK (v2.0.2) |
+| pydantic | Data validation |
+| python-dotenv | Environment variables |
+| pyotp | TOTP generation |
+
+## Infrastructure
+
+| Component | Purpose |
+|-----------|---------|
+| MongoDB 5.0+ | Tick storage, settings, notifications, baskets |
+| Node.js 18+ | Backend runtime |
+| Python 3.10-3.13 | Python service runtime |

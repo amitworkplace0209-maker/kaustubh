@@ -1,0 +1,7 @@
+neo-api-client @ git+https://github.com/Kotak-Neo/Kotak-neo-api-v2.git@v2.0.2
+fastapi==0.115.0
+uvicorn==0.30.6
+python-dotenv==1.0.0
+pydantic==2.9.0
+motor==3.5.1
+psutil==6.0.0
