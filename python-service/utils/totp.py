@@ -23,3 +23,4 @@ def generate_totp(secret: str, interval: int = 30, digits: int = 6) -> str:
     code_bytes = digest[offset : offset + 4]
     code = struct.unpack(">I", code_bytes)[0] & 0x7FFFFFFF
     return str(code % (10**digits)).zfill(digits)
+

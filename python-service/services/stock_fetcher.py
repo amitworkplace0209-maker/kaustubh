@@ -27,3 +27,4 @@ async def fetch_active_stocks() -> list[dict]:
     except Exception as exc:
         logger.error("Failed to fetch active stocks: %s", exc)
         return []
+

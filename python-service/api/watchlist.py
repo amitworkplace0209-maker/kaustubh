@@ -63,3 +63,4 @@ async def toggle_favorite(symbol: str):
     new_fav = not item.get("favorite", False)
     await db.watchlist.update_one({"symbol": symbol.upper()}, {"$set": {"favorite": new_fav}})
     return {"data": {"symbol": symbol.upper(), "favorite": new_fav}}
+

@@ -150,3 +150,4 @@ async def quote(req: QuoteRequest):
         quote_type=req.quote_type,
         isIndex=req.isIndex,
     )
+

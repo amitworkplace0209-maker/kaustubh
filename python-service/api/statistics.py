@@ -91,3 +91,4 @@ async def gainers_losers(filter: int = 0, limit: int = 20):
     losers = list(reversed(results))[:limit]
 
     return {"data": {"gainers": gainers, "losers": losers}}
+

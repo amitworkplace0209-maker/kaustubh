@@ -17,7 +17,7 @@ from models import (
     SubscribeResponse,
 )
 from scheduler import do_login, do_logout, get_scheduler_info
-from websocket.ws_manager import ws_manager
+from ws_socket.ws_manager import ws_manager
 
 router = APIRouter(tags=["session"])
 _START_TIME = time.time()
@@ -83,3 +83,4 @@ async def unsubscribe(req: SubscribeRequest) -> SubscribeResponse:
         raise HTTPException(status_code=403, detail="Not logged in")
     result = await ws_manager.unsubscribe(req.instrument_tokens)
     return SubscribeResponse(ok=result["ok"], message=result["message"], count=result["count"])
+

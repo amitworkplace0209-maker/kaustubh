@@ -47,3 +47,4 @@ async def get_logs(
         if "ts" in l and isinstance(l["ts"], datetime):
             l["ts"] = l["ts"].isoformat()
     return {"logs": logs}
+

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from database.connection import get_db
 from services import tick_buffer
-from websocket.ws_manager import ws_manager
+from ws_socket.ws_manager import ws_manager
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
 logger = logging.getLogger("app")
@@ -155,3 +155,4 @@ async def delete_stock(symbol: str):
     await _unsubscribe_on_ws(stock["instrumentToken"], stock["exchangeSegment"])
     await db.stocks.delete_one({"symbol": symbol.upper()})
     return {"deleted": 1}
+

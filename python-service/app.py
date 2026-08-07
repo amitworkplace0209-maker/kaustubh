@@ -12,12 +12,14 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from scheduler import do_login
 from fastapi.middleware.cors import CORSMiddleware
 
 from config.settings import settings
 from database.connection import connect_mongo, disconnect_mongo
 from services import tick_buffer
 from scheduler import start_scheduler, stop_scheduler
+from core.event_loop import set_loop
 
 # Import all routers
 from api.routes import router as session_router
@@ -44,6 +46,13 @@ logger = logging.getLogger("app")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("KAUSTUBH FastAPI backend starting up...")
+    import asyncio
+    set_loop(asyncio.get_running_loop())
+
+    await connect_mongo()
+    await tick_buffer.start()
+    start_scheduler()
+    
     await connect_mongo()
     await tick_buffer.start()
     start_scheduler()
@@ -84,6 +93,12 @@ app.include_router(notifications_router)
 app.include_router(baskets_router)
 
 
+@app.post("/debug/login")
+async def debug_login():
+    result = await do_login()
+    return {
+        "success": result
+    }
 if __name__ == "__main__":
     uvicorn.run(
         "app:app",
@@ -91,3 +106,10 @@ if __name__ == "__main__":
         port=settings.port,
         reload=False,
     )
+
+@app.middleware("http")
+async def log_requests(request, call_next):
+    print(f"REQUEST => {request.method} {request.url.path}")
+    response = await call_next(request)
+    print(f"RESPONSE <= {response.status_code}")
+    return response

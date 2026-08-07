@@ -67,3 +67,4 @@ async def _ensure_indexes() -> None:
     await db.daily_summaries.create_index("date", unique=True, background=True)
     await db.download_history.create_index([("ts", -1)], background=True)
     logger.info("MongoDB indexes ensured")
+

@@ -85,3 +85,4 @@ async def get_recent_ticks(limit: int = 200, symbol: str = ""):
         if "ts" in t and isinstance(t["ts"], datetime):
             t["ts"] = t["ts"].isoformat()
     return {"data": ticks}
+

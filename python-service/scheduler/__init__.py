@@ -11,13 +11,14 @@ Features:
 from __future__ import annotations
 
 import asyncio
+from core.event_loop import get_loop
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
 from config.settings import settings
 from auth.kotak_client import kotak_session
-from websocket.ws_manager import ws_manager
+from ws_socket.ws_manager import ws_manager
 from services import tick_buffer
 from database.connection import get_db
 
@@ -39,6 +40,9 @@ MARKET_HOLIDAYS_2025_2026 = {
 _running = False
 _login_timer: threading.Timer | None = None
 _logout_timer: threading.Timer | None = None
+def _run_on_app_loop(coro):
+    loop = get_loop()
+    return asyncio.run_coroutine_threadsafe(coro, loop)
 
 
 def _now_ist() -> datetime:
@@ -66,6 +70,11 @@ def _seconds_until(hour: int, minute: int) -> float:
 
 
 async def do_login(retry: int = 3) -> bool:
+    print("\n")
+    print("=" * 60)
+    print("INSIDE do_login()")
+    print("=" * 60)
+    print("\n")
     logger.info("do_login called (retry=%d)", retry)
     for attempt in range(retry):
         try:
@@ -75,6 +84,7 @@ async def do_login(retry: int = 3) -> bool:
             db = get_db()
             cursor = db.stocks.find({"active": True})
             stocks = await cursor.to_list(length=None)
+            print("Stocks found:", len(stocks))
             tokens = [
                 {
                     "instrument_token": s["instrumentToken"],
@@ -86,7 +96,11 @@ async def do_login(retry: int = 3) -> bool:
                 for s in stocks
             ]
             if tokens:
-                await ws_manager.subscribe(tokens)
+               logger.info(">>> About to call ws_manager.subscribe()")
+               logger.info("========== STEP 1 ==========")
+               await ws_manager.subscribe(tokens)
+               logger.info("========== STEP 2 ==========")
+               logger.info(">>> ws_manager.subscribe() completed")
             logger.info("Login succeeded on attempt %d, subscribed %d tokens", attempt + 1, len(tokens))
             return True
         except Exception as exc:
@@ -132,7 +146,8 @@ def _schedule_logout():
 
 def _login_job():
     if _is_trading_day():
-        asyncio.run(do_login())
+        _run_on_app_loop(do_login())
+        
     else:
         logger.info("Skipping login — not a trading day")
     _schedule_login()
@@ -140,7 +155,7 @@ def _login_job():
 
 def _logout_job():
     if _is_trading_day():
-        asyncio.run(do_logout())
+        _run_on_app_loop(do_logout())
     else:
         logger.info("Skipping logout — not a trading day")
     _schedule_logout()
@@ -156,10 +171,17 @@ def start_scheduler():
     now = _now_ist()
     login_time = now.replace(hour=settings.login_hour, minute=settings.login_minute, second=0, microsecond=0)
     logout_time = now.replace(hour=settings.logout_hour, minute=settings.logout_minute, second=0, microsecond=0)
+    logger.info(
+        "DEBUG => trading_day=%s | now=%s | login=%s | logout=%s | session_active=%s",
+        _is_trading_day(),
+        now.strftime("%Y-%m-%d %H:%M:%S"),
+        login_time.strftime("%Y-%m-%d %H:%M:%S"),
+        logout_time.strftime("%Y-%m-%d %H:%M:%S"),
+        kotak_session.session_active,
+)
     if _is_trading_day() and login_time <= now <= logout_time and not kotak_session.session_active:
         logger.info("Service started during trading hours — logging in now")
-        threading.Thread(target=lambda: asyncio.run(do_login()), daemon=True).start()
-
+        _run_on_app_loop(do_login())
     _schedule_login()
     _schedule_logout()
     logger.info("Scheduler started")
@@ -189,3 +211,4 @@ def get_scheduler_info() -> dict:
         "next_login": next_login.isoformat(),
         "next_logout": next_logout.isoformat(),
     }
+

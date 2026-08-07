@@ -52,3 +52,4 @@ async def reset_one(key: str):
 async def reset_all():
     settings = await reset_all_settings()
     return {"settings": settings}
+

@@ -20,13 +20,15 @@ from typing import Any, Optional
 from config.settings import settings
 from logger import get as get_logger
 from utils.totp import generate_totp
+from neo_api_client import NeoAPI  # type: ignore[import-not-found]
+
 
 log = get_logger("login")
 
 # Import the official SDK. Installed from:
 #   pip install "git+https://github.com/Kotak-Neo/Kotak-neo-api-v2.git@v2.0.2#egg=neo_api_client"
 try:
-    from neo_api_client import NeoAPI  # type: ignore[import-not-found]
+     #from neo_api_client import NeoAPI  # type: ignore[import-not-found]
 
     SDK_AVAILABLE = True
     SDK_VERSION = getattr(NeoAPI, "__version__", "2.0.2")
@@ -326,3 +328,4 @@ def _to_dict(resp: Any) -> dict[str, Any]:
 
 
 kotak_session = KotakSession()
+

@@ -108,3 +108,4 @@ class QuoteRequest(BaseModel):
     instrument_tokens: list[dict[str, Any]] = Field(default_factory=list)
     quote_type: str = "ltp"
     isIndex: bool = False
+

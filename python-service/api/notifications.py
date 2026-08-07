@@ -86,3 +86,4 @@ async def clear_all():
     db = get_db()
     result = await db.notifications.delete_many({})
     return {"deleted": result.deleted_count}
+

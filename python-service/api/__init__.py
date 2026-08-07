@@ -17,3 +17,4 @@ __all__ = [
     "statistics_router", "logs_router", "system_router", "settings_router",
     "trading_router", "watchlist_router", "notifications_router", "baskets_router",
 ]
+

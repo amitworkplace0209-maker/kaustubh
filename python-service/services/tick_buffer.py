@@ -211,3 +211,4 @@ def _fnum(v) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+

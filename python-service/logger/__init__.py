@@ -74,3 +74,4 @@ loggers = {
 
 def get(category: str) -> logging.Logger:
     return loggers.get(category, loggers["app"])
+

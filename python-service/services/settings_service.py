@@ -193,3 +193,4 @@ async def reset_all_settings() -> dict:
     db = get_db()
     await db.app_settings.delete_many({})
     return await get_all_settings()
+

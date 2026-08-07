@@ -15,7 +15,7 @@ from database.connection import get_db, is_mongo_connected
 from services import tick_buffer
 from services.settings_service import get_setting
 from auth.kotak_client import kotak_session, SDK_VERSION
-from websocket.ws_manager import ws_manager
+from ws_socket.ws_manager import ws_manager
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 logger = logging.getLogger("app")
@@ -295,3 +295,4 @@ async def _check_internet() -> bool:
         return True
     except Exception:
         return False
+

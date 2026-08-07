@@ -176,7 +176,10 @@ class WebSocketManager:
 
             try:
                 if kotak_session.client:
+                    logger.info(">>> Before register_callbacks")
                     self._register_callbacks()
+                    logger.info(">>> After register_callbacks")
+
                     self._restore_subscriptions()
                     with self._lock:
                         self._connected = True
@@ -273,7 +276,9 @@ class WebSocketManager:
 
     async def subscribe(self, instrument_tokens: list[dict]) -> dict:
         with self._lock:
+            logger.info(">>> Before register_callbacks")
             self._metrics["subscribe_calls"] += 1
+            logger.info(">>> After register_callbacks")
             new_tokens = []
             for tok in instrument_tokens:
                 if not _is_duplicate(self._subscribed_tokens, tok):
@@ -289,8 +294,11 @@ class WebSocketManager:
 
         self._register_callbacks()
         try:
+            logger.info(">>> Before Kotak subscribe")
             result = kotak_session.client.subscribe(new_tokens)
             logger.info("Subscribed to %d tokens", len(new_tokens))
+            logger.info(">>> After Kotak subscribe")
+
         except Exception as exc:
             logger.error("Subscribe failed: %s", exc)
             return {"ok": False, "message": str(exc), "count": 0}
@@ -376,3 +384,4 @@ def _fnum(v) -> float | None:
 
 
 ws_manager = WebSocketManager()
+
