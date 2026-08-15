@@ -93,12 +93,6 @@ app.include_router(notifications_router)
 app.include_router(baskets_router)
 
 
-@app.post("/debug/login")
-async def debug_login():
-    result = await do_login()
-    return {
-        "success": result
-    }
 if __name__ == "__main__":
     uvicorn.run(
         "app:app",

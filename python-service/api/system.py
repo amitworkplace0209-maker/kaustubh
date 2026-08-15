@@ -1,8 +1,11 @@
-"""System dashboard — health, resources, MongoDB stats, trading stats."""
+﻿"""System dashboard â€” health, resources, MongoDB stats, trading stats."""
 from __future__ import annotations
 
+from scheduler import get_scheduler_info
 import asyncio
 import logging
+from services import tick_buffer
+from services.status.status_manager import set_status, get_status
 import os
 import platform
 import time
@@ -14,7 +17,7 @@ from pydantic import BaseModel
 from database.connection import get_db, is_mongo_connected
 from services import tick_buffer
 from services.settings_service import get_setting
-from auth.kotak_client import kotak_session, SDK_VERSION
+from auth.kotak_client import ( kotak_session, SDK_AVAILABLE, SDK_VERSION,)
 from ws_socket.ws_manager import ws_manager
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -25,11 +28,16 @@ class ClearLogsRequest(BaseModel):
     category: str | None = None
 
 
-async def _safe_call(coro, timeout=2.0, default=None):
+async def _safe_call(coro, timeout=5.0, default=None):
     try:
         return await asyncio.wait_for(coro, timeout=timeout)
-    except (asyncio.TimeoutError, Exception):
-        return default
+    except asyncio.TimeoutError:
+       logger.error("SAFE_CALL TIMEOUT: %s", coro)
+       return default
+
+    except Exception as exc:
+       logger.exception("SAFE_CALL ERROR: %s", exc)
+       return default
 
 
 @router.get("")
@@ -46,8 +54,16 @@ async def system_status(request: Request):
     disk = psutil.disk_usage(".")
 
     # Python status
+    # Python status
     python_status = kotak_session.session_info()
+
+    # WebSocket status
     ws_status = ws_manager.status()
+
+    await set_status(
+        "websocket",
+        "online" if ws_status.get("connected", False) else "offline",
+    )
 
     # Internet
     internet = await _safe_call(_check_internet(), timeout=2.0, default=False)
@@ -62,31 +78,23 @@ async def system_status(request: Request):
     summary = await db.daily_summaries.find_one({"date": today})
 
     last_tick = await db.ticks.find_one(sort=[("ts", -1)])
+    logger.info(
+    "LATEST TICK DEBUG: symbol=%r ts=%r receivedAt=%r",
+    last_tick.get("symbol") if last_tick else None,
+    last_tick.get("ts") if last_tick else None,
+    last_tick.get("receivedAt") if last_tick else None,
+)
 
+    # Live tick / MongoDB saving metrics
+    tick_stats = tick_buffer.stats() \
+    
     # Trading stats
     total_orders = 0
     total_positions = 0
     holdings_count = 0
     funds = None
 
-    if kotak_session.session_active:
-        order_book = await _safe_call(kotak_session.async_order_book(), timeout=2.0)
-        if isinstance(order_book, dict):
-            data = order_book.get("data", order_book)
-            total_orders = len(data) if isinstance(data, list) else 0
-
-        positions = await _safe_call(kotak_session.async_positions(), timeout=2.0)
-        if isinstance(positions, dict):
-            data = positions.get("data", positions)
-            total_positions = len(data) if isinstance(data, list) else 0
-
-        holdings = await _safe_call(kotak_session.async_holdings(), timeout=2.0)
-        if isinstance(holdings, dict):
-            data = holdings.get("data", holdings)
-            holdings_count = len(data) if isinstance(data, list) else 0
-
-        funds = await _safe_call(kotak_session.async_limits(), timeout=2.0)
-
+   
     scheduler_enabled = await get_setting("scheduler_enabled") or True
 
     return {
@@ -110,47 +118,77 @@ async def system_status(request: Request):
             "diskUsedBytes": disk.used,
             "diskPercent": disk.percent,
         },
-        "python": {"status": "ok", "sdk_loaded": kotak_session.client is not None},
+        "python": {
+            "status": "ok" if SDK_AVAILABLE else "degraded",
+            "sdk_loaded": SDK_AVAILABLE,
+        },
         "pythonStatus": python_status,
         "mongo": {"connected": is_mongo_connected()},
-        "buffer": tick_buffer.stats(),
+        "buffer": tick_stats,
         "activeStocks": active_stocks,
         "totalStocks": total_stocks,
         "todayRecords": today_records,
         "todayInserts": summary.get("totalWrites", 0) if summary else 0,
         "todayDownloads": 0,
-        "errorCount": (summary.get("errorCount", 0) if summary else 0) + tick_buffer.stats()["totalWriteErrors"],
-        "lastTickTime": last_tick["ts"].isoformat() if last_tick else None,
+        "errorCount": (
+                        (summary.get("errorCount", 0) if summary else 0)
+                          + tick_stats["totalWriteErrors"]
+                        ), "lastTickTime": (
+    last_tick["ts"].isoformat()
+    if last_tick and hasattr(last_tick["ts"], "isoformat")
+    else last_tick["ts"]
+    if last_tick
+    else None
+),
+         
         "lastLogin": python_status.get("last_login_at"),
         "lastLogout": python_status.get("last_logout_at"),
         "lastWebSocketConnection": python_status.get("websocket_connected_at"),
         "websocketConnected": ws_status.get("connected", False),
-        "schedulerRunning": scheduler_enabled and python_status.get("session_active", False),
+        "schedulerRunning": scheduler_enabled and get_scheduler_info()["running"],
         "schedulerEnabled": scheduler_enabled,
-        "sdkLoaded": kotak_session.client is not None,
+        "sdkLoaded": SDK_AVAILABLE,
         "sdkVersion": SDK_VERSION,
         "internetConnected": internet,
         "totalOrders": total_orders,
         "totalPositions": total_positions,
         "holdingsCount": holdings_count,
         "funds": funds,
+        "liveData": {
+        "ticksPerSecond": tick_stats["ticksPerSecond"],
+        "writesPerSecond": tick_stats["writesPerSecond"],
+        "activeTickStocks": tick_stats["activeTickStocks"],
+        "lastTickAt": tick_stats["lastTickAt"],
+        "lastWriteAt": tick_stats["lastWriteAt"],
+         },
     }
 
 
 @router.get("/mongo-stats")
 async def mongo_stats():
     db = get_db()
+
     if not is_mongo_connected():
-        return {"connected": False, "stats": None}
+        return {
+            "connected": False,
+            "stats": None,
+        }
 
     client = db.client
     db_name = db.name
     collections = []
-    for col_info in await client[db_name].list_collections():
-        name = col_info["name"]
+    collections_info = await client[db_name].list_collection_names()
+
+    for name in collections_info:
+
         try:
             count = await client[db_name][name].estimated_document_count()
-            stats = await client[db_name].command("collstats", name)
+
+            stats = await client[db_name].command(
+                "collstats",
+                name,
+            )
+
             collections.append({
                 "name": name,
                 "count": count,
@@ -159,13 +197,24 @@ async def mongo_stats():
                 "indexSizeBytes": stats.get("totalIndexSize", 0),
                 "indexes": stats.get("nindexes", 0),
             })
-        except Exception:
-            pass
+
+        except Exception as exc:
+            logger.warning(
+                "Mongo collection stats failed for %s: %s",
+                name,
+                exc,
+            )
 
     db_stats = await client[db_name].command("dbStats")
+
     ping_start = time.monotonic()
+
     await client[db_name].command("ping")
-    ping_ms = round((time.monotonic() - ping_start) * 1000, 2)
+
+    ping_ms = round(
+        (time.monotonic() - ping_start) * 1000,
+        2,
+    )
 
     return {
         "connected": True,
@@ -295,4 +344,6 @@ async def _check_internet() -> bool:
         return True
     except Exception:
         return False
+
+
 

@@ -1,6 +1,6 @@
 'use client';
+import { useEffect, useState } from 'react';
 
-import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -101,7 +101,7 @@ export function Sidebar() {
         <div className="border-t p-3">
           <Button variant="ghost" size="sm" className="w-full justify-start gap-3 rounded-lg"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-            {theme === 'dark' ? <Sun className="h-4 w-4 text-amber-500" /> : <Moon className="h-4 w-4 text-purple-500" />}
+           
             Toggle Theme
           </Button>
         </div>
@@ -165,8 +165,12 @@ export function TopBar() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
   const [connected, setConnected] = useState(true);
+  const [mounted, setMounted] = useState(false);
   const { toast } = useToast();
 
+  useEffect(() => {
+  setMounted(true);
+   }, []);
   const tradingMode = 'API';
 
   return (
@@ -191,9 +195,14 @@ export function TopBar() {
         <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => toast({ title: 'No new notifications' })}>
           <Bell className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-          {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-        </Button>
+        <Button
+  variant="ghost"
+  size="sm"
+  className="h-8 w-8 p-0"
+  onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+>
+ 
+</Button>
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
           K
         </div>

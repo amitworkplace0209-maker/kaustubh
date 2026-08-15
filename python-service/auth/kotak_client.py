@@ -1,5 +1,5 @@
-"""
-Kotak Neo SDK wrapper — the ONLY place that touches the official SDK.
+﻿"""
+Kotak Neo SDK wrapper â€” the ONLY place that touches the official SDK.
 
 Responsibilities:
   - Initialise the NeoAPI client
@@ -11,7 +11,6 @@ Responsibilities:
 We never expose credentials, MPIN, or TOTP secret outside this module.
 """
 from __future__ import annotations
-import traceback
 import asyncio
 import threading
 from datetime import datetime, timezone
@@ -131,6 +130,7 @@ class KotakSession:
                 self.client.logout()
             except Exception as exc:
                 log.warn("Logout call failed", extra={"category": "login", "meta": {"error": str(exc)}})
+            self.client = None
             self.logged_in = False
             self.session_active = False
             self.view_token = None
@@ -178,7 +178,7 @@ class KotakSession:
 
     def _require_client(self) -> Any:
         if not self.client or not self.session_active:
-            raise RuntimeError("Session not active — please login first")
+            raise RuntimeError("Session not active â€” please login first")
         return self.client
 
     def place_order(self, **kwargs: Any) -> dict[str, Any]:
@@ -233,15 +233,20 @@ class KotakSession:
     def search_scrip(self, exchange: str, search_text: str) -> dict[str, Any]:
         with self._lock:
             client = self._require_client()
-            resp = client.search_scrip(exchange=exchange, search_text=search_text)
-            return _to_dict(resp)
+        resp = client.search_scrip(
+                 exchange,
+                 search_text
+        )
+        return _to_dict(resp)
 
     def quote(self, **kwargs: Any) -> dict[str, Any]:
-        with self._lock:
-            client = self._require_client()
-            resp = client.quote(**kwargs)
-            return _to_dict(resp)
+     with self._lock:
+        client = self._require_client()
 
+        kwargs.pop("isIndex", None)
+
+        resp = client.quotes(**kwargs)
+        return _to_dict(resp)
     def square_off_position(self, **kwargs: Any) -> dict[str, Any]:
         with self._lock:
             client = self._require_client()
@@ -283,12 +288,6 @@ class KotakSession:
     async def async_square_off_position(self, **kwargs: Any) -> dict[str, Any]:
         return await asyncio.to_thread(self.square_off_position, **kwargs)
 
-    async def async_login(self) -> None:
-        await asyncio.to_thread(self.login)
-
-    async def async_logout(self) -> bool:
-        return await asyncio.to_thread(self.logout)
-
 
 def _extract(resp: Any, *keys: str) -> Optional[str]:
     """Safely pull a nested string from an SDK response (dict or object)."""
@@ -328,4 +327,5 @@ def _to_dict(resp: Any) -> dict[str, Any]:
 
 
 kotak_session = KotakSession()
+
 

@@ -97,20 +97,63 @@ async def add_stock(req: AddStockRequest):
 @router.post("/search")
 async def search_stock_info(req: dict):
     from auth.kotak_client import kotak_session
-    search_text = req.get("search_text") or req.get("q") or ""
-    if not search_text:
-        raise HTTPException(400, "search_text is required")
-    if not kotak_session.logged_in:
-        raise HTTPException(403, "Not logged in to Kotak")
-    results = await kotak_session.async_search_scrip("nse_cm", search_text)
-    items = results.get("data", results) if isinstance(results, dict) else results
-    if not isinstance(items, list):
-        items = []
-    enriched = []
-    for item in items[:10]:
-        d = item if isinstance(item, dict) else {}
-        enriched.append(d)
-    return {"data": enriched}
+    import traceback
+
+    try:
+        search_text = req.get("search_text") or req.get("q") or ""
+
+        if not search_text:
+            raise HTTPException(
+                status_code=400,
+                detail="search_text is required"
+            )
+
+        print("=" * 80)
+        print("STOCK SEARCH")
+        print("SEARCH =", search_text)
+        print("LOGGED =", kotak_session.logged_in)
+        print("SESSION_ACTIVE =", kotak_session.session_active)
+        print("=" * 80)
+
+        # Kotak session must be active before calling SDK
+        if not kotak_session.logged_in or not kotak_session.session_active:
+            raise HTTPException(
+                status_code=503,
+                detail="Kotak trading session is not active. Search is available during an active trading session."
+            )
+
+        results = await kotak_session.async_search_scrip(
+            "nse_cm",
+            search_text
+        )
+
+        print("=" * 80)
+        print("RAW RESULT TYPE :", type(results))
+        print("RAW RESULT :", repr(results))
+        print("=" * 80)
+
+        items = (
+            results.get("data", results)
+            if isinstance(results, dict)
+            else results
+        )
+
+        if not isinstance(items, list):
+            items = []
+
+        return {
+            "results": items
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail="Stock search failed"
+        )
 
 
 @router.delete("/bulk")

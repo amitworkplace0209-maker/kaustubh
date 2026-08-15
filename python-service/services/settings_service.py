@@ -157,7 +157,10 @@ async def set_setting(key: str, value) -> dict:
 
 async def get_all_settings() -> dict:
     db = get_db()
-    docs = {d["key"] async for d in db.app_settings.find({})}
+    docs = {
+    d["key"]: d
+    async for d in db.app_settings.find({})
+    }
     result = {}
     for key, defn in DEFAULTS.items():
         doc = docs.get(key)

@@ -34,6 +34,54 @@ const FORMATS: FormatOption[] = [
   { value: 'parquet', label: 'Parquet', icon: FileArchive, desc: 'Columnar format (falls back to CSV)', available: true },
   { value: 'zip', label: 'ZIP', icon: FileArchive, desc: 'Compressed archive (falls back to CSV)', available: true },
 ];
+const FIELD_GROUPS = [
+  {
+    name: 'Identity',
+    fields: [
+      ['symbol', 'Symbol'],
+      ['instrumentToken', 'Instrument Token'],
+      ['exchangeSegment', 'Exchange Segment'],
+    ],
+  },
+  {
+    name: 'Price & OHLC',
+    fields: [
+      ['ltp', 'LTP'],
+      ['open', 'Open'],
+      ['high', 'High'],
+      ['low', 'Low'],
+      ['close', 'Close'],
+      ['averagePrice', 'Average Price'],
+      ['change', 'Change'],
+      ['changePercent', 'Change %'],
+    ],
+  },
+  {
+    name: 'Volume & Trades',
+    fields: [
+      ['volume', 'Volume'],
+      ['ltq', 'Last Traded Quantity'],
+      ['tbq', 'Total Buy Quantity'],
+      ['tsq', 'Total Sell Quantity'],
+    ],
+  },
+  {
+    name: 'Market Depth',
+    fields: [
+      ['bp', 'Best Bid Price'],
+      ['sp', 'Best Ask Price'],
+      ['bq', 'Best Bid Quantity'],
+      ['bs', 'Best Ask Quantity'],
+    ],
+  },
+  {
+    name: 'Time',
+    fields: [
+      ['ts', 'Tick Time'],
+      ['receivedAt', 'Received At'],
+    ],
+  },
+] as const;
 
 export default function DownloadsPage() {
   const [stocks, setStocks] = useState<Stock[]>([]);
@@ -44,11 +92,35 @@ export default function DownloadsPage() {
   const [format, setFormat] = useState('csv');
   const [downloading, setDownloading] = useState(false);
   const { toast } = useToast();
+  const [stockSearch, setStockSearch] = useState('');
+  const [downloadMode, setDownloadMode] = useState<'basic' | 'details'>('basic');
+  const [showFieldSettings, setShowFieldSettings] = useState(false);
+const [selectedFields, setSelectedFields] = useState<Set<string>>(
+  new Set([
+    'symbol',
+    'instrumentToken',
+    'ltp',
+    'open',
+    'high',
+    'low',
+    'close',
+    'volume',
+    'ltq',
+    'tbq',
+    'tsq',
+    'bp',
+    'sp',
+    'bq',
+    'bs',
+    'ts',
+    'receivedAt',
+  ])
+);
 
   const fetchStocks = useCallback(async () => {
     try {
       const data = await getStocks();
-      setStocks(data.stocks || []);
+     setStocks(data.data || []);
     } catch {
       // ignore
     }
@@ -57,6 +129,52 @@ export default function DownloadsPage() {
   useEffect(() => {
     fetchStocks();
   }, [fetchStocks]);
+  const visibleStocks = stocks.filter((stock) =>
+  stock.symbol.toLowerCase().includes(stockSearch.toLowerCase())
+);
+
+const selectAllVisible = () => {
+  setSelectedStocks((prev) => {
+    const next = new Set(prev);
+
+    visibleStocks.forEach((stock) => {
+      if (stock.active) {
+        next.add(stock.symbol);
+      }
+    });
+
+    return next;
+  });
+};
+
+const clearAllStocks = () => {
+  setSelectedStocks(new Set());
+};
+const toggleField = (field: string) => {
+  setSelectedFields((prev) => {
+    const next = new Set(prev);
+
+    if (next.has(field)) {
+      next.delete(field);
+    } else {
+      next.add(field);
+    }
+
+    return next;
+  });
+};
+
+const selectAllFields = () => {
+  const fields = FIELD_GROUPS.flatMap((group) =>
+    group.fields.map(([key]) => key)
+  );
+
+  setSelectedFields(new Set(fields));
+};
+
+const clearAllFields = () => {
+  setSelectedFields(new Set());
+};
 
   const toggleStock = (symbol: string) => {
     setSelectedStocks((prev) => {
@@ -71,6 +189,19 @@ export default function DownloadsPage() {
     setDownloading(true);
     try {
       const params: Record<string, string> = { format };
+            if (downloadMode === 'details') {
+        if (selectedFields.size === 0) {
+          toast({
+            title: 'Select fields',
+            description: 'Choose at least one field for Details download.',
+            variant: 'destructive',
+          });
+          setDownloading(false);
+          return;
+        }
+
+        params.fields = Array.from(selectedFields).join(',');
+      }
       if (allStocks) {
         params.all = 'true';
       } else if (selectedStocks.size > 0) {
@@ -123,12 +254,41 @@ export default function DownloadsPage() {
             </div>
             {!allStocks && (
               <div className="space-y-2">
-                <Label>Select Stocks ({selectedStocks.size} selected)</Label>
+                <div className="flex items-center justify-between">
+  <Label>
+    Select Stocks ({selectedStocks.size} selected)
+  </Label>
+
+  <div className="flex gap-2">
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      onClick={selectAllVisible}
+    >
+      Select All
+    </Button>
+
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      onClick={clearAllStocks}
+    >
+      Clear All
+    </Button>
+  </div>
+</div>
+<Input
+  placeholder="Search stock..."
+  value={stockSearch}
+  onChange={(e) => setStockSearch(e.target.value)}
+/>
                 <div className="max-h-64 space-y-2 overflow-y-auto rounded-md border p-3">
                   {stocks.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No stocks available</p>
                   ) : (
-                    stocks.map((stock) => (
+                    visibleStocks.map((stock) => (
                       <div key={stock.symbol} className="flex items-center gap-2">
                         <input
                           type="checkbox"
@@ -146,73 +306,262 @@ export default function DownloadsPage() {
             )}
           </CardContent>
         </Card>
+      
 
-        {/* Filters & Format */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Filters & Format</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Start Date/Time</Label>
-                <Input
-                  type="datetime-local"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                />
+      
+
+      {/* Data Type & Fields */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">
+              Data Type & Fields
+            </CardTitle>
+
+            <Badge variant="secondary">
+              {downloadMode === 'basic'
+                ? 'Basic'
+                : `${selectedFields.size} fields`}
+            </Badge>
+          </div>
+        </CardHeader>
+
+        <CardContent className="space-y-5">
+
+          {/* Download Mode */}
+          <div className="grid grid-cols-2 gap-3">
+
+            <button
+              type="button"
+              onClick={() => setDownloadMode('basic')}
+              className={`rounded-lg border p-4 text-left transition ${
+                downloadMode === 'basic'
+                  ? 'border-primary bg-primary/10'
+                  : 'border-border'
+              }`}
+            >
+              <div className="font-medium">
+                All Fields
               </div>
-              <div className="space-y-2">
-                <Label>End Date/Time</Label>
-                <Input
-                  type="datetime-local"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                />
+
+              <p className="mt-1 text-xs text-muted-foreground">
+               Download all available fields from the selected stock.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setDownloadMode('details')}
+              className={`rounded-lg border p-4 text-left transition ${
+                downloadMode === 'details'
+                  ? 'border-primary bg-primary/10'
+                  : 'border-border'
+              }`}
+            >
+              <div className="font-medium">
+                Details 
               </div>
+
+              <p className="mt-1 text-xs text-muted-foreground">
+               Choose exactly which fields you want to download.
+              </p>
+            </button>
+
+          </div>
+
+          {/* Details Mode */}
+          {downloadMode === 'details' && (
+            <div className="space-y-4">
+
+              <div className="flex items-center justify-between">
+  <Label>
+    Download Fields
+  </Label>
+
+  <div className="flex items-center gap-2">
+    <Badge variant="secondary">
+      {selectedFields.size} selected
+    </Badge>
+
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      onClick={() => setShowFieldSettings((prev) => !prev)}
+    >
+      {showFieldSettings ? 'Hide Settings' : 'Settings'}
+    </Button>
+  </div>
+</div>
+
+          {showFieldSettings && (
+  <div className="rounded-lg border border-border p-4 space-y-4">
+
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-sm font-medium">Field Settings</p>
+        <p className="text-xs text-muted-foreground">
+          Select only the fields you want in the downloaded file.
+        </p>
+      </div>
+
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={selectAllFields}
+        >
+          Select All
+        </Button>
+
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={clearAllFields}
+        >
+          Clear All
+        </Button>
+      </div>
+    </div>
+
+    <div className="space-y-4">
+      {FIELD_GROUPS.map((group) => (
+        <div key={group.name} className="space-y-2">
+
+          <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+            {group.name}
+          </p>
+
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            {group.fields.map(([key, label]) => (
+              <label
+                key={key}
+                className="flex cursor-pointer items-center gap-2 rounded-md border p-2 hover:bg-muted/40"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedFields.has(key)}
+                  onChange={() => toggleField(key)}
+                  className="h-4 w-4"
+                />
+
+                <span className="text-xs">
+                  {label}
+                </span>
+              </label>
+            ))}
+          </div>
+
+        </div>
+      ))}
+    </div>
+
+  </div>
+)}    
+
+            </div>
+          )}
+
+          {/* Basic Mode */}
+          {downloadMode === 'basic' && (
+            <div className="rounded-lg border border-border p-3">
+              <p className="text-sm font-medium">
+                Basic Download
+              </p>
+
+              <p className="mt-1 text-xs text-muted-foreground">
+                Symbol, token, LTP, OHLC, volume, market depth
+                and timestamps will be included automatically.
+              </p>
+            </div>
+          )}
+
+        </CardContent>
+      </Card> 
+
+            {/* Filters & Format */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Filters & Format
+          </CardTitle>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Start Date/Time</Label>
+              <Input
+                type="datetime-local"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+              />
             </div>
 
             <div className="space-y-2">
-              <Label>Format</Label>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {FORMATS.map((f) => {
-                  const Icon = f.icon;
-                  const active = format === f.value;
-                  return (
-                    <Button
-                      key={f.value}
-                      variant={active ? 'default' : 'outline'}
-                      size="sm"
-                      className="flex flex-col items-center gap-1 h-auto py-3"
-                      onClick={() => setFormat(f.value)}
-                    >
-                      <Icon className="h-5 w-5" />
-                      <span className="text-xs font-medium">{f.label}</span>
-                    </Button>
-                  );
-                })}
-              </div>
-              {(() => {
-                const f = FORMATS.find((x) => x.value === format);
-                return f ? (
-                  <p className="text-xs text-muted-foreground flex items-center gap-1">
-                    <CheckCircle2 className="h-3 w-3 text-success" />
-                    {f.desc}
-                  </p>
-                ) : null;
-              })()}
+              <Label>End Date/Time</Label>
+              <Input
+                type="datetime-local"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Format</Label>
+
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {FORMATS.map((f) => {
+                const Icon = f.icon;
+                const active = format === f.value;
+
+                return (
+                  <Button
+                    key={f.value}
+                    variant={active ? 'default' : 'outline'}
+                    size="sm"
+                    className="flex flex-col items-center gap-1 h-auto py-3"
+                    onClick={() => setFormat(f.value)}
+                  >
+                    <Icon className="h-5 w-5" />
+                    <span className="text-xs font-medium">
+                      {f.label}
+                    </span>
+                  </Button>
+                );
+              })}
             </div>
 
-            <Button className="w-full" onClick={handleDownload} disabled={downloading}>
-              {downloading ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4 mr-2" />
-              )}
-              {downloading ? 'Generating...' : 'Download'}
-            </Button>
-          </CardContent>
-        </Card>
+            {(() => {
+              const f = FORMATS.find((x) => x.value === format);
+
+              return f ? (
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <CheckCircle2 className="h-3 w-3 text-success" />
+                  {f.desc}
+                </p>
+              ) : null;
+            })()}
+          </div>
+
+          <Button
+            className="w-full"
+            onClick={handleDownload}
+            disabled={downloading}
+          >
+            {downloading ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4 mr-2" />
+            )}
+
+            {downloading ? 'Generating...' : 'Download'}
+          </Button>
+        </CardContent>
+      </Card>
       </div>
 
       {/* Format info cards */}
@@ -232,6 +581,7 @@ export default function DownloadsPage() {
                 </div>
               </div>
             </Card>
+
           );
         })}
       </div>

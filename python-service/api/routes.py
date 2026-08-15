@@ -51,7 +51,7 @@ def status() -> StatusResponse:
 @router.post("/login", response_model=LoginResponse)
 async def login() -> LoginResponse:
     try:
-        ok = await do_login()
+        ok = await do_login(source="manual")
         return LoginResponse(ok=ok, message="Login successful" if ok else "Login failed")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

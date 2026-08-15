@@ -12,6 +12,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime, timezone
+from pymongo import InsertOne
 
 from config.settings import settings
 from database.connection import get_db
@@ -29,15 +30,65 @@ _last_flush_at: float | None = None
 _last_flush_duration_ms: float | None = None
 _last_error: str | None = None
 
+# Live 1-second data-saving metrics
+_window_started_at = time.monotonic()
+_window_received = 0
+_window_written = 0
+_window_symbols: set[str] = set()
+
+_last_tick_at: float | None = None
+_last_write_at: float | None = None
+
 _flush_task: asyncio.Task | None = None
 _stopping = False
-
+_latest_ticks: dict[str, dict] = {}
 
 def add(tick: dict) -> None:
     global _total_received
+    global _window_received
+    global _window_symbols
+    global _last_tick_at
+
+    cache_key = str(
+        tick.get("instrumentToken")
+        or tick.get("instrument_token")
+        or tick.get("token")
+        or tick.get("symbol")
+        or ""
+    )
+
+    if cache_key:
+        previous = _latest_ticks.get(cache_key, {})
+
+        merged = previous.copy()
+
+        for key, value in tick.items():
+            if value is not None and value != "":
+                merged[key] = value
+
+        _latest_ticks[cache_key] = merged
+        tick = merged
+
     _buffer.append(tick)
     _total_received += 1
+
+    # Live 1-second tick metrics
+    _window_received += 1
+
+    symbol = (
+        tick.get("symbol")
+        or tick.get("ts")
+        or tick.get("tradingSymbol")
+        or tick.get("trading_symbol")
+    )
+
+    if symbol:
+        _window_symbols.add(str(symbol))
+
+    _last_tick_at = time.time()
+
     _recent.append(tick)
+
     for q in _listeners:
         try:
             q.put_nowait(tick)
@@ -61,17 +112,48 @@ def get_recent(limit: int = 200) -> list[dict]:
 
 
 def stats() -> dict:
-    return {
+    global _window_started_at
+    global _window_received
+    global _window_symbols
+    global _window_written
+
+    now = time.monotonic()
+    elapsed = now - _window_started_at
+
+    if elapsed <= 0:
+        elapsed = 1.0
+
+    ticks_per_second = _window_received / elapsed
+    writes_per_second = _window_written / elapsed
+
+    result = {
         "bufferLength": len(_buffer),
+
+        # Lifetime totals
         "totalReceived": _total_received,
         "totalWritten": _total_written,
         "totalWriteErrors": _total_errors,
+
+        # Current live activity
+        "ticksPerSecond": round(ticks_per_second, 2),
+        "writesPerSecond": round(writes_per_second, 2),
+        "activeTickStocks": len(_window_symbols),
+
+        "lastTickAt": _last_tick_at,
+        "lastWriteAt": _last_write_at,
+
         "lastFlushAt": _last_flush_at,
         "lastFlushDurationMs": _last_flush_duration_ms,
         "lastError": _last_error,
     }
 
+    # Start a fresh live window.
+    _window_started_at = now
+    _window_received = 0
+    _window_written = 0
+    _window_symbols = set()
 
+    return result
 async def start() -> None:
     global _flush_task, _stopping
     _stopping = False
@@ -123,23 +205,36 @@ async def _flush_all() -> None:
 
 
 async def _write_batch(batch: list[dict]) -> None:
-    global _total_written, _total_errors, _last_flush_at, _last_flush_duration_ms, _last_error
-
+    global _total_written
+    global _total_errors
+    global _last_flush_at
+    global _last_flush_duration_ms
+    global _last_error
+    global _window_written
+    global _last_write_at
     if not batch:
         return
 
     start_ms = time.monotonic()
     db = get_db()
 
-    docs = [_normalize_tick(t) for t in batch]
-    ops = [{"insert_one": {"document": d}} for d in docs]
+    # Preserve the complete Kotak SDK tick exactly as received.
+    docs = [dict(t) for t in batch]
+    ops = [InsertOne(d) for d in docs] 
 
     try:
-        result = await db.ticks.bulk_write(ops, ordered=False)
-        written = result.inserted_count
-        _total_written += written
-        errors = len(ops) - written
-        if errors > 0:
+
+       result = await db.ticks.bulk_write(ops, ordered=False)
+       written = result.inserted_count
+
+       _total_written += written
+
+# Live 1-second MongoDB write metrics
+       _window_written += written
+       _last_write_at = time.time()
+        
+       errors = len(ops) - written
+       if errors > 0:
             _total_errors += errors
     except Exception as exc:
         _total_errors += len(batch)
@@ -167,27 +262,47 @@ async def _write_batch(batch: list[dict]) -> None:
 
 
 def _normalize_tick(raw: dict) -> dict:
-    ts = raw.get("ts") or raw.get("timestamp")
+    ts = raw.get("ts") or raw.get("timestamp") or raw.get("fdtm")
+
     if isinstance(ts, str):
         try:
-            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if "/" in ts:
+             ts = datetime.strptime(
+                ts,
+                "%d/%m/%Y %H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
+            else:
+             ts = datetime.fromisoformat(
+                ts.replace("Z", "+00:00")
+            )
         except ValueError:
-            ts = datetime.now(timezone.utc)
-    elif isinstance(ts, (int, float)):
-        ts = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-    elif not isinstance(ts, datetime):
-        ts = datetime.now(timezone.utc)
+         ts = datetime.now(timezone.utc)
 
+    elif isinstance(ts, (int, float)):
+     ts = datetime.fromtimestamp(
+        ts / 1000,
+        tz=timezone.utc
+    )
+
+    elif not isinstance(ts, datetime):
+     ts = datetime.now(timezone.utc)
+    
     return {
-        "symbol": raw.get("symbol", ""),
-        "instrumentToken": str(raw.get("instrumentToken") or raw.get("token") or ""),
+      "symbol": raw.get("symbol", ""),
+        "instrumentToken": str(
+    raw.get("instrumentToken")
+    or raw.get("instrument_token")
+    or raw.get("token")
+    or raw.get("tk")
+    or ""
+),
         "exchangeSegment": raw.get("exchangeSegment", "nse_cm"),
         "ltp": _fnum(raw.get("ltp")),
-        "open": _fnum(raw.get("open")),
-        "high": _fnum(raw.get("high")),
-        "low": _fnum(raw.get("low")),
-        "close": _fnum(raw.get("close")),
-        "volume": _fnum(raw.get("volume")),
+        "open": _fnum(raw.get("op")),
+        "high": _fnum(raw.get("h")),
+        "low": _fnum(raw.get("lo")),
+        "close": _fnum(raw.get("c")),
+        "volume": _fnum(raw.get("v")),
         "ltq": _fnum(raw.get("ltq")),
         "tbq": _fnum(raw.get("tbq")),
         "tsq": _fnum(raw.get("tsq")),

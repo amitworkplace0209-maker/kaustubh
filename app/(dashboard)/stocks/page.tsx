@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Package, Plus, Trash2, Search, Power, X, RefreshCw, Info, Loader2,
 } from 'lucide-react';
@@ -31,21 +31,33 @@ type Stock = {
 };
 
 type SearchResult = {
-  symbol?: string;
-  trading_symbol?: string;
-  token?: string;
-  instrument_token?: string;
-  exchange?: string;
-  ex_seg?: string;
-  company_name?: string;
-  series?: string;
-  isin?: string;
+  symbol: string;
+  trading_symbol: string;
+  token: string;
+  instrument_token: string;
+  exchange: string;
+  ex_seg: string;
+  company_name: string;
+  series: string;
+  isin: string;
   lot_size?: string | number;
   tick_size?: string | number;
   face_value?: string | number;
   market_type?: string;
   trading_status?: string;
   quote?: Record<string, any>;
+
+  // Original Kotak fields
+  pSymbol?: string | number;
+  pSymbolName?: string;
+  pTrdSymbol?: string;
+  pExchSeg?: string;
+  pExchange?: string;
+  pGroup?: string;
+  pScripRefKey?: string;
+  pISIN?: string;
+  pDesc?: string;
+
   [key: string]: any;
 };
 
@@ -54,14 +66,81 @@ function safeVal(v: any): string {
   if (typeof v === 'number') return v.toLocaleString('en-US');
   return String(v);
 }
+function normalizeKotakResult(raw: any): SearchResult {
+  return {
+    ...raw,
+
+    symbol: String(
+      raw.symbol ??
+      raw.pSymbolName ??
+      raw.pScripRefKey ??
+      ''
+    ),
+
+    trading_symbol: String(
+      raw.trading_symbol ??
+      raw.pTrdSymbol ??
+      ''
+    ),
+
+    token: String(
+      raw.token ??
+      raw.instrument_token ??
+      raw.pSymbol ??
+      ''
+    ),
+
+    instrument_token: String(
+      raw.instrument_token ??
+      raw.token ??
+      raw.pSymbol ??
+      ''
+    ),
+
+    exchange: String(
+      raw.exchange ??
+      raw.pExchange ??
+      'NSE'
+    ),
+
+    ex_seg: String(
+      raw.ex_seg ??
+      raw.pExchSeg ??
+      'nse_cm'
+    ),
+
+    company_name: String(
+      raw.company_name ??
+      raw.pDesc ??
+      raw.pSymbolName ??
+      ''
+    ),
+
+    series: String(
+      raw.series ??
+      raw.pGroup ??
+      ''
+    ),
+
+    isin: String(
+      raw.isin ??
+      raw.pISIN ??
+      ''
+    ),
+
+    lot_size: raw.lot_size ?? raw.lLotSize,
+    tick_size: raw.tick_size ?? raw.dTickSize,
+    face_value: raw.face_value ?? raw.pFaceValue,
+  };
+}
 
 export default function StocksPage() {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [loading, setLoading] = useState(true);
+  const stocksRef = useRef<Stock[]>([]);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addOpen, setAddOpen] = useState(false);
-  const [newStockSymbol, setNewStockSymbol] = useState('');
   const [kotakSearch, setKotakSearch] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -70,77 +149,263 @@ export default function StocksPage() {
   const { toast } = useToast();
 
   const fetchStocks = useCallback(async () => {
-    try {
-      const data = await getStocks(search);
-      setStocks(data.stocks || []);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, [search]);
+  try {
+    console.log("FETCH STOCKS START:", {
+      search,
+      time: new Date().toISOString(),
+    });
 
+    const data = await getStocks(search);
+
+    console.log("FRONTEND STOCK API RESPONSE:", data);
+
+    const stockList: Stock[] =
+      Array.isArray(data)
+        ? data
+        : Array.isArray(data?.data)
+          ? data.data
+          : Array.isArray(data?.stocks)
+            ? data.stocks
+            : [];
+
+    console.log("FRONTEND STOCK LIST:", stockList);
+    console.log("FRONTEND STOCK COUNT:", stockList.length);
+
+    /*
+     * IMPORTANT:
+     * Never replace existing stocks with an empty response
+     * when this is the normal stock list.
+     */
+    if (stockList.length > 0) {
+      console.log(
+        "SETTING STOCK STATE:",
+        stockList.length
+      );
+      stocksRef.current = stockList;
+      setStocks(stockList);
+    } else if (search.trim()) {
+      console.log(
+        "SEARCH RESULT EMPTY:",
+        search
+      );
+
+      setStocks([]);
+    } else {
+      console.warn(
+        "EMPTY STOCK RESPONSE — keeping existing stocks:",
+         stocksRef.current.length
+      );
+    }
+
+  } catch (error) {
+    console.error(
+      "FETCH STOCKS FAILED:",
+      error
+    );
+
+    /*
+     * IMPORTANT:
+     * Do NOT clear stocks when API temporarily fails.
+     */
+    toast({
+      title: "Failed to load stocks",
+      description:
+        error instanceof Error
+          ? error.message
+          : "Stock API request failed",
+      variant: "destructive",
+    });
+
+  } finally {
+    setLoading(false);
+  }
+}, [search, toast, stocks.length]);
   useEffect(() => {
+  console.log("STOCK PAGE MOUNTED");
+
+  fetchStocks();
+
+  const interval = setInterval(() => {
+    console.log("STOCK AUTO REFRESH");
     fetchStocks();
-    const interval = setInterval(fetchStocks, 10000);
-    return () => clearInterval(interval);
-  }, [fetchStocks]);
+  }, 10000);
 
-  const handleKotakSearch = async () => {
-    if (!kotakSearch.trim()) return;
-    setSearching(true);
-    setSelectedResult(null);
-    try {
-      const data = await searchStockInfo(kotakSearch);
-      setSearchResults(data.results || []);
-    } catch (err) {
-      toast({
-        title: 'Search failed',
-        description: err instanceof Error ? err.message : 'Kotak API unavailable',
-        variant: 'destructive',
+  return () => {
+    console.log("STOCK PAGE UNMOUNTED");
+    clearInterval(interval);
+  };
+}, [fetchStocks]);
+
+ const handleKotakSearch = async () => {
+  if (!kotakSearch.trim()) return;
+
+  setSearching(true);
+  setSelectedResult(null);
+  setSearchResults([]);
+
+  try {
+    const data = await searchStockInfo(kotakSearch);
+
+    const eqResults = (data.results || [])
+      .map(normalizeKotakResult)
+      .filter((r: SearchResult) => {
+        const series = String(
+          r.series || r.pGroup || ''
+        ).trim().toUpperCase();
+
+        const tradingSymbol = String(
+          r.trading_symbol || r.pTrdSymbol || ''
+        ).trim().toUpperCase();
+
+        return (
+          series === 'EQ' ||
+          tradingSymbol.endsWith('-EQ')
+        );
+      })
+      .filter((r: SearchResult) => {
+        return Boolean(
+          r.token ||
+          r.instrument_token ||
+          r.pSymbol
+        );
       });
-      setSearchResults([]);
-    } finally {
-      setSearching(false);
-    }
-  };
 
-  const handleSelectResult = (result: SearchResult) => {
-    setSelectedResult(result);
-    setNewStockSymbol(result.trading_symbol || result.symbol || '');
-  };
+    // Only EQ instruments will be shown.
+    setSearchResults(eqResults);
+
+    // First EQ result is automatically selected.
+    const selected = eqResults[0] || null;
+
+    setSelectedResult(selected);
+
+    if (selected) {
+      console.log('AUTO SELECTED EQ STOCK:', {
+        token:
+          selected.token ||
+          selected.instrument_token ||
+          selected.pSymbol,
+
+        tradingSymbol:
+          selected.trading_symbol ||
+          selected.pTrdSymbol,
+
+        series:
+          selected.series ||
+          selected.pGroup,
+
+        exchange:
+          selected.exchange ||
+          selected.pExchange ||
+          'NSE',
+
+        exchangeSegment:
+          selected.ex_seg ||
+          selected.pExchSeg ||
+          'nse_cm',
+      });
+    }
+  } catch (err) {
+    toast({
+      title: 'Search failed',
+      description:
+        err instanceof Error
+          ? err.message
+          : 'Kotak API unavailable',
+      variant: 'destructive',
+    });
+
+    setSearchResults([]);
+    setSelectedResult(null);
+  } finally {
+    setSearching(false);
+  }
+};
+  
+
+  
 
   const handleAdd = async () => {
-    if (!newStockSymbol.trim()) {
-      toast({ title: 'Symbol required', variant: 'destructive' });
-      return;
-    }
-    const token = selectedResult?.token || selectedResult?.instrument_token || '';
-    if (!token) {
-      toast({ title: 'No token found', description: 'Select a stock from search results', variant: 'destructive' });
-      return;
-    }
-    setAdding(true);
-    try {
-      await addStock({
-        symbol: newStockSymbol.toUpperCase(),
-        instrumentToken: token,
-        exchangeSegment: 'nse_cm',
-      });
-      toast({ title: 'Stock added', description: `${newStockSymbol} subscribed with auto-generated index` });
-      setNewStockSymbol('');
-      setSelectedResult(null);
-      setSearchResults([]);
-      setKotakSearch('');
-      setAddOpen(false);
-      fetchStocks();
-    } catch (err) {
-      toast({ title: 'Error', description: err instanceof Error ? err.message : 'Failed', variant: 'destructive' });
-    } finally {
-      setAdding(false);
-    }
-  };
+  if (!selectedResult) {
+    toast({
+      title: 'No stock selected',
+      description: 'Search for a stock first.',
+      variant: 'destructive',
+    });
+    return;
+  }
 
+  const token = String(
+    selectedResult.token ||
+    selectedResult.instrument_token ||
+    selectedResult.pSymbol ||
+    ''
+  );
+
+  if (!token) {
+    toast({
+      title: 'No instrument token',
+      description: 'The selected EQ instrument has no token.',
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  const symbol = String(
+    selectedResult.pScripRefKey ||
+    selectedResult.pSymbolName ||
+    selectedResult.symbol ||
+    ''
+  ).trim();
+
+  if (!symbol) {
+    toast({
+      title: 'No symbol found',
+      description: 'The selected EQ instrument has no symbol.',
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  const exchangeSegment = String(
+    selectedResult.exchange_segment ||
+    selectedResult.ex_seg ||
+    selectedResult.pExchSeg ||
+    'nse_cm'
+  );
+
+  setAdding(true);
+
+  try {
+    await addStock({
+      symbol: symbol.toUpperCase(),
+      instrumentToken: token,
+      exchangeSegment,
+    });
+
+    toast({
+      title: 'Stock added',
+      description: `${symbol.toUpperCase()} subscribed successfully`,
+    });
+
+    setSelectedResult(null);
+    setSearchResults([]);
+    setKotakSearch('');
+    setAddOpen(false);
+
+    fetchStocks();
+  } catch (err) {
+    toast({
+      title: 'Error',
+      description:
+        err instanceof Error
+          ? err.message
+          : 'Failed to subscribe stock',
+      variant: 'destructive',
+    });
+  } finally {
+    setAdding(false);
+  }
+};
   const handleDelete = async (symbol: string) => {
     try {
       await deleteStock(symbol);
@@ -405,17 +670,27 @@ export default function StocksPage() {
                 ) : (
                   <div className="space-y-1">
                     {searchResults.map((r, i) => (
-                      <div
-                        key={i}
-                        className={`flex items-center justify-between rounded-lg border p-2 cursor-pointer hover:bg-muted ${selectedResult === r ? 'border-primary bg-primary/5' : ''}`}
-                        onClick={() => handleSelectResult(r)}
-                      >
-                        <div>
-                          <p className="font-medium text-sm">{r.trading_symbol || r.symbol}</p>
-                          <p className="text-xs text-muted-foreground">{r.company_name || r.exchange || 'NSE'}</p>
-                        </div>
-                        {selectedResult === r && <Badge variant="default">Selected</Badge>}
-                      </div>
+  <div
+    key={i}
+    className={`flex items-center justify-between rounded-lg border p-3 ${
+      selectedResult === r
+        ? 'border-primary bg-primary/5'
+        : ''
+    }`}
+  >
+                       <div>
+  <p className="font-medium text-sm">
+  {r.symbol || r.pSymbolName}
+</p>
+
+<p className="text-xs text-muted-foreground">
+  NSE • EQ
+</p>
+</div>
+
+<Badge variant="default">
+  EQ Selected
+</Badge>  </div>
                     ))}
                   </div>
                 )}
@@ -454,16 +729,7 @@ export default function StocksPage() {
             </div>
           </div>
           <DialogFooter>
-            <div className="flex items-center gap-2 mr-auto">
-              <Label className="text-sm">Symbol:</Label>
-              <Input
-                value={newStockSymbol}
-                onChange={(e) => setNewStockSymbol(e.target.value)}
-                placeholder="Auto-filled from selection"
-                className="w-48"
-              />
-            </div>
-            <Button onClick={handleAdd} disabled={adding || !newStockSymbol}>
+           <Button onClick={handleAdd} disabled={adding || !selectedResult}>
               {adding ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
               Subscribe
             </Button>

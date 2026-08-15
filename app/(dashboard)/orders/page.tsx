@@ -155,13 +155,18 @@ export default function OrdersPage() {
   const [funds, setFunds] = useState<any>(null);
   const [baskets, setBaskets] = useState<Basket[]>([]);
   const [orderForm, setOrderForm] = useState({
-    transactionType: 'BUY',
-    product: 'MIS',
-    orderType: 'MKT',
-    quantity: '1',
-    price: '0',
-    triggerPrice: '0',
-  });
+  transactionType: 'BUY',
+  product: 'MIS',
+  orderType: 'MKT',
+  quantity: '1',
+  price: '0',
+  triggerPrice: '0',
+
+  // Target-profit auto exit
+  targetEnabled: false,
+  targetMode: 'FIXED' as 'FIXED' | 'PERCENT',
+  targetProfit: '',
+});
   const [placing, setPlacing] = useState(false);
   const { toast } = useToast();
 
@@ -188,8 +193,17 @@ export default function OrdersPage() {
     if (!searchQuery.trim()) return;
     try {
       const data = await searchScrip('nse_cm', searchQuery);
-      const results = data?.data || [];
-      setSearchResults(results.slice(0, 10));
+      const results = Array.isArray(data?.data) ? data.data : [];
+
+const mappedResults: SearchResult[] = results.map((r: any) => ({
+  symbol: r.pSymbolName ?? '',
+  token: String(r.pSymbol ?? ''),
+  exchange: r.pExchSeg ?? 'nse_cm',
+  tradingSymbol: r.pTrdSymbol ?? '',
+  companyName: r.pDesc ?? '',
+}));
+
+setSearchResults(mappedResults.slice(0, 10));
     } catch {
       toast({ title: 'Search failed', description: 'Kotak API may be unavailable', variant: 'destructive' });
     }
@@ -201,6 +215,8 @@ export default function OrdersPage() {
     try {
       const data = await getQuote([{ instrument_token: stock.token, exchange_segment: stock.exchange }], 'ltp');
       const q = data?.data || {};
+      console.log("QUOTE RAW:", data);
+      console.log("QUOTE DATA:", q);
       setQuote({
         ltp: q.ltp || q.last_price || 0,
         upperCircuit: q.upper_circuit || 0,

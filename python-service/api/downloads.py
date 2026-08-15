@@ -16,32 +16,72 @@ router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 logger = logging.getLogger("app")
 
 FIELDS = [
-    "symbol", "timestamp", "ltp", "open", "high", "low", "close",
-    "volume", "ltq", "tbq", "tsq", "bp", "sp", "bq", "bs",
-    "averagePrice", "change", "changePercent", "oi",
+    "symbol",
+    "instrumentToken",
+    "exchangeSegment",
+
+    "timestamp",
+    "ts",
+    "receivedAt",
+
+    "ltp",
+    "open",
+    "high",
+    "low",
+    "close",
+
+    "volume",
+    "ltq",
+
+    "tbq",
+    "tsq",
+    "bp",
+    "sp",
+    "bq",
+    "bs",
+
+    "averagePrice",
+    "change",
+    "changePercent",
+    "oi",
 ]
 
 
 def _map_tick(t: dict) -> dict:
     ts = t.get("ts")
+    received_at = t.get("receivedAt")
+
     if isinstance(ts, datetime):
         ts = ts.isoformat()
+
+    if isinstance(received_at, datetime):
+        received_at = received_at.isoformat()
+
     return {
         "symbol": t.get("symbol", ""),
+        "instrumentToken": t.get("instrumentToken", ""),
+        "exchangeSegment": t.get("exchangeSegment", ""),
+
         "timestamp": ts or "",
+        "ts": ts or "",
+        "receivedAt": received_at or "",
+
         "ltp": t.get("ltp"),
         "open": t.get("open"),
         "high": t.get("high"),
         "low": t.get("low"),
         "close": t.get("close"),
+
         "volume": t.get("volume"),
         "ltq": t.get("ltq"),
+
         "tbq": t.get("tbq"),
         "tsq": t.get("tsq"),
         "bp": t.get("bp"),
         "sp": t.get("sp"),
         "bq": t.get("bq"),
         "bs": t.get("bs"),
+
         "averagePrice": t.get("averagePrice"),
         "change": t.get("change"),
         "changePercent": t.get("changePercent"),
@@ -93,6 +133,7 @@ async def download_data(
     limit: int = 50000,
     format: str = "csv",
     all: str = "false",
+    fields: str = "",
 ):
     db = get_db()
 
@@ -102,8 +143,32 @@ async def download_data(
         sym_list = [s["symbol"] for s in active]
     else:
         sym_list = [s.strip() for s in (symbols or symbol).split(",") if s.strip()]
+        if fields.strip():
+            requested_fields = [
+                field.strip()
+                for field in fields.split(",")
+                if field.strip()
+            ]
 
+            selected_fields = [
+                field
+                for field in requested_fields
+                if field in FIELDS
+            ]
+
+            if not selected_fields:
+                selected_fields = FIELDS.copy()
+        else:
+            selected_fields = FIELDS.copy()
     ticks = await _get_ticks(sym_list, start or None, end or None, limit)
+    if fields.strip():
+           ticks = [
+            {
+                field: tick.get(field)
+                for field in selected_fields
+            }
+            for tick in ticks
+        ]
     await _record_download(db, sym_list, format, len(ticks))
 
     ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -114,13 +179,22 @@ async def download_data(
 
     if fmt == "csv":
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=FIELDS, extrasaction="ignore")
+
+        writer = csv.DictWriter(
+            output,
+            fieldnames=selected_fields,
+            extrasaction="ignore",
+        )
+
         writer.writeheader()
         writer.writerows(ticks)
+
         return Response(
             content=output.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}.csv"'
+            },
         )
 
     if fmt == "json":
@@ -142,7 +216,7 @@ async def download_data(
         output = io.StringIO()
         output.write("\t".join(FIELDS) + "\n")
         for t in ticks:
-            output.write("\t".join(str(t.get(f, "")) for f in FIELDS) + "\n")
+         output.write("\t".join(str(t.get(f, "")) for f in selected_fields) + "\n")
         return Response(
             content=output.getvalue(),
             media_type="text/plain",
@@ -152,13 +226,13 @@ async def download_data(
     if fmt in ("xlsx", "excel"):
         output = io.StringIO()
         output.write("<table>\n<tr>")
-        for f in FIELDS:
-            output.write(f"<th>{f}</th>")
+        for f in selected_fields:
+          output.write(f"<th>{f}</th>")
         output.write("</tr>\n")
         for t in ticks:
             output.write("<tr>")
-            for f in FIELDS:
-                output.write(f"<td>{t.get(f, '')}</td>")
+            for f in selected_fields:
+             output.write(f"<td>{t.get(f, '')}</td>")
             output.write("</tr>\n")
         output.write("</table>")
         return Response(
@@ -169,7 +243,11 @@ async def download_data(
 
     # Fallback: CSV
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=FIELDS, extrasaction="ignore")
+    writer = csv.DictWriter(
+    output,
+    fieldnames=selected_fields,
+    extrasaction="ignore",
+    )
     writer.writeheader()
     writer.writerows(ticks)
     return Response(

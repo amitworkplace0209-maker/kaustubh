@@ -56,7 +56,11 @@ class Settings:
     login_minute: int = field(default_factory=lambda: int(_optional("LOGIN_MINUTE", "0")))  # type: ignore[arg-type]
     logout_hour: int = field(default_factory=lambda: int(_optional("LOGOUT_HOUR", "15")))  # type: ignore[arg-type]
     logout_minute: int = field(default_factory=lambda: int(_optional("LOGOUT_MINUTE", "35")))  # type: ignore[arg-type]
-
+    # ---- WebSocket trading window (IST) ----
+    ws_start_hour: int = field(default_factory=lambda: int(_optional("WS_START_HOUR", "9")))
+    ws_start_minute: int = field(default_factory=lambda: int(_optional("WS_START_MINUTE", "13")))
+    ws_stop_hour: int = field(default_factory=lambda: int(_optional("WS_STOP_HOUR", "15")))
+    ws_stop_minute: int = field(default_factory=lambda: int(_optional("WS_STOP_MINUTE", "31")))
     # ---- SDK ----
     environment: str = field(default_factory=lambda: _optional("NEO_ENVIRONMENT", "prod"))
 

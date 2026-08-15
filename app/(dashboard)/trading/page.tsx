@@ -84,21 +84,31 @@ export default function TradingDashboardPage() {
     return <div className="flex items-center justify-center h-full"><RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
   }
 
-  const availableMargin = funds?.data?.limitObject?.RMS?.available_margin ?? funds?.available_margin ?? '—';
-  const usedMargin = funds?.data?.limitObject?.RMS?.utilised_debit ?? funds?.utilised_debit ?? '—';
-  const blockedMargin = funds?.data?.limitObject?.RMS?.blocked_margin ?? funds?.blocked_margin ?? '—';
-  const cash = funds?.data?.limitObject?.RMS?.cash ?? funds?.cash ?? '—';
+    const availableMargin = funds?.Net ?? '—';
+    const usedMargin = funds?.MarginUsed ?? '—';
+    const blockedMargin = funds?.Collateral ?? '—';
+    const cash = funds?.NotionalCash ?? '—'; 
 
-  const posData = positions?.data ?? [];
-  const posList = Array.isArray(posData) ? posData : [];
-  const openPositions = posList.length;
-  const totalMTM = posList.reduce((sum: number, p: any) => sum + (Number(p?.realised ?? 0) + Number(p?.unrealised ?? 0)), 0);
+    const posData = positions?.data ?? [];
+    const posList = Array.isArray(posData) ? posData : [];
+    const openPositions = posList.length;
 
-  const holdData = holdings?.data ?? [];
-  const holdList = Array.isArray(holdData) ? holdData : [];
-  const holdingsCount = holdList.length;
-  const holdingsValue = holdList.reduce((sum: number, h: any) => sum + (Number(h?.quantity ?? 0) * Number(h?.avg_price ?? h?.price ?? 0)), 0);
+    const holdData = holdings?.data ?? [];
+    const holdList = Array.isArray(holdData) ? holdData : [];
 
+    const holdingsCount = holdList.length;
+
+    const holdingsValue = holdList.reduce(
+    (sum: number, h: any) => sum + Number(h?.mktValue ?? 0),
+    0
+  );
+
+  const totalMTM = holdList.reduce(
+    (sum: number, h: any) => sum + Number(h?.unrealisedGainLoss ?? 0),
+    0
+  );
+
+  
   const orderData = orders?.data ?? [];
   const orderList = Array.isArray(orderData) ? orderData : [];
   const completedOrders = orderList.filter((o: any) => o?.status === 'complete' || o?.status === 'filled').length;
@@ -168,7 +178,16 @@ export default function TradingDashboardPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <StatCard icon={TrendingUp} label="Today's P&L (MTM)" value={`₹${totalMTM.toLocaleString()}`} sub={totalMTM >= 0 ? 'profit' : 'loss'} accent={totalMTM >= 0 ? 'card-accent-green' : 'card-accent-red'} />
+        <StatCard
+  icon={TrendingUp}
+  label="Unrealized P&L"
+  value={`₹${totalMTM.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`}
+  sub={totalMTM >= 0 ? 'profit' : 'loss'}
+  accent={totalMTM >= 0 ? 'card-accent-green' : 'card-accent-red'}
+/>
         <StatCard icon={Wallet} label="Blocked Margin" value={typeof blockedMargin === 'number' ? `₹${blockedMargin.toLocaleString()}` : blockedMargin} accent="card-accent-amber" />
         <StatCard icon={Wallet} label="Cash" value={typeof cash === 'number' ? `₹${cash.toLocaleString()}` : cash} accent="card-accent-teal" />
         <StatCard icon={Briefcase} label="Holdings Value" value={`₹${holdingsValue.toLocaleString()}`} sub={`${holdingsCount} stocks`} accent="card-accent-green" />

@@ -40,6 +40,13 @@ MARKET_HOLIDAYS_2025_2026 = {
 _running = False
 _login_timer: threading.Timer | None = None
 _logout_timer: threading.Timer | None = None
+_websocket_start_timer: threading.Timer | None = None
+_websocket_stop_timer: threading.Timer | None = None
+# Session owner:
+# scheduler = automatic market-hours login
+# manual = manual fallback login
+_session_owner: str | None = None
+_manual_logout_timer: threading.Timer | None = None
 def _run_on_app_loop(coro):
     loop = get_loop()
     return asyncio.run_coroutine_threadsafe(coro, loop)
@@ -69,60 +76,329 @@ def _seconds_until(hour: int, minute: int) -> float:
     return (target - now).total_seconds()
 
 
-async def do_login(retry: int = 3) -> bool:
-    print("\n")
-    print("=" * 60)
-    print("INSIDE do_login()")
-    print("=" * 60)
-    print("\n")
-    logger.info("do_login called (retry=%d)", retry)
+async def do_login(
+    source: str = "scheduler",
+    retry: int = 3,
+) -> bool:
+    global _session_owner, _manual_logout_timer
+
+    logger.info(
+        "do_login called (source=%s, retry=%d)",
+        source,
+        retry,
+    )
+
+    # Only these two login sources are allowed.
+    if source not in {"scheduler", "manual"}:
+        logger.error("Invalid login source: %s", source)
+        return False
+
+    # --------------------------------------------------------
+    # If a session is already active, NEVER login again.
+    # --------------------------------------------------------
+
+    if kotak_session.session_active:
+
+        if _session_owner == "scheduler":
+            logger.info(
+                "Login skipped: scheduler session already active"
+            )
+            return True
+
+        if _session_owner == "manual":
+            logger.info(
+                "Login skipped: manual session already active"
+            )
+            return True
+
+        logger.warning(
+            "Active session detected but session owner is unknown"
+        )
+        return True
+
+    # --------------------------------------------------------
+    # Manual login is only a fallback.
+    # It must never replace a scheduler session.
+    # --------------------------------------------------------
+
+    if source == "manual" and _session_owner == "scheduler":
+        logger.info(
+            "Manual login blocked: scheduler session is active"
+        )
+        return True
+
     for attempt in range(retry):
         try:
             await tick_buffer.start()
+
             kotak_session.login()
+
+            # Login must result in an active Kotak session.
+            if not kotak_session.session_active:
+                raise RuntimeError(
+                    "Kotak login completed but session is not active"
+                )
+
+            # ------------------------------------------------
+            # Load active stocks from MongoDB.
+            # ------------------------------------------------
 
             db = get_db()
             cursor = db.stocks.find({"active": True})
             stocks = await cursor.to_list(length=None)
-            print("Stocks found:", len(stocks))
+
             tokens = [
                 {
                     "instrument_token": s["instrumentToken"],
-                    "exchange_segment": s.get("exchangeSegment", "nse_cm"),
+                    "exchange_segment": s.get(
+                        "exchangeSegment",
+                        "nse_cm",
+                    ),
                     "isIndex": s.get("isIndex", False),
                     "isDepth": s.get("isDepth", False),
                     "symbol": s["symbol"],
                 }
                 for s in stocks
             ]
-            if tokens:
-               logger.info(">>> About to call ws_manager.subscribe()")
-               logger.info("========== STEP 1 ==========")
-               await ws_manager.subscribe(tokens)
-               logger.info("========== STEP 2 ==========")
-               logger.info(">>> ws_manager.subscribe() completed")
-            logger.info("Login succeeded on attempt %d, subscribed %d tokens", attempt + 1, len(tokens))
+
+            # ------------------------------------------------
+            # Session ownership is assigned after login.
+            # ------------------------------------------------
+
+            _session_owner = source
+
+            # ------------------------------------------------
+            # Manual login gets a 30-minute timeout.
+            # Scheduler login does NOT.
+            # ------------------------------------------------
+
+            if source == "manual":
+
+                if _manual_logout_timer is not None:
+                    _manual_logout_timer.cancel()
+
+                _manual_logout_timer = threading.Timer(
+                    30 * 60,
+                    _manual_logout_job,
+                )
+
+                _manual_logout_timer.daemon = True
+                _manual_logout_timer.start()
+
+                logger.info(
+                    "Manual session started; "
+                    "automatic logout scheduled in 30 minutes"
+                )
+
+            else:
+                logger.info(
+                    "Scheduler session started; "
+                    "manual timeout disabled"
+                )
+
+            # ------------------------------------------------
+            # WebSocket handling.
+            #
+            # Normal day:
+            #   Login 09:00
+            #   WebSocket 09:13
+            #
+            # If backend starts after 09:13:
+            #   Login
+            #   WebSocket starts immediately
+            # ------------------------------------------------
+
+            now_ist = _now_ist()
+
+            ws_start_time = now_ist.replace(
+                hour=settings.ws_start_hour,
+                minute=settings.ws_start_minute,
+                second=0,
+                microsecond=0,
+            )
+
+            ws_stop_time = now_ist.replace(
+                hour=settings.ws_stop_hour,
+                minute=settings.ws_stop_minute,
+                second=0,
+                microsecond=0,
+            )
+
+            if ws_start_time <= now_ist < ws_stop_time:
+                logger.info(
+                    "Login happened inside WebSocket window — "
+                    "starting WebSocket now"
+                )
+
+                await start_websocket_session()
+
+            logger.info(
+                "Login succeeded on attempt %d, "
+                "source=%s, WebSocket subscription active/pending",
+                attempt + 1,
+                source,
+            )
+
             return True
+
         except Exception as exc:
-            logger.error("Login attempt %d failed: %s", attempt + 1, exc)
+            logger.error(
+                "Login attempt %d failed: %s",
+                attempt + 1,
+                exc,
+            )
+
             if attempt < retry - 1:
                 await asyncio.sleep(2 ** attempt)
-    logger.error("All %d login attempts failed", retry)
+
+    logger.error(
+        "All %d login attempts failed (source=%s)",
+        retry,
+        source,
+    )
+
     return False
+def _manual_logout_job():
+    global _manual_logout_timer
 
+    _manual_logout_timer = None
 
-async def do_logout() -> bool:
-    logger.info("do_logout called")
+    # Manual timer must never logout a scheduler session.
+    if _session_owner != "manual":
+        logger.info(
+            "Manual logout timer ignored: session owner is %s",
+            _session_owner,
+        )
+        return
+
+    logger.info(
+        "Manual 30-minute session expired; logging out"
+    )
+
+    _run_on_app_loop(
+        do_logout(source="manual")
+    )
+async def start_websocket_session() -> bool:
+    """
+    Start WebSocket subscription at the configured WebSocket start time.
+
+    Login must already be active.
+    Active stocks are loaded fresh from MongoDB.
+    """
+    try:
+        if not kotak_session.session_active:
+            logger.warning(
+                "WebSocket start skipped: Kotak session is not active"
+            )
+            return False
+
+        db = get_db()
+        cursor = db.stocks.find({"active": True})
+        stocks = await cursor.to_list(length=None)
+
+        tokens = [
+            {
+                "instrument_token": s["instrumentToken"],
+                "exchange_segment": s.get(
+                    "exchangeSegment",
+                    "nse_cm",
+                ),
+                "isIndex": s.get("isIndex", False),
+                "isDepth": s.get("isDepth", False),
+                "symbol": s["symbol"],
+            }
+            for s in stocks
+        ]
+
+        if not tokens:
+            logger.warning(
+                "WebSocket start skipped: no active stocks found"
+            )
+            return False
+
+        await ws_manager.subscribe(tokens)
+
+        logger.info(
+            "WebSocket session started: subscribed %d tokens",
+            len(tokens),
+        )
+
+        return True
+
+    except Exception as exc:
+        logger.error(
+            "WebSocket start failed: %s",
+            exc,
+        )
+        return False
+
+async def stop_websocket_session() -> bool:
+    """
+    Stop WebSocket at the configured WebSocket stop time.
+    Kotak login session remains active until logout time.
+    """
     try:
         ws_manager.disconnect()
-        kotak_session.logout()
-        await tick_buffer.stop()
-        logger.info("Logout succeeded")
+
+        logger.info(
+            "WebSocket session stopped at configured stop time"
+        )
+
         return True
+
+    except Exception as exc:
+        logger.error(
+            "WebSocket stop failed: %s",
+            exc,
+        )
+        return False
+ 
+async def do_logout(source: str | None = None) -> bool:
+    global _session_owner, _manual_logout_timer
+
+    logger.info(
+        "do_logout called (source=%s, owner=%s)",
+        source,
+        _session_owner,
+    )
+
+    # --------------------------------------------------------
+    # Manual 30-minute timer is allowed to logout ONLY a
+    # manual session.
+    #
+    # If scheduler has already taken ownership, the old
+    # manual timer must do nothing.
+    # --------------------------------------------------------
+
+    if source == "manual" and _session_owner != "manual":
+        logger.info(
+            "Manual logout skipped: session owner is %s",
+            _session_owner,
+        )
+        return True
+
+    try:
+        ws_manager.disconnect()
+
+        kotak_session.logout()
+
+        await tick_buffer.stop()
+
+        # Session is now completely closed.
+        _session_owner = None
+
+        # Cancel any pending manual timer.
+        if _manual_logout_timer is not None:
+            _manual_logout_timer.cancel()
+            _manual_logout_timer = None
+
+        logger.info("Logout succeeded")
+
+        return True
+
     except Exception as exc:
         logger.error("Logout failed: %s", exc)
         return False
-
 
 def _schedule_login():
     global _login_timer
@@ -132,7 +408,71 @@ def _schedule_login():
     _login_timer.start()
     next_time = _now_ist() + timedelta(seconds=delay)
     logger.info("Next login scheduled: %s IST", next_time.strftime("%Y-%m-%d %H:%M"))
+def _schedule_websocket_start():
+    global _websocket_start_timer
 
+    delay = _seconds_until(
+        settings.ws_start_hour,
+        settings.ws_start_minute,
+    )
+
+    _websocket_start_timer = threading.Timer(
+        delay,
+        _websocket_start_job,
+    )
+
+    _websocket_start_timer.daemon = True
+    _websocket_start_timer.start()
+
+    next_time = _now_ist() + timedelta(seconds=delay)
+
+    logger.info(
+        "Next WebSocket start scheduled: %s IST",
+        next_time.strftime("%Y-%m-%d %H:%M"),
+    )
+
+def _schedule_websocket_stop():
+    global _websocket_stop_timer
+
+    delay = _seconds_until(
+        settings.ws_stop_hour,
+        settings.ws_stop_minute,
+    )
+
+    _websocket_stop_timer = threading.Timer(
+        delay,
+        _websocket_stop_job,
+    )
+
+    _websocket_stop_timer.daemon = True
+    _websocket_stop_timer.start()
+
+    next_time = _now_ist() + timedelta(seconds=delay)
+
+    logger.info(
+        "Next WebSocket stop scheduled: %s IST",
+        next_time.strftime("%Y-%m-%d %H:%M"),
+    )
+
+def _websocket_stop_job():
+    if _is_trading_day():
+        _run_on_app_loop(stop_websocket_session())
+    else:
+        logger.info(
+            "Skipping WebSocket stop — not a trading day"
+        )
+
+    _schedule_websocket_stop() 
+
+def _websocket_start_job():
+    if _is_trading_day():
+        _run_on_app_loop(start_websocket_session())
+    else:
+        logger.info(
+            "Skipping WebSocket start — not a trading day"
+        )
+
+    _schedule_websocket_start()
 
 def _schedule_logout():
     global _logout_timer
@@ -146,7 +486,7 @@ def _schedule_logout():
 
 def _login_job():
     if _is_trading_day():
-        _run_on_app_loop(do_login())
+        _run_on_app_loop(do_login(source="scheduler"))
         
     else:
         logger.info("Skipping login — not a trading day")
@@ -181,21 +521,25 @@ def start_scheduler():
 )
     if _is_trading_day() and login_time <= now <= logout_time and not kotak_session.session_active:
         logger.info("Service started during trading hours — logging in now")
-        _run_on_app_loop(do_login())
+        _run_on_app_loop(do_login(source="scheduler"))
     _schedule_login()
     _schedule_logout()
+    _schedule_websocket_start()
+    _schedule_websocket_stop()
     logger.info("Scheduler started")
 
 
 def stop_scheduler():
     global _running, _login_timer, _logout_timer
+    global _websocket_start_timer, _websocket_stop_timer
     _running = False
-    if _login_timer:
-        _login_timer.cancel()
-        _login_timer = None
-    if _logout_timer:
-        _logout_timer.cancel()
-        _logout_timer = None
+    if _websocket_start_timer:
+       _websocket_start_timer.cancel()
+       _websocket_start_timer = None
+
+if _websocket_stop_timer:
+    _websocket_stop_timer.cancel()
+    _websocket_stop_timer = None
     logger.info("Scheduler stopped")
 
 

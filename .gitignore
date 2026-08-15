@@ -68,3 +68,28 @@ logs/
 Thumbs.db
 # Bolt
 bolt.diy/.env.local
+
+# ==========================
+# Local backup files
+# ==========================
+*.backup
+*.before-*
+# ==========================
+# Python
+# ==========================
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# ==========================
+# Local backup files
+# ==========================
+*.backup
+*.before-*
+
+# Local service/debug files
+python-service/services/status/
+*.backup2

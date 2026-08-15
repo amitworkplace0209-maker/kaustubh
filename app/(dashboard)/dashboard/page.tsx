@@ -138,10 +138,25 @@ function safeNumber(n: number | undefined | null): string {
 
 function safeFunds(funds: any): string {
   if (!funds) return '—';
+
   const data = funds?.data ?? funds;
+
   if (typeof data === 'string') return data;
-  const margin = data?.margin ?? data?.available_margin ?? data?.net ?? data?.fund_limit;
-  if (margin != null) return String(margin);
+
+  const net = data?.Net;
+
+  if (net != null) {
+    const value = Number(net);
+
+    if (!isNaN(value)) {
+      return `₹${value.toLocaleString('en-IN', {
+        maximumFractionDigits: 2,
+      })}`;
+    }
+
+    return String(net);
+  }
+
   return '—';
 }
 
