@@ -350,7 +350,7 @@
 | Feature | Implementation | Status |
 |---------|---------------|--------|
 | Auto login at 09:00 IST | `threading.Timer` with `_seconds_until(login_hour, login_minute)` | ✅ VERIFIED |
-| Auto logout at 15:35 IST | `threading.Timer` with `_seconds_until(logout_hour, logout_minute)` | ✅ VERIFIED |
+| Auto logout at 16:00 IST | `threading.Timer` with `_seconds_until(logout_hour, logout_minute)` | ✅ VERIFIED |
 | Login-now on mid-day start | Checks if `login_time <= now <= logout_time` | ✅ VERIFIED |
 | Configurable times | `settings.login_hour`, `login_minute`, etc. | ✅ VERIFIED |
 | Timer rescheduling | `_schedule_login()` called at end of `_login_job()` | ✅ VERIFIED |

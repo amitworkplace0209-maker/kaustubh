@@ -1,0 +1,539 @@
+{
+  "window": {
+    "start_ist": "2026-09-16T09:00:00+05:30",
+    "end_ist": "2026-09-16T09:12:59+05:30",
+    "start_utc": "2026-09-16T03:30:00+00:00",
+    "end_utc": "2026-09-16T03:42:59+00:00",
+    "description": "Pre-market window before NSE cash session opens at 09:15 IST"
+  },
+  "messages": {
+    "total_ticks": 3509,
+    "feed_types": {
+      "touch_line": 100
+    },
+    "feed_levels": {
+      "4": 100
+    },
+    "first_tick_ts": "2026-09-16T03:30:00",
+    "last_tick_ts": "2026-09-16T03:39:29",
+    "duration_seconds": 569.0,
+    "ticks_per_second": 6,
+    "received_at_range": {
+      "min": "2026-09-16 03:39:13.554000",
+      "max": "2026-09-16 03:45:00.466000"
+    }
+  },
+  "instruments": {
+    "total_unique_symbols": 8,
+    "total_unique_tokens": 8,
+    "details": [
+      {
+        "_id": {
+          "symbol": "IFCI",
+          "instrumentToken": "1491",
+          "tradingSymbol": "IFCI-EQ"
+        },
+        "count": 619
+      },
+      {
+        "_id": {
+          "symbol": "ONGC",
+          "instrumentToken": "2475",
+          "tradingSymbol": "ONGC-EQ"
+        },
+        "count": 607
+      },
+      {
+        "_id": {
+          "symbol": "WIPRO",
+          "instrumentToken": "3787",
+          "tradingSymbol": "WIPRO-EQ"
+        },
+        "count": 602
+      },
+      {
+        "_id": {
+          "symbol": "CUPID",
+          "instrumentToken": "18520",
+          "tradingSymbol": "CUPID-EQ"
+        },
+        "count": 576
+      },
+      {
+        "_id": {
+          "symbol": "IRCTC",
+          "instrumentToken": "13611",
+          "tradingSymbol": "IRCTC-EQ"
+        },
+        "count": 498
+      },
+      {
+        "_id": {
+          "symbol": "HIKAL",
+          "instrumentToken": "9668",
+          "tradingSymbol": "HIKAL-EQ"
+        },
+        "count": 221
+      },
+      {
+        "_id": {
+          "symbol": "EIHOTEL",
+          "instrumentToken": "919",
+          "tradingSymbol": "EIHOTEL-EQ"
+        },
+        "count": 195
+      },
+      {
+        "_id": {
+          "symbol": "BOSCHLTD",
+          "instrumentToken": "2181",
+          "tradingSymbol": "BOSCHLTD-EQ"
+        },
+        "count": 191
+      }
+    ]
+  },
+  "message_types": {},
+  "fields": {
+    "auction": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "averagePrice": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "bp": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "bq": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "bs": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "buy": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "change": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "changePercent": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "close": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "event_id": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "event_type": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "exchangeSegment": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "feed_level": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "feed_type": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "high": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "imbalance_qty": {
+      "count": 36,
+      "coverage_pct": 36.0,
+      "type": "number",
+      "note": "CAS/market-status field, present only during market pre-open auction phase"
+    },
+    "imbalance_qty_at_market": {
+      "count": 36,
+      "coverage_pct": 36.0,
+      "type": "number",
+      "note": "CAS/market-status field, present only during market pre-open auction phase"
+    },
+    "instrumentToken": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "last_trade_time": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "last_update_time": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "level": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "low": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "lower_circuit_limit": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "ltp": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "ltq": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "market_lot": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "message_type": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "multiplier": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "oi": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "open": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "precision": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "raw": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "raw_reference": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "receivedAt": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "ref_price": {
+      "count": 36,
+      "coverage_pct": 36.0,
+      "type": "number",
+      "note": "CAS/market-status field, present only during market pre-open auction phase"
+    },
+    "schema_version": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "sdk_version": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "sell": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "source": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "sp": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "sq": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "symbol": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "tbq": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "total_traded_value": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "tradingSymbol": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "string"
+    },
+    "ts": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "tsq": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "upper_circuit_limit": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "volume": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "yearly_high": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "yearly_low": {
+      "count": 100,
+      "coverage_pct": 100.0,
+      "type": "number"
+    },
+    "status_code": {
+      "count": 0,
+      "coverage_pct": 0.0,
+      "type": "number",
+      "note": "CAS/market-status field, present only during market pre-open auction phase"
+    },
+    "status": {
+      "count": 0,
+      "coverage_pct": 0.0,
+      "type": "number",
+      "note": "CAS/market-status field, present only during market pre-open auction phase"
+    },
+    "index_name": {
+      "count": 0,
+      "coverage_pct": 0.0,
+      "type": "number",
+      "note": "CAS/market-status field, present only during market pre-open auction phase"
+    }
+  },
+  "depth": {
+    "feed_level": 4,
+    "description": "L4 Touch-Line data (NOT L8 depth)",
+    "buy_1_level": 100,
+    "buy_5_level": 0,
+    "sell_1_level": 100,
+    "sell_5_level": 0,
+    "total_docs_analyzed": 100,
+    "note": "All instruments subscribed via subscribe_scrips (L4). Instrument master has 0 depth instruments. No isDepth/isIndex fields exist."
+  },
+  "raw_vs_sdk": {
+    "raw_blob_present": 100.0,
+    "raw_blob_keys": [
+      "auction",
+      "average_trade_price",
+      "buy",
+      "close_price",
+      "exchange_segment",
+      "high_price",
+      "instrument_token",
+      "last_trade_qty",
+      "last_trade_time",
+      "last_traded_price",
+      "last_update_time",
+      "level",
+      "low_price",
+      "lower_circuit_limit",
+      "market_lot",
+      "multiplier",
+      "net_change",
+      "net_change_percent",
+      "open_interest",
+      "open_price",
+      "precision",
+      "sell",
+      "total_buy_quantity",
+      "total_sell_quantity",
+      "total_traded_value",
+      "trading_symbol",
+      "type",
+      "upper_circuit_limit",
+      "volume_traded_today",
+      "yearly_high",
+      "yearly_low"
+    ],
+    "normalized_fields_count": 51,
+    "storage_doc_fields": [
+      "auction",
+      "averagePrice",
+      "bp",
+      "bq",
+      "bs",
+      "buy",
+      "change",
+      "changePercent",
+      "close",
+      "event_id",
+      "event_type",
+      "exchangeSegment",
+      "feed_level",
+      "feed_type",
+      "high",
+      "imbalance_qty",
+      "imbalance_qty_at_market",
+      "instrumentToken",
+      "last_trade_time",
+      "last_update_time",
+      "level",
+      "low",
+      "lower_circuit_limit",
+      "ltp",
+      "ltq",
+      "market_lot",
+      "message_type",
+      "multiplier",
+      "oi",
+      "open",
+      "precision",
+      "raw",
+      "raw_reference",
+      "receivedAt",
+      "ref_price",
+      "schema_version",
+      "sdk_version",
+      "sell",
+      "source",
+      "sp",
+      "sq",
+      "symbol",
+      "tbq",
+      "total_traded_value",
+      "tradingSymbol",
+      "ts",
+      "tsq",
+      "upper_circuit_limit",
+      "volume",
+      "yearly_high",
+      "yearly_low"
+    ]
+  },
+  "new_fields": [],
+  "not_observed": [],
+  "raw_samples": {
+    "l4_message": {
+      "symbol": "IFCI",
+      "feed_level": 4,
+      "feed_type": "touch_line",
+      "buy": {
+        "quantity": 200,
+        "price": 90.0,
+        "orders": 1
+      },
+      "sell": {
+        "quantity": 2865,
+        "price": 61.56,
+        "orders": 2
+      }
+    },
+    "raw_blob": {
+      "exchange_segment": "nse_cm",
+      "instrument_token": "1491",
+      "trading_symbol": "IFCI-EQ",
+      "type": "scrip",
+      "level": 4,
+      "last_traded_price": 76.95,
+      "open_price": 77.2,
+      "high_price": 83.98,
+      "low_price": 76.34,
+      "close_price": 76.95,
+      "average_trade_price": 0.0,
+      "last_trade_time": 0,
+      "last_update_time": 1789529969,
+      "last_trade_qty": 2,
+      "total_buy_quantity": 949436,
+      "total_sell_quantity": 2178509,
+      "volume_traded_today": 192404,
+      "open_interest": 0,
+      "net_change": 0.0,
+      "net_change_percent": 0.0,
+      "upper_circuit_limit": 92.34,
+      "lower_circuit_limit": 61.56,
+      "yearly_high": 107.5,
+      "yearly_low": 46.23,
+      "total_traded_value": 0.0,
+      "market_lot": 1,
+      "precision": 2,
+      "multiplier": 1,
+      "auction": false,
+      "buy": [
+        {
+          "quantity": 200,
+          "price": 90.0,
+          "orders": 1
+        }
+      ],
+      "sell": [
+        {
+          "quantity": 2865,
+          "price": 61.56,
+          "orders": 2
+        }
+      ]
+    }
+  }
+}

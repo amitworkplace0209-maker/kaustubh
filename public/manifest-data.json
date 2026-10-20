@@ -1,0 +1,106 @@
+{
+  "id": "/data-saver",
+  "name": "KAUSTUBH Data Saver",
+  "short_name": "Data Saver",
+  "description": "KAUSTUBH Data Saver - market data collection, storage, analytics",
+  "start_url": "/data-saver/dashboard",
+  "scope": "/data-saver/",
+  "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "background_color": "#FDFBF7",
+  "theme_color": "#FF7849",
+  "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "categories": [
+    "finance",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192-maskable.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "url": "/data-saver/dashboard",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Tick Analytics",
+      "short_name": "Analytics",
+      "url": "/data-saver/analytics",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Live Ticks",
+      "short_name": "Ticks",
+      "url": "/data-saver/ticks",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Downloads",
+      "short_name": "Downloads",
+      "url": "/data-saver/downloads",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "handle_links": "preferred",
+  "launch_handler": {
+    "client_mode": [
+      "focus-existing",
+      "navigate-existing",
+      "auto"
+    ]
+  },
+  "edge_side_panel": {
+    "preferred_width": 480
+  }
+}

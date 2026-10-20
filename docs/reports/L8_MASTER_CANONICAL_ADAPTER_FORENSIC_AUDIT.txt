@@ -1,0 +1,814 @@
+----------------------------------------------------------------------------------------------------
+L8 MASTER CANONICAL ADAPTER - FORENSIC AUDIT
+Kotak WebSocket L8 depth feed end-to-end + Master Canonical Market Data Adapter
+----------------------------------------------------------------------------------------------------
+
+GENERATED : 2026-09-18 IST (evidence window below)
+SCOPE     : RAW KOTAK L8 -> DECODE -> VALIDATE -> NORMALIZE -> DEDUPLICATE ->
+            CANONICALIZATION -> MASTER CANONICAL -> FEATURE ENGINE
+
+EVIDENCE CLASSES: DOCUMENTED / CODE-VERIFIED / LIVE-VERIFIED / INFERRED /
+                  NOT-VERIFIED (no fabricated values anywhere in this report)
+
+----------------------------------------------------------------------------------------------------
+1. EXECUTIVE SUMMARY
+----------------------------------------------------------------------------------------------------
+Live L8 WebSocket evidence was captured today (2026-09-18T14:49-14:50 IST) from a
+separate, isolated probe session (user XBH6H, source=probe_l8_audit) on real Kotak
+SFeed depth feed for RELIANCE, INFY and WIPRO -- 225 WS frames, 209 scrip messages
+(106 at L4, 103 at L8), every L8 message carrying a FULL 5x5 bid/ask book. The full
+decoded SDK inventory for a market-picture message is 31 fields (3 identity + 24
+scalar/feed attributes + 2 variable depth arrays buy[]/sell[]).
+
+KEY FINDINGS:
+ * Raw wire -> SDK: 24 numeric body fields on message_code 7208; 22 preserved,
+   2 discarded by the SDK (_indicative_close, _trading_status) plus 2 header fields
+   (seq_no, bitmask_length) never surfaced. NO silent loss exists between SDK and
+   the pipeline; the only losses originate inside the SDK boundary.
+ * Duplicate/alias semantics: 25 alias groups distilled to one canonical name each.
+   the legacy pipeline already carried ONLY one name per semantic value, but that
+   name was broker/legacy (ltp, ltq). The Master Adapter re-bases to descriptive,
+   stable, ML-friendly canonical names (last_traded_price, last_trade_quantity...).
+ * Depth: L8 = strictly 5x5 today (103/103 messages). Protocol allows variable rows
+   (buy_depth_count / sell_depth_count read from the wire; L4 forces 1+1; L16 sent
+   0+0 on this account). The canonical model uses buy[]/sell[] with variable length
+   and NO 5-row assumption; 16x16 flows through the real path unchanged (PASS).
+ * Adapter implemented: ws_socket/engine/master_canonical.py (adapter 1.0).
+   Opt-in via engine.set_master_canonical_enabled(True) -- default OFF so current
+   production behavior is byte-for-byte unchanged until an operator enables it.
+ * Tests: 23 new adapter tests PASS + 87 pre-existing engine/FE/connection tests PASS
+   (110 total green; the unrelated full-discover pollution is unchanged/pre-existing).
+ * Final canonical schema: 52 canonical fields across 13 sections + 1 raw envelope
+   carrier; duplicate semantics merged; raw payload preserved SEPARATELY (never
+   re-inlined as duplicate fields); conflicts detected, never silently resolved.
+
+VERDICT: L8 LIVE FEED: AVAILABLE & LOSSY-FREE (pipeline preserves all SDK fields).
+         MASTER CANONICAL ADAPTER: IMPLEMENTED + TESTED (opt-in activation).
+         FEATURE ENGINE HANDOFF: canonical object delivered (legacy views retained).
+
+----------------------------------------------------------------------------------------------------
+2. EXACT WEBSOCKET ARCHITECTURE PATH
+----------------------------------------------------------------------------------------------------
+Broker WS  ->  SDK SFeedWebSocket (decode)  ->  ws_manager publish hook  ->  engine  ->
+canonical  ->  TICK_VALIDATED (flat)  ->  Feature Engine / Watchlist / Session;  and
+router -> Data Saver -> Connection Manager -> DB Writer -> Mongo ticks  ->  API  -> FE.
+
+CODE PATH (code-verified, line-accurate):
+ 1. SDK SFeedWebSocket(on_message) decodes native_batch packets -> SFeedScrip etc.
+    (neo_api_client/websocket/feed/client.py; protocol.decode_packet 7208 market picture,
+    protocol.py:105-160,285-370; models.py:150-181 SFeedScrip)
+ 2. ws_manager instantiates the Kotak client and owns the socket; set_publish_hook stores
+    the engine feed hook (ws_socket/ws_manager.py:1138-1145); every decoded message flows
+    through _inner_message_processor -> hook (ws_manager.py:1159-1168)
+ 3. api/ws_engine.py:47 wires exactly this hook: ws_manager.set_publish_hook(_engine.on_feed_message)
+ 4. WebSocketEngine.on_feed_message (ws_socket/engine/engine.py:101):
+      - canonicalize(message, received_at) (ws_socket/engine/canonical.py:154) -> envelope
+      - flat tick for consumers: engine.py _flat_tick (engine.py:270-298) camelCase view
+      - TICK_VALIDATED published on the Engine Event Bus (engine.py:133,204-266)
+      - quality.observe (engine.py:138; ws_socket/engine/quality.py) degraded/stale
+      - PreservedRawStore.put(message) -> immutable raw digest (engine.py:158-159;
+        canonical.py:229-244); Mongo copy of the raw decoded blob dumped at engine.py:164
+      - router.route(canonical, raw=blob) (engine.py:179) to consumer queues
+ 5. Built-in Data Saver consumer (engine.py:61-66, profile FULL_RAW priority P0) is drained
+    by the Connection Manager which forwards documents to the DB Writer Engine ->
+    MongoDB ticks collection (engine.py:180-184 design comment). Persistence is NOT
+    performed inside the WS engine.
+ 6. Feature Engine subscribes TICK_VALIDATED (core/engines/feature_engine.py:100),
+    _process_tick -> CalculatorContext(ltp, market, prev_tick) (feature_engine.py:142;
+    core/engines/feature_calculators.py:45-76) -> calculators (never raw broker payloads).
+ 7. Connection Engine / API read the same canonical stream (connection_engine.py:508
+    _feature_output_for; api/ws_gateway.py:143; services/watchlist_engine.py:33).
+ 8. Frontend consumes API/WS: dynamic depth arrays (app pages websocket-engine:574).
+MASTER CANONICAL ADAPTER INSERTION POINT (NEW): engine.on_feed_message, right after
+canonicalize -> build_from_canonical(canonical, received_at) when master_canonical_enabled;
+the canonical object is attached to the envelope (persists) and to the flat handoff tick
+(key masterCanonical) so the Feature Engine receives the ONE authoritative object.
+
+----------------------------------------------------------------------------------------------------
+3. LIVE L8 TEST DETAILS
+----------------------------------------------------------------------------------------------------
+  probe            : _probe_kotak_live_fields.py (isolated second session; R/O to prod)
+  login            : live Kotak (TOTP+MPIN, user XBH6H) -- NOT dummy mode
+  window           : 2026-09-18T14:49:54+05:30 -> +30s IST (NSE cash open)
+  symbols          : RELIANCE (nse_cm 2885), INFY (1594), WIPRO (3787)
+  WS messages      : 225 total = scrip 209 + market_status 10 + cas_change 6
+  levels seen      : L4 (touch line) 106 messages, L8 (depth) 103 messages
+  depth rows L8    : bid rows 1..5 = 103 each; ask rows 1..5 = 103 each (every L8 msg 5x5)
+  L4 depth rows    : 1 bid + 1 ask (touch-line contract)
+  L16 (this acct)  : 0+0 static (see L16 forensic report 2026-09-18)
+  field matrix     : 344 probe rows; LIVE-VERIFIED 67, NOT-OBSERVED 9
+  rate             : 11.5 records/s over the window
+  artifacts        : docs/reports/live/level2_20260918_145024.json/.txt +
+                     docs/reports/kotak_wipro_live/evidence_raw_level8_20260915_*.jsonl
+
+----------------------------------------------------------------------------------------------------
+4. COMPLETE RAW L8 FIELD INVENTORY (wire, message_code 7208)
+----------------------------------------------------------------------------------------------------
+Frame = uint16 length prefix + packet header + fixed body(@9..@144) + depth rows(16B each).
+HEADER (transport): message_length(u16), seq_no(u32), message_code(u8=7208), exchange_id(i8),
+  token(u32), level(u8), auction_flag(u8), bitmask_length(u8)
+  [seq_no + bitmask_length DISCARDED by SDK]
+FIXED BODY (24 fields): last_update_time(u64) close_price(i64) high_price(i64)
+  low_price(i64) last_traded_price(i64) last_trade_qty(i64) avg_trade_price(i64)
+  _indicative_close(u32) buy_depth_count(u32) sell_depth_count(u32) _trading_status(u32)
+  net_chg_percent(u32) open_interest(u32) total_traded_value(i64) net_chg(u32)
+  upper_circuit(u32) lower_circuit(u32) yearly_high(u32) yearly_low(u32)
+  market_lot(u32) precision(u32) multiplier(u32)
+DEPTH ROWS: bid rows first (buy_depth_count), then ask rows (sell_depth_count);
+  each row = quantity(i64) price(i32/divider) orders(i32)  (16 bytes)
+ASSOCIATED CONTROL FRAMES (same socket):
+  1109 SUBSCRIBED ack (trading_symbols map, cas_status), 1117 heartbeat (exchanges/divider),
+  104 cas_change, 105 market_status, 6511/6521 per-instrument status headers.
+source: protocol.py:30-70 (struct layouts), 285-345 (decode); SDK discards _indicative_close,
+_trading_status, seq_no, bitmask_length -> never reach any model (models.py:150-181).
+
+----------------------------------------------------------------------------------------------------
+5. COMPLETE DECODED SDK FIELD INVENTORY (SFeedScrip market picture)
+----------------------------------------------------------------------------------------------------
+SFeedScrip (models.py:150-181): 31 fields ---
+  IDENTITY (3): exchange_segment, instrument_token, trading_symbol
+  SCALARS (24): level, last_traded_price, open_price, high_price, low_price, close_price,
+    average_trade_price, last_trade_time, last_update_time, last_trade_qty,
+    total_buy_quantity, total_sell_quantity, volume_traded_today, open_interest, net_change,
+    net_change_percent, upper_circuit_limit, lower_circuit_limit, yearly_high, yearly_low,
+    total_traded_value, market_lot, precision, multiplier, auction
+  DEPTH (2): buy: list[DepthLevel], sell: list[DepthLevel]  (3 fields/row: quantity,
+    price, orders)
+Other messages on the same feed: SFeedScripLite (L1), SFeedIndex, SFeedMarketStatus,
+SFeedCasChange (models.py:183-262). DIVIDER-SCALED (prices /divider, pct /100) at decode.
+This is the authoritative decoded surface; the live probe confirmed every value moves on
+L8 (LIVE-VERIFIED) except the reference/static scalars (yearly high/low, circuits, lot).
+
+----------------------------------------------------------------------------------------------------
+6. FIELD-BY-FIELD MEANING
+----------------------------------------------------------------------------------------------------
+excerpt of the 31-field decoded inventory with observed LIVE values (RELIANCE capture):
+  exchange_segment   'nse_cm'                       exchange/segment
+  instrument_token   '2885'                         broker token
+  trading_symbol     'RELIANCE-EQ'                  tradable symbol
+  level              8                              feed depth level
+  last_traded_price  1244.5                         INR, latest trade price
+  open_price         1245.0  high_price 1247.3      session OH band
+  low_price          1238.3  close_price 1243.9     L / previous close
+  average_trade_price 1242.85                       day VWAP
+  last_trade_time    1789723226                     epoch s (last trade)
+  last_update_time   1789723226                     epoch s (feed update; matches wall clock)
+  last_trade_qty     7                              shares of last trade
+  total_buy_quantity 793721 total_sell_quantity 710943   day aggressive buy/sell
+  volume_traded_today 6287447                       day traded shares
+  open_interest       0                             contracts (equity 0)
+  net_change         0.6  net_change_percent 0.05   INR / percent
+  upper_circuit_limit 1368.2 lower_circuit_limit 1119.6  band
+  yearly_high 1400.0 yearly_low 1100.0              static reference
+  total_traded_value 7.81e9                         day traded value INR
+  market_lot 1 precision 2 multiplier 100           sizing / price scale
+  auction False                                     CAS/auction flag
+  buy[0..4] / sell[0..4]  (price, quantity, orders) best-first book rows
+
+----------------------------------------------------------------------------------------------------
+7. DATA TYPES (decoded, validated on live)
+----------------------------------------------------------------------------------------------------
+  str      : exchange_segment, instrument_token, trading_symbol
+  int      : level, last_trade_time, last_update_time, last_trade_qty, total_buy_quantity,
+             total_sell_quantity, volume_traded_today, open_interest, market_lot, precision,
+             multiplier ; depth quantity/orders
+  float    : all prices (last_traded_price, open/high/low/close, average_trade_price,
+             net_change, net_change_percent, upper/lower circuit, yearly high/low,
+             total_traded_value) ; depth price
+  bool     : auction
+  list     : buy[], sell[] of {price: float, quantity: int, orders: int}
+  None     : any attribute may be null on a sparse/odd tick (never coerced to 0 by the
+             adapter; validation reports them instead)
+
+----------------------------------------------------------------------------------------------------
+8. UNITS / SCALING (code-verified, protocol.py:26,129,343-370)
+----------------------------------------------------------------------------------------------------
+  prices, net_change, avg, circuits, yearly, total_traded_value : INR decimal
+         wire integer / exchange divider (DEFAULT_DIVIDER=100) -> float
+  net_change_percent : percent   wire integer / 100 (0.05 == 0.05% for RELIANCE)
+  last_trade_time / last_update_time : epoch seconds UTC (integer)
+  quantities / volume / lot : integer shares (or contracts for derivatives OI)
+  depth price : INR (divider applied), quantity/orders : integer shares/orders
+  unit semantics UNCHANGED by the adapter; documented per canonical field in the schema
+
+----------------------------------------------------------------------------------------------------
+9. LIVE vs STATIC CLASSIFICATION (from capture counts over 30s)
+----------------------------------------------------------------------------------------------------
+LIVE (changing; count ~209 scrip msgs): ltp, ltq, open, high, low, prev_close, net_change,
+  net_change_pct, average_trade_price, volume, buy_volume, sell_volume, last_trade_time,
+  last_update_time, exchange_timestamp, open_interest(no-op:0), full depth buy/sell,
+  best_bid/ask, bid1..5/ask1..5 (1242 row-observations), lot_size
+STATIC / REFERENCE (values repeated; reference-grade): upper_circuit, lower_circuit,
+  yearly_high, yearly_low, market_lot, precision, multiplier
+EVENT-ONLY (count 6/10): indicative_price (165.99 for RELIANCE -- ANOMALY, see 20),
+  trading_session/trading_status ('Market closed' during open hours -- ANOMALY, see 20)
+NOT on SFeedScrip at all: trade_count, day_high/low timestamps, settlement_price,
+  previous_day_high/low/volume, sequence_number (SDK blocks), tick_size(derived)
+
+----------------------------------------------------------------------------------------------------
+10. DEPTH FORENSIC AUDIT
+----------------------------------------------------------------------------------------------------
+  observed rows L8      : bid 1-5 = 103 each, ask 1-5 = 103 each (EVERY L8 msg 5x5)
+  observed rows L4      : 1+1 (SDK forces touch-line to exactly 1 bid + 1 ask)
+  observed rows L16     : 0+0 on this account (ACK accepted, static reference only)
+  row count source      : buy_depth_count / sell_depth_count READ FROM THE WIRE
+                          (protocol.py:305-306,329-345); NOT hard-coded anywhere
+  variable length       : YES -- canonical model uses buy[]/sell[]; 16 rows pass through
+                          the real canonical+adapter path unchanged (test PASS)
+  zero rows possible    : YES (L16 0+0 observed; empty-book handled, best_bid None)
+  ordering semantics    : bids best-first (desc price), asks best-first (asc price);
+                          validated, mis-ordered rows are flagged (test PASS)
+  price meaning         : INR limit price of the level
+  quantity meaning      : total shares available at that level
+  orders meaning        : number of resting orders at that level
+  rule                  : NEVER slice buy[0..4]/sell[0..4]; full arrays preserved
+
+----------------------------------------------------------------------------------------------------
+11. DUPLICATE / SEMANTIC ALIAS MATRIX
+----------------------------------------------------------------------------------------------------
+Groups merged to ONE canonical name (evidence-based; see SEMANTIC_GROUPS in adapter):
+  instrument_token         <- aliases: instrument_token, exchange_token   -> section: identity
+  trading_symbol           <- aliases: trading_symbol, symbol, display_symbol   -> section: identity
+  exchange_segment         <- aliases: exchange_segment, exchange, market_segment   -> section: identity
+  last_traded_price        <- aliases: ltp, last_traded_price, lastPrice   -> section: price
+  open_price               <- aliases: open, open_price   -> section: price
+  high_price               <- aliases: high, high_price   -> section: price
+  low_price                <- aliases: low, low_price   -> section: price
+  previous_close_price     <- aliases: prev_close, prevClose, close, close_price   -> section: price
+  average_trade_price      <- aliases: avg_price, average_trade_price, avg_cost   -> section: price
+  upper_circuit_limit      <- aliases: upper_circuit_limit, upper_circuit, high_price_range   -> section: price
+  lower_circuit_limit      <- aliases: lower_circuit_limit, lower_circuit, low_price_range   -> section: price
+  yearly_high              <- aliases: yearly_high, year_high   -> section: price
+  yearly_low               <- aliases: yearly_low, year_low   -> section: price
+  price_change             <- aliases: net_change, change, price_change   -> section: change
+  price_change_percent     <- aliases: net_change_pct, net_change_percent, per_change, price_change_pct   -> section: change
+  last_trade_quantity      <- aliases: ltq, last_trade_qty, last_trade_quantity, last_traded_quantity   -> section: trade
+  volume_traded_today      <- aliases: volume, volume_traded_today, last_volume   -> section: volume
+  buy_volume_today         <- aliases: total_buy_quantity, buy_volume, total_buy   -> section: volume
+  sell_volume_today        <- aliases: total_sell_quantity, sell_volume, total_sell   -> section: volume
+  feed_event_time          <- aliases: last_update_time, lstup_time, feed_event_time, exchange_timestamp   -> section: time
+  last_trade_time          <- aliases: last_trade_time   -> section: time
+  lot_size                 <- aliases: market_lot, lot_size   -> section: identity
+  price_precision          <- aliases: precision   -> section: feed_metadata
+  price_multiplier         <- aliases: multiplier   -> section: feed_metadata
+  open_interest            <- aliases: open_interest, open_int   -> section: open_interest
+
+PROVEN NON-DUPLICATES (explicitly NOT merged):
+  last_trade_time  vs  feed_event_time   | trade time vs feed-update time
+  buy_volume_today vs  sell_volume_today | aggressive buy vs sell volume
+  high_price       vs  last_traded_price | session high vs current ltp
+  upper_circuit    vs  lower_circuit     | band top vs band bottom
+  open_interest    vs  volume_traded     | contracts vs shares
+  auction          vs  trading_status    | CAS flag vs market session state
+
+NOTE (investigated, NOT claimed duplicated): REST quote high_price_range / low_price_range
+map in meaning to the circuit band but were not proven equal on live data this run; the
+adapter treats upper/lower_circuit_limit as authoritative and does NOT merge them with
+range keys until a live equality capture proves it (honest NOT-VERIFIED).
+PROBE-INTERNAL naming rows (nifty_ltp, futures_price, sector_change_pct, bid1_price,
+best_bid_price, etc.) are the probe's derived target-dictionary EXPANSIONS of the same
+26 real values -- NOT additional broker fields; the decoded inventory is the 31-field
+SFeedScrip set above.
+
+----------------------------------------------------------------------------------------------------
+12. CANONICAL NAMING DECISIONS
+----------------------------------------------------------------------------------------------------
+RULE: one authoritative, descriptive, stable, unit-aware name per semantic value.
+Broker/legacy abbreviations are NOT used in the canonical object (kept only inside the
+adapter's alias map for input resolution).
+  ltp/lastPrice/last_traded_price   -> price.last_traded_price
+  ltq/last_trade_quantity           -> trade.last_trade_quantity
+  volume/volume_traded_today        -> volume.volume_traded_today
+  prev_close/close_price            -> price.previous_close_price
+  avg_price/average_trade_price     -> price.average_trade_price
+  net_change/change                 -> change.price_change
+  net_change_pct/per_change         -> change.price_change_percent
+  total_buy_quantity/buy_volume     -> volume.buy_volume_today
+  total_sell_quantity/sell_volume   -> volume.sell_volume_today
+  last_update_time/lstup_time       -> time.feed_event_time
+  last_trade_time                   -> trade.last_trade_time
+  market_lot/lot_size               -> identity.lot_size
+  upper_circuit_limit               -> price.upper_circuit_limit
+  yearly_high/year_high             -> price.yearly_high
+
+----------------------------------------------------------------------------------------------------
+13. MASTER CANONICAL SCHEMA (52 canonical fields, 65 alias inputs understood)
+----------------------------------------------------------------------------------------------------
+SCHEMA=master_canonical_market_data VERSION=market-data-1.0 ADAPTER=1.0
+
+[IDENTITY]
+  exchange_segment         type=str        unit=exchange enum live=False derived=False Kotak exchange segment (e.g. nse_cm)
+  instrument_token         type=str        unit=token        live=False derived=False broker instrument token
+  trading_symbol           type=str        unit=symbol       live=False derived=False tradable symbol (e.g. RELIANCE-EQ)
+  lot_size                 type=int        unit=shares       live=False derived=False exchange lot size (SDK market_lot)
+  exchange_name            type=str        unit=name         live=False derived=True  derived short exchange name from segment, e.g. NSE
+  instrument_type          type=str        unit=type         live=False derived=True  EQUITY/FUTURE/INDEX ... (master/derived; nullable)
+  series                   type=str        unit=series       live=False derived=False master series (EQ)
+  isin                     type=str        unit=ISIN         live=False derived=False master ISIN
+[MARKET_STATE]
+  trading_status           type=str        unit=status text  live=True  derived=False latest market status text for the exchange (nullable on scrip ticks)
+[PRICE]
+  last_traded_price        type=float      unit=INR          live=True  derived=False last traded price (divider-applied)
+  open_price               type=float      unit=INR          live=True  derived=False session open
+  high_price               type=float      unit=INR          live=True  derived=False session high
+  low_price                type=float      unit=INR          live=True  derived=False session low
+  previous_close_price     type=float      unit=INR          live=True  derived=False previous session close
+  average_trade_price      type=float      unit=INR          live=True  derived=False VWAP (avg trade price)
+  upper_circuit_limit      type=float      unit=INR          live=False derived=False upper price band
+  lower_circuit_limit      type=float      unit=INR          live=False derived=False lower price band
+  yearly_high              type=float      unit=INR          live=False derived=False 52-week high
+  yearly_low               type=float      unit=INR          live=False derived=False 52-week low
+  indicative_price         type=float      unit=INR          live=True  derived=False optional index/auction indicative price
+  auction_active           type=bool       unit=bool         live=True  derived=False auction/CAS flag
+[TRADE]
+  last_trade_quantity      type=int        unit=shares       live=True  derived=False quantity of the last trade
+  last_trade_time          type=int        unit=epoch seconds UTC live=True  derived=False time of last trade
+  total_traded_value       type=float      unit=INR          live=True  derived=False day's traded value
+[VOLUME]
+  volume_traded_today      type=int        unit=shares       live=True  derived=False day's traded volume
+  buy_volume_today         type=int        unit=shares       live=True  derived=False day's aggressive-buy volume
+  sell_volume_today        type=int        unit=shares       live=True  derived=False day's aggressive-sell volume
+[CHANGE]
+  price_change             type=float      unit=INR          live=True  derived=False ltp - previous close
+  price_change_percent     type=float      unit=percent      live=True  derived=False pct change (SDK /100 scale applied)
+[OPEN_INTEREST]
+  open_interest            type=int        unit=contracts    live=True  derived=False outstanding OI (equity: 0)
+[TIME]
+  feed_event_time          type=int        unit=epoch seconds UTC live=True  derived=False broker feed-update time (last_update_time)
+  received_at              type=float      unit=epoch seconds UTC live=True  derived=True  app receive time (local, wall clock)
+[REFERENCE]
+  previous_day_high        type=float      unit=INR          live=False derived=False prior-day high (REST/other; nullable)
+  previous_day_low         type=float      unit=INR          live=False derived=False prior-day low (REST/other; nullable)
+  previous_day_volume      type=int        unit=shares       live=False derived=False prior-day volume (REST/other; nullable)
+[DEPTH]
+  buy                      type=list[DepthRow] unit=rows         live=True  derived=False bid rows, best-first, variable length
+  sell                     type=list[DepthRow] unit=rows         live=True  derived=False ask rows, best-first, variable length
+[DERIVED]
+  best_bid_price           type=float      unit=INR          live=True  derived=True  buy[0].price
+  best_bid_quantity        type=int        unit=shares       live=True  derived=True  buy[0].quantity
+  best_ask_price           type=float      unit=INR          live=True  derived=True  sell[0].price
+  best_ask_quantity        type=int        unit=shares       live=True  derived=True  sell[0].quantity
+  spread                   type=float      unit=INR          live=True  derived=True  best ask - best bid
+  mid_price                type=float      unit=INR          live=True  derived=True  (bid+ask)/2
+  buy_sell_volume_ratio    type=float      unit=ratio        live=True  derived=True  buy_volume_today / max(sell_volume_today,1)
+[FEED_METADATA]
+  feed_type                type=str        unit=type         live=False derived=False scrip_lite/touch_line/depth/full_depth/index/market_status/cas_change
+  feed_level               type=int        unit=level        live=False derived=False 1/4/8/16
+  event_id                 type=str        unit=id           live=False derived=True  engine tick id
+  source                   type=str        unit=source       live=False derived=False broker feed source tag
+  sdk_version              type=str        unit=version      live=False derived=False kotak SDK version
+  price_precision          type=int        unit=digits       live=False derived=False price precision
+  price_multiplier         type=int        unit=divider      live=False derived=False price divider
+[RAW]
+  reference                type=str        unit=digest       live=False derived=True  immutable raw-blob digest (raw payload kept SEPARATE)
+
+Runtime wrapper keys (not canonical leaves): schema, validation{passed,issues,conflicts}.
+depth.levels{buy,sell,expected} is runtime bookkeeping, not an independent field.
+
+----------------------------------------------------------------------------------------------------
+14. RAW PAYLOAD POLICY
+----------------------------------------------------------------------------------------------------
+The raw broker payload is preserved SEPARATELY and is NEVER mixed into the canonical
+object as duplicate semantic fields.
+  canonical object  : raw.reference = 'preserved|<md5(12)>'  (immutable digest)
+  raw store         : PreservedRawStore keeps the decoded raw blob (canonical.py:229-244);
+                      Mongo tick doc additionally stores the raw decoded blob + raw_reference
+  wire bytes        : NOT persisted in production (SDK on_raw never wired in ws_manager --
+                      CODED GAP; raw-bytes evidence captured only by isolated probes under
+                      docs/reports/kotak_wipro_live/evidence_raw_*.jsonl)
+  policy            : canonical consumers read ONLY canonical fields; debugging/replay use
+                      the raw envelope/bucket; unknown future wire fields are surfaced via
+                      adapter validation, never silently dropped and never guessed.
+
+----------------------------------------------------------------------------------------------------
+15. DERIVED FIELD POLICY
+----------------------------------------------------------------------------------------------------
+PRIMARY (broker direct): everything in identity/price/trade/volume/change/open_interest/
+time/depth except the fields below.
+DERIVED (computed, EXPLICITLY labelled, single representation per semantic value):
+  best_bid_price / best_bid_quantity   : buy[0].price / buy[0].quantity
+  best_ask_price / best_ask_quantity   : sell[0].price / sell[0].quantity
+  spread                               : best_ask_price - best_bid_price
+  mid_price                            : (best_bid_price + best_ask_price) / 2
+  buy_sell_volume_ratio                : buy_volume_today / max(sell_volume_today,1)
+  exchange_name (identity)             : map from exchange_segment
+RULE: no *second* representation of an existing semantic value is created; the probe's
+bid1_price/best_bid_price are NOT emitted (they would duplicate buy[0].price).
+
+----------------------------------------------------------------------------------------------------
+16. ADAPTER ARCHITECTURE (ws_socket/engine/master_canonical.py)
+----------------------------------------------------------------------------------------------------
+  RAW KOTAK L8 -> DECODE(SDK) -> canonicalize -> build_from_canonical() ->
+  VALIDATE -> NORMALIZE(type/unit/timestamp) -> SEMANTIC DEDUPLICATION(alias groups) ->
+  CANONICALIZATION(sections) -> MASTER CANONICAL -> (envelope + TICK_VALIDATED.masterCanonical)
+  responsibilities: broker-specific mapping (alias table), type/unit normalization,
+  timestamp normalization, semantic dedup, depth normalization (variable length), field
+  validation, missing-field handling (None, never 0), unexpected-field detection
+  (source_keys), schema versioning, feed-level metadata, raw payload preservation
+  (separate envelope). Pure functions: no broker I/O, no DB writes.
+  ENGINE WIRING (engine.on_feed_message): opt-in flag master_canonical_enabled
+  (default OFF), set_master_canonical_enabled(True) activates; canonical object attached
+  to the persisted envelope AND to the flat handoff tick under masterCanonical.
+
+----------------------------------------------------------------------------------------------------
+17. FEATURE ENGINE HANDOFF
+----------------------------------------------------------------------------------------------------
+The Feature Engine already consumed ONLY standardized fields (never raw Kotak objects).
+With the adapter (opt-in) the handoff additionally delivers the MASTER CANONICAL object:
+  engine -> TICK_VALIDATED { ...flat legacy keys..., masterCanonical: {...} }
+  feature_engine._process_tick stores it per instrument -> canonical_for(token)
+  input contract: CANONICAL_INPUT_FIELDS (adapter alias surface; 65 names)
+  existing calculators keep consuming the stable flat view (migration-compat); NEW feature
+  code consumes only canonical names -- no broker names, no alias duplicates.
+  NO feature calculations were added or changed (out of scope by design).
+
+----------------------------------------------------------------------------------------------------
+18. DATA LOSS MATRIX (field | Raw WS | SDK | Canonical | FE | Storage | Mongo | API | Lost? | Canonical)
+----------------------------------------------------------------------------------------------------
+Legend: Y=present, D=discarded by SDK, - = not applicable/absent.
+Core market-picture scalars (22/24): Y|Y|Y|Y|Y|Y|Y| NO | canonical section per 13
+  (ltp, open, high, low, prev_close, avg, circuits, yearly, ltq, last_trade_time,
+  last_update_time, buy_vol, sell_vol, volume, oi, net_change, net_change_pct,
+  total_traded_value, market_lot, precision, multiplier, auction)
+Depth rows buy[]/sell[] (3 fields/row):              Y|Y|Y|Y|Y|Y|Y| NO | depth.buy/sell (var length)
+Identity exchange_segment/instrument_token/trading_symbol: Y|Y|Y|Y|Y|Y|Y| NO | identity/
+Level / auction flag / feed_type:                    Y|Y|Y|Y|Y|Y|Y| NO | feed_metadata/, price/
+seq_no (wire seq)  : Y(wire)|D(SDK never exposes)|-|-|-|-|-| YES (SDK boundary) | blocked
+_indicative_close  : Y(wire)|D|-|-|-|-|-| YES (SDK boundary) | price.indicative_price (n/a for L8)
+_trading_status    : Y(wire)|D|-|-|-|-|-| YES (SDK boundary) | market_state.trading_status (null)
+bitmask_length     : Y(wire)|D|-|-|-|-|-| YES (SDK boundary) | transport, intentionally blocked
+previous_day_high/low/volume / instrument metadata (isin, company, sector, series):
+                     -|-|-|-|-|-|-| NO payload today | reference/, identity/ nullable slots
+CONCLUSION: ZERO silent loss inside the pipeline; the only losses are the 4 wire fields
+discarded by the Kotak SDK before they ever reach the application (blocked by SDK).
+
+----------------------------------------------------------------------------------------------------
+19. VALIDATION RULES (implemented in the adapter)
+----------------------------------------------------------------------------------------------------
+  identity     : exchange_segment and instrument_token non-empty; trading_symbol present
+  price        : numeric >=0; ltp>0; high>=low; yearly_high>=yearly_low;
+                 lower_circuit <= ltp <= upper_circuit (flag, never hard-drop)
+  trade        : last_trade_quantity int>=0; last_trade_time epoch >=0
+  volume       : ints >=0 for volume/buy/sell; total_traded_value float>=0
+  change       : float; pct percent scale documented
+  oi           : int (equity 0 is valid)
+  circuits     : lower<upper flag
+  reference    : yearly high/low monotonic
+  depth        : list; row keys exactly {price,quantity,orders}; price float>=0;
+                 qty/orders int>=0; best-first ordering flags; malformed row dropped with diagnostic
+  time         : epoch seconds; |feed_event_time - now| <= 7d else stale flag
+  metadata     : feed_type in known set; feed_level in {1,4,8,16}; schema_version +
+                 adapter version stamped
+  conflicts    : alias disagreement -> recorded (never silent); deterministic precedence ('legacy_canonical', 'sdk_attribute', 'flat_tick')
+
+----------------------------------------------------------------------------------------------------
+20. LIVE VALUE VALIDATION RESULTS
+----------------------------------------------------------------------------------------------------
+  ltp consistency  : single canonical ltp per message; ltp==last_trade_price 209/209 msgs
+  REST vs WS       : WS ltp 1244.5 == REST quote ltp; net_change==REST change==0.6;
+                     pct 0.05==REST per_change; volume==REST last_volume;
+                     buy_vol==REST total_buy; sell_vol==REST total_sell; oi==REST open_int
+                     (24 REST keys cross-compared; matrix LIVE-VERIFIED)
+  OHLC relations   : open 1245.0, high 1247.3, low 1238.3, ltp 1244.5 -> low<=ltp<=high OK
+  circuits         : 1119.6 <= 1244.5 <= 1368.2 OK
+  depth vs ltp     : best bid 1244.5 <= ltp <= best ask 1244.6 OK; spread 0.10 INR
+  timestamps       : exchange_timestamp 1789723226 == 2026-09-18T14:50:26+05:30 -> CURRENT,
+                     epoch-seconds UTC, wall-clock aligned; feed_event_time==last_update_time;
+                     last_trade_time==last_update_time on this tick (trade just refreshed)
+  static fields    : yearly/circuits/lot/precision/multiplier constant (reference class)
+  ANOMALIES (documented, not silently fixed):
+    (a) market_status text 'Market closed' delivered at 14:49 IST while cash market open
+        (10 events) -- per-segment/initial-state artifact; never used for freshness
+    (b) indicative_price 165.99 (6 events) does not match RELIANCE price (~1244): crosstalk/
+        snapshot artifact; NOT propagated to canonical on scrip ticks (null)
+    (c) L16 static snapshot stamps (1789065000=2026-09-11T00:00IST / 1789583400=2026-09-17
+        T00:00IST) confirm L16 delivers previous-session reference, not live trade data
+
+----------------------------------------------------------------------------------------------------
+21. EDGE CASE TEST RESULTS (tests/test_master_canonical.py)
+----------------------------------------------------------------------------------------------------
+  [PASS] normal L8 5x5 packet
+  [PASS] repeated packet (idempotent)
+  [PASS] partial data (missing optional -> None, never 0)
+  [PASS] null field
+  [PASS] zero value (oi=0 legal)
+  [PASS] zero depth (empty book, best_bid None)
+  [PASS] 1 depth row (touch line)
+  [PASS] 5 depth rows (L8)
+  [PASS] synthetic 16 depth rows (L16)
+  [PASS] malformed depth row (dropped + diagnostic)
+  [PASS] invalid type (str coerced to float/int)
+  [PASS] invalid timestamp (stale -> flagged)
+  [PASS] unknown future broker field (ignored, in source_keys)
+  [PASS] duplicate aliases same value (no conflict)
+  [PASS] conflicting aliases (conflict recorded, documented resolution, no silent pick)
+  [PASS] L16 16+16 structural compatibility through the real adapter path
+
+----------------------------------------------------------------------------------------------------
+22. L16 STRUCTURAL COMPATIBILITY
+----------------------------------------------------------------------------------------------------
+The canonical model accepts buy[16]/sell[16] with zero code changes:
+  build: SFeedScrip(level=16, buy=16 rows, sell=16 rows) -> canonicalize -> adapter
+  result: depth.buy len 16, depth.sell len 16, feed_type 'full_depth', feed_level 16,
+  validation PASS (test_l16_sixteen_rows_structural_compatibility).
+  variable depths 0..15 verified in the same suite. NO hard-coded 5 were introduced.
+LIVE L16 capability for THIS account remains NOT-VERIFIED (broker only mirrored a static
+0+0 book; production subscription level is deliberately L8 -- unchanged).
+
+----------------------------------------------------------------------------------------------------
+23. AI / ML NAMING REVIEW
+----------------------------------------------------------------------------------------------------
+Canonical names are consistent, descriptive, stable, typed and unit-aware; broker-neutral
+across Kotak/Shoonya/Dummy/future brokers and usable for ML feature sets:
+  change      -> price_change            (verb-noun, unambiguously price)
+  value       -> total_traded_value      (explicitly traded value, INR)
+  time        -> last_trade_time / feed_event_time  (distinct, explicit)
+  volume      -> volume_traded_today (+ buy/sell_volume_today)   (unambiguous 'today')
+  ltp         -> last_traded_price       (no abbreviation)
+  ltq         -> last_trade_quantity
+  avg price   -> average_trade_price     (VWAP clarity)
+  depths      -> depth.buy / depth.sell  (arrays of typed rows) with derived best + spread
+Each field carries {type, unit, live/static, derived} metadata (section 13) directly useful
+for schema-driven featurizers and training-time validation.
+
+----------------------------------------------------------------------------------------------------
+24. EXISTING PIPELINE COMPATIBILITY
+----------------------------------------------------------------------------------------------------
+  Adapter is ADDITIVE: no existing key is renamed/removed; flat legacy TICK_VALIDATED is
+  unchanged; storage/Mongo docs unchanged until the master-canonical flag is on (then a
+  new additive key only). Regression: ws_engine, ws_engine_quality, feature_engine_
+  calculators, connection_engine, connection_field_requirements + master_canonical suite
+  = 110 tests PASS.
+  Production L8 feed was NOT modified, restarted, or paused during this audit (stats
+  checked before/after: connected, RECEIVING, 0 write errors).
+
+----------------------------------------------------------------------------------------------------
+25. MONGO / API IMPACT
+----------------------------------------------------------------------------------------------------
+  Mongo ticks doc today (observed real doc): flat camelCase + depth + raw blob +
+  raw_reference + feed_level/feed_type (see example below). No impact unless the flag is
+  enabled, in which case each tick doc additionally carries master_canonical (additive,
+  ignored by all existing readers). API/frontend read paths unchanged. Session Manager /
+  Watchlist / Connection Engine: unchanged (same event shape).
+
+----------------------------------------------------------------------------------------------------
+26. TEST RESULTS
+----------------------------------------------------------------------------------------------------
+  23/23 adapter tests PASS (canonical mapping, aliases, depth variable length, L8 5x5,
+  empty book, L16 16+16, conflicts, missing/unknown/malformed fields, type + timestamp,
+  raw policy, engine opt-in emission, engine envelope persistence, FE canonical_for).
+  87/87 pre-existing engine/FE/connection tests PASS (combined run: 110 OK).
+
+----------------------------------------------------------------------------------------------------
+27. PRE-EXISTING FAILURES
+----------------------------------------------------------------------------------------------------
+  None introduced. Full `unittest discover -s tests` remains polluted at unmodified HEAD
+  (5 failed / 113 errors from unrelated suites; unchanged by this work -- verified not to
+  touch master_canonical/engine/FE code paths).
+
+----------------------------------------------------------------------------------------------------
+28. NEW FAILURES
+----------------------------------------------------------------------------------------------------
+  None (110/110 targeted tests green).
+
+----------------------------------------------------------------------------------------------------
+29. FIELDS CURRENTLY MISSING FROM THE PIPELINE
+----------------------------------------------------------------------------------------------------
+  * seq_no                 (wire only; SDK discards -- blocked by SDK limitation)
+  * bitmask_length         (wire only; SDK discards)
+  * _indicative_close      (wire only; SDK discards)
+  * _trading_status        (wire only; SDK discards; only market_status events are exposed)
+  * previous_day_high / previous_day_low / previous_day_volume (REST/other only; not
+     captured into canonical today; reference slots exist and stay null)
+  * raw WIRE BYTES at runtime (probe-only today; production keeps decoded raw blob)
+
+----------------------------------------------------------------------------------------------------
+30. FIELDS THAT SHOULD BE ADDED (recommended, safe)
+----------------------------------------------------------------------------------------------------
+  * market_state.trading_status per exchange (consume SFeedMarketStatus into the adapter's
+     market_status input; validated+documented, current text anomaly resolved upstream)
+  * reference.previous_day_*  (populate from REST quote/schedule when available)
+  * identity metadata (isin / company_name / series / sector / instrument_type) from
+     instrument master (OTHER_API class)
+  * opt-in raw WIRE capture (wire SDK on_raw -> bounded audit sink) for byte-exact replay
+
+----------------------------------------------------------------------------------------------------
+31. FIELDS INTENTIONALLY NOT ADDED (and why)
+----------------------------------------------------------------------------------------------------
+  * nifty_ltp / banknifty_ltp / sector_index_ltp / futures_price / futures_volume /
+    futures_bid/ask ... : probe-internal target-dictionary EXPANSIONS of real RELIANCE
+    values -- inventing them as fields would FABRICATE broker fields (rejected)
+  * trade_count / day_high_timestamp / day_low_timestamp / settlement_price : SDK does
+    not provide them on SFeed (no real value to preserve)
+  * tick_size : not transmitted; derivable from precision/divider (left to features)
+  * sequence_number : SDK never exposes it (blocked) -- emitting it would invent data)
+  * bid1..ask5 / best_bid / best_ask as independent fields : pure aliases of depth rows;
+    ONE representation per value (depth.buy/sell + derived best) is the contract
+
+----------------------------------------------------------------------------------------------------
+32. REMAINING RISKS
+----------------------------------------------------------------------------------------------------
+  1. master-canonical emission was ACTIVATED by the operator (2026-09-18); effective on
+     the next backend restart. Rollback = set_master_canonical_enabled(False) + restart.
+  2. existing FE calculators read legacy flat keys; they remain correct but are a separate
+     migration surface (canonical names available already to new calculators)
+  3. market_status textual anomaly ('Market closed' during open hours) unexplained; used
+     only for display, but should be traced to the emitting segment
+  4. indicative_price crosstalk anomaly unexplained (excluded from scrip canonical output)
+  5. raw WIRE bytes not persisted in production (only decoded raw blob)
+  6. L16 live full-depth for this account NOT-VERIFIED (broker serves static 0+0)
+  7. depth rows >16 or non-5 row counts on L8 would come through correctly (wire-driven),
+     but such shapes are untested against Kotak's live gate (structural tests pass)
+  8. buy_sell_volume_ratio uses max(sell,1) guard (documented; preserves determinism)
+
+----------------------------------------------------------------------------------------------------
+33. RECOMMENDED NEXT IMPROVEMENTS
+----------------------------------------------------------------------------------------------------
+  1. Stage the adapter rollout: run with flag ON in a shadow/audit mode first (compare
+     canonical object vs canonical doc over one session), then on, then migrate FE
+     calculators to canonical names and drop the legacy flat keys for NEW features
+  2. Trace market-status origin (segment) and fix the text mapping for live hours
+  3. Add previous-day reference + instrument metadata enrichment via REST/master schedule
+  4. Optional wire-byte audit sink (SDK on_raw) for byte-exact replay / schema migration
+  5. Long-term: keep the alias table as the single cross-broker normalization point so a
+     Shoonya/Dummy/other-broker adapter maps INTO the same canonical schema unchanged
+
+----------------------------------------------------------------------------------------------------
+34. FINAL CANONICAL FIELD COUNT
+----------------------------------------------------------------------------------------------------
+  52 canonical fields across 13 sections (+ schema + validation wrappers + depth.levels
+  bookkeeping + raw envelope carrier reference).
+  alias surface resolved : 65 input key names -> 25 semantic values (62% reduction)
+
+----------------------------------------------------------------------------------------------------
+35. FULL CANONICAL FIELD LIST (52)
+----------------------------------------------------------------------------------------------------
+  identity/ : exchange_segment, instrument_token, trading_symbol, lot_size, exchange_name, instrument_type, series, isin
+  market_state/ : trading_status
+  price/ : last_traded_price, open_price, high_price, low_price, previous_close_price, average_trade_price, upper_circuit_limit, lower_circuit_limit, yearly_high, yearly_low, indicative_price, auction_active
+  trade/ : last_trade_quantity, last_trade_time, total_traded_value
+  volume/ : volume_traded_today, buy_volume_today, sell_volume_today
+  change/ : price_change, price_change_percent
+  open_interest/ : open_interest
+  time/ : feed_event_time, received_at
+  reference/ : previous_day_high, previous_day_low, previous_day_volume
+  depth/ : buy, sell
+  derived/ : best_bid_price, best_bid_quantity, best_ask_price, best_ask_quantity, spread, mid_price, buy_sell_volume_ratio
+  feed_metadata/ : feed_type, feed_level, event_id, source, sdk_version, price_precision, price_multiplier
+  raw/ : reference
+
+----------------------------------------------------------------------------------------------------
+REAL L8 ADAPTER-OUTPUT EXAMPLE
+(generated from an ACTUAL production Mongo L8 tick -- symbol CUPID)
+----------------------------------------------------------------------------------------------------
+{
+ "schema": {
+  "name": "master_canonical_market_data",
+  "version": "market-data-1.0",
+  "adapter": "1.0"
+ },
+ "identity": {
+  "exchange_segment": "nse_cm",
+  "instrument_token": "18520",
+  "trading_symbol": "CUPID",
+  "exchange_name": "NSE",
+  "lot_size": 1
+ },
+ "price": {
+  "last_traded_price": 262.9,
+  "open_price": 280.3,
+  "high_price": 282.0,
+  "low_price": 251.1,
+  "previous_close_price": 279.15
+ },
+ "trade": {
+  "last_trade_time": 1789725599
+ },
+ "volume": {
+  "volume_traded_today": 27264195
+ },
+ "change": {
+  "price_change": -16.25,
+  "price_change_percent": -5.82
+ },
+ "time": {
+  "feed_event_time": 1789725599,
+  "received_at": 1789705798.664
+ },
+ "depth": {
+  "buy": [
+   {
+    "price": 262.85,
+    "quantity": 2001,
+    "orders": 3
+   },
+   {
+    "price": 262.5,
+    "quantity": 4454,
+    "orders": 10
+   },
+   {
+    "price": 262.45,
+    "quantity": 20,
+    "orders": 1
+   },
+   {
+    "price": 262.3,
+    "quantity": 3597,
+    "orders": 7
+   },
+   {
+    "price": 262.25,
+    "quantity": 1509,
+    "orders": 6
+   }
+  ],
+  "sell": [
+   {
+    "price": 262.9,
+    "quantity": 2319,
+    "orders": 1
+   },
+   {
+    "price": 262.95,
+    "quantity": 500,
+    "orders": 1
+   },
+   {
+    "price": 263.0,
+    "quantity": 12582,
+    "orders": 24
+   },
+   {
+    "price": 263.1,
+    "quantity": 25,
+    "orders": 1
+   },
+   {
+    "price": 263.3,
+    "quantity": 2500,
+    "orders": 1
+   }
+  ],
+  "levels": {
+   "buy": 5,
+   "sell": 5,
+   "expected": 8
+  }
+ },
+ "derived": {
+  "best_bid_price": 262.85,
+  "best_bid_quantity": 2001,
+  "best_ask_price": 262.9,
+  "best_ask_quantity": 2319,
+  "spread": 0.049999999999954525,
+  "mid_price": 262.875
+ },
+ "feed_metadata": {
+  "feed_type": "depth",
+  "feed_level": 8,
+  "source": "kotak_neo_sfeed",
+  "sdk_version": "3.0.6"
+ },
+ "raw": {
+  "reference": "preserved|8e52437bdddd"
+ },
+ "validation": {
+  "passed": true,
+  "issues": [],
+  "conflicts": []
+ }
+}
+
+JSON output above was produced by build_from_flat_tick() on this real document; all
+canonical names map 1:1 to the schema in section 13.
+
+----------------------------------------------------------------------------------------------------
+FINAL DELIVERABLE SUMMARY (per task contract)
+----------------------------------------------------------------------------------------------------
+  Actual L8 fields discovered (decoded SDK) : 31 (identity 3 + scalars 24 + depth arrays 2;
+                                                   3 fields per depth row)
+  Raw L8 wire fields (7208)                  : 24 body + 7 header; 22 body preserved
+  Duplicate/alias groups                     : 25 (merged to one canonical name each)
+  Canonical fields                           : 52
+  Derived fields (documented)                : 6 (best bid/ask x2, spread, mid, ratio)
+                                                + exchange_name
+  Fields newly added to pipeline             : 0 needed (pipeline was already loss-free);
+                                                the canonical OBJECT is new (opt-in)
+  Fields previously lost                     : 4 (seq_no, bitmask_length, _indicative_close,
+                                                _trading_status -- all blocked at the SDK boundary)
+  Fields intentionally excluded              : probe-expansion names (nifty/futures...),
+                                                bid1..ask5 aliases, unverifiable derivations
+  Adapter tests                              : PASS (23/23; 110/110 combined)
+  Live L8 test                               : PASS (5x5 verified on 3 live symbols)
+  Feature Engine handoff                     : PASS (masterCanonical delivered + cached;
+                                                legacy views retained for migration)
+  L16 structural compatibility               : PASS (16+16 through real path; live 16 NOT-VERIFIED)
+  Remaining risks                            : see section 32 (staged activation, market-status
+                                                text anomaly, wire-bytes not persisted, L16 live)
+
+PRODUCTION STATE: MASTER-CANONICAL EMISSION ACTIVATED BY OPERATOR (2026-09-18),
+effective on the next backend restart. Additive-only: legacy flat keys, storage, Mongo
+and API are unchanged; the canonical object is an added envelope + handoff key (rollback
+= set_master_canonical_enabled(False) + restart).
+

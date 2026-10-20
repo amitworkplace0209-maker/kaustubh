@@ -1,0 +1,554 @@
+================================================================================
+KAUSTUBH - KOTAK NEO WEBSOCKET TICK-FIELD FORENSIC AUDIT
+(exact implementation / SDK version / raw field inventory / meaning / type /
+ source / transformation / usage - with DOCUMENTED / VERIFIED / INFERRED /
+ NOT VERIFIED classification)
+================================================================================
+Audit date        : 2026-09-18
+Audit type        : READ-ONLY (no order anywhere, no config mutation, no writes)
+Basis             : installed SDK source + repo source + live backend endpoints
+                   + prior live-evidence reports
+Report file       : docs/reports/KOTAK_WS_TICK_FIELD_FORENSIC_AUDIT.txt
+
+CLASSIFICATION RULES (used throughout)
+  DOCUMENTED   - stated in repo docs/schema/SDK source but not observed live.
+  VERIFIED     - backed by a real capture: live production MongoDB ticks
+                 (2026-09-16 audit), live WIPRO L8 probe (2026-09-15), a
+                 historical 3.0.6 session (verification.py), or the live
+                 running backend queried during this audit.
+  INFERRED     - logically derived by code reading/deduction; not in any doc
+                 and not observed live.
+  NOT VERIFIED - could not be confirmed from any source in the repo.
+
+================================================================================
+1. AUDIT SCOPE, METHOD, EVIDENCE INVENTORY
+================================================================================
+Scope: every layer of the tick path from the Kotak SFeed wire to the frontend:
+  wire (SDK protocol.py) -> SDK models (models.py) -> ws_manager feed hook ->
+  WebSocketEngine.on_feed_message -> canonicalize() (canonical.py) ->
+  router/data_saver -> ConnectionManager._drain_persistence ->
+  to_storage_doc (storage.py) -> DBWriterEngine.ingest -> tick_buffer ->
+  mongodb.ticks -> /api/ticks/stream (SSE) -> frontend shared-sse.ts.
+
+Evidence sources read/queried:
+  [S1] .venv kotakneoapi 3.0.6 dist-info METADATA (Version: 3.0.6)
+  [S2] .venv neo_api_client/websocket/feed/{models,protocol}.py
+  [S3] python-service/requirements.txt (kotakneoapi==3.0.6)
+  [S4] python-service/ws_socket/ws_manager.py (WebSocketManager, owner)
+  [S5] python-service/ws_socket/engine/engine.py (WebSocketEngine)
+  [S6] python-service/ws_socket/engine/canonical.py   (normalizer)
+  [S7] python-service/ws_socket/engine/fields.py      (344-field master)
+  [S8] python-service/ws_socket/engine/storage.py     (Mongo doc builder)
+  [S9] python-service/services/tick_buffer.py          (bulk writer)
+  [S10] python-service/services/db_writer_engine.py     (DB writer engine)
+  [S11] python-service/connection_engine/connection_engine.py (drain loop)
+  [S12] python-service/api/ws_engine.py  (engine wiring)
+  [S13] python-service/api/ticks.py       (SSE/recent/stats)
+  [S14] python-service/api/websocket.py   (system SSE stream)
+  [S15] frontend: lib/shared-sse.ts, hooks/use-latest-ticks.ts, lib/api.ts,
+        app/(dashboard)/live-ticks/page.tsx, app/_pages/*, (phase2)/watch-list
+  [S16] docs/kotak_ws_architecture.md, docs/kotak_ws_consumer_contract.md,
+        docs/kotak_ws_field_verification.txt (344-row)
+  [S17] docs/reports/KOTAK_WEBSOCKET_SDK_AUDIT.txt          (2026-09-15 live)
+  [S18] docs/reports/KOTAK_WIPRO_LIVE_DEPTH_VERIFICATION.txt (2026-09-15 live)
+  [S19] docs/reports/KOTAK_WIPRO_FIELD_SOURCE_MATRIX.txt    (2026-09-15 live)
+  [S20] docs/reports/KOTAK_WEBSOCKET_LIVE_FIELD_AUDIT_0900_0912.txt/json (2026-09-16 live)
+  [S21] docs/reports/KOTAK_FIELD_VERIFICATION.txt           (2026-09-15 L1+L2)
+  [S22] LIVE backend (127.0.0.1:8000) during this audit:
+        /api/services/websocket/status -> sdk_version 3.0.6, owner
+        WebSocketManager, connected True
+        /api/services/websocket/metrics -> messages_by_type
+        {SFeedScrip: 10293, SFeedCasChange: 3}, ticks_ingested 10296
+        /api/services/websocket/field-verification -> total 344, status
+        counts {DIRECT_WS:30, WS_CONDITIONAL:35, QUOTE_REST_ONLY:4,
+        OTHER_API:7, DERIVED:237, TARGET_LABEL:24, NOT_PROVIDED_BY_KOTAK_WS:5,
+        NOT_VERIFIED:2}
+
+================================================================================
+2. EXACT WS IMPLEMENTATION
+================================================================================
+Architecture (one owner, one hook, one canonical stream) - DOCUMENTED + code:
+  - Single socket owner: ws_socket/ws_manager.py  WebSocketManager (module
+    singleton `ws_manager`, ws_manager.py:2040). Never a second socket.
+  - Single engine: ws_socket/engine/engine.py    WebSocketEngine (singleton
+    `engine`, engine.py:857). Composes the manager; opens no socket.
+  - Wiring: api/ws_engine.py:36-52 `_get_engine()` runs
+      engine.set_owner(ws_manager)
+      ws_manager.set_publish_hook(engine.on_feed_message)
+    once at app startup / lazily. Only place the hook is attached.
+  - Feed reader: ws_manager.py:922 `_reader_loop(ws)` async-iterates the SDK
+    websocket (`async for message in ws`) -> `_handle_feed_message` (1129).
+  - Message dispatch (ws_manager.py:1153-1183):
+      SFeedMarketStatus -> counts only, logged, NOT a tick (return).
+      SFeedIndex       -> `_process_tick` (valid data tick).
+      SFeedCasChange   -> counts only, returned (not a tick).
+      SFeedScrip/Lite  -> `_process_tick`.
+    For every message the engine hook fires first (1143-1151), so the engine
+    sees ALL message types, then each layer classifies independently.
+  - Subscribe path: subscribe() (ws_manager.py:1257) -> `_send_subscribe`
+    (2012) groups intents via `_group_intents` (1990) into:
+      scrips  -> ws.subscribe_scrips(WsToken)  (wire "subscribeScrips",  L4)
+      indices -> ws.subscribe_index(...)       (wire "subscribeIndices", 7207)
+      depths  -> ws.subscribe_depth(...)       (wire "subscribeDepth",  L8)
+    No call to subscribe_full_depth (L16) and none to subscribe_scrips_lite.
+  - Unsubscribe path: unsubscribe() (1475) -> `_send_unsubscribe` (2022), SDK
+    unsubscribe_scrips/unsubscribe_index/unsubscribe_depth.
+  - Supervisor/backoff: ws_manager.py:424-598 (states, market-window gate,
+    internet check, reconnect backoff, auth handling). max_reconnect_attempts
+    = 0 / max_connect_retries = 0 so OUR supervisor owns the lifecycle
+    (1366-1381). Connection created via client.create_websocket (1378).
+  - Engine ingress: engine.on_feed_message(message) (engine.py:101):
+      TICK_RECEIVED event -> canonicalize() (119) -> TICK_REJECTED or
+      TICK_VALIDATED (`_flat_tick`, engine.py:133,270) -> raw bucket ->
+      router.route (179) -> data_saver consumer (61-66).
+  - Persistence consumer: registered at engine construction as
+    data_saver / DATA_SAVER / FULL_RAW / P0 (engine.py:61-66). Drained by
+    ConnectionManager._drain_persistence (connection_engine.py:711-761) ->
+    to_storage_doc -> DBWriterEngine.ingest -> tick_buffer -> Mongo.
+  - Engine event-bus bridge: engine.py:229 `_drain_event_loop` publishes
+    TICK_RECEIVED / TICK_VALIDATED / TICK_REJECTED (sole source).
+
+================================================================================
+3. SDK VERSION (pinned / installed / runtime)
+================================================================================
+  - Pinned    : requirements.txt:1   kotakneoapi==3.0.6             DOCUMENTED
+  - Installed : .venv/Lib/site-packages/kotakneoapi-3.0.6.dist-info/METADATA
+                Version: 3.0.6 (import neo_api_client)                VERIFIED
+  - In code   : ws_socket/engine/canonical.py:27  SDK_VERSION = "3.0.6"
+                (comment "verified from .venv dist-info")            VERIFIED
+  - Runtime   : /api/services/websocket/status -> sdk_version "3.0.6"
+                from the LIVE backend (2026-09-18)                    VERIFIED
+  - Audit note: fields.py:6-8 states the 344-field classification was done on
+    3.0.2 and "re-verified unchanged on 3.0.6 - models.py / protocol.py are
+    byte-identical between the two."                                DOCUMENTED
+
+================================================================================
+4. RAW TICK MESSAGE FORMAT (wire, SDK protocol.py)
+================================================================================
+Transport   : native_batch over wss://sfeed.kotaksecurities.com/apifeed
+              (SDK audit [S17]) ; frames are length-prefixed packets.
+Frame split : protocol.py:82 split_batch() reads u16 LE length prefix.
+Header      : 9 bytes, protocol.py:53 _HEADER "<HHbBBBB":
+                message_length u16 | message_code u16 | exchange_id i8 |
+                level u8 | auction_flag u8 | seq_no u8 | bitmask_length u8
+Message codes (protocol.py:30-48):
+  1117/1119 auth response | 1109 subscribe ack (JSON, trading_symbols map) |
+  6511 market open | 6521 market close | 7207 index | 7208 market picture |
+  105  market status (body) | 104  CAS change
+Bodies (protocol.py:56-79):
+  _INDEX_BODY       "<IiiiiiQiiidBi21s"  (14 scalar fields)
+  _MINI_BODY        "<IqIqIiiIBI"        (MiniTouchLine, level 1)
+  _MP_BODY          "<IqqqqqIIIIIqIIIIhiIdiIIIIIBI"  (MarketPicture 135 B)
+  _DEPTH_ROW        "<qii"               (16 B: qty/price/orders)
+  _MARKET_STATUS_BODY "<H5s"
+  _CAS_CHANGE_BODY  "<IIqq"
+Exchange dividers : observed at connect (SDK audit [S17] §3): 1->100,
+  2->100, 3->10000000, 4->100 ... nse_cm = 100.
+
+RAW-WIRE FIELDS DISCARDED BY SDK (NOT exposed on any model)  - VERIFIED/SDK:
+  header.seq_no          -> unpacked as _seq_no, discarded   (protocol.py:124)
+  header.bitmask_length  -> _bitmask_length, discarded       (protocol.py:125)
+  _indicative_close      -> unpacked, unused                 (protocol.py:304)
+  _trading_status        -> unpacked, unused                 (protocol.py:307)
+  _market_cap (index)    -> unpacked, unused                 (protocol.py:180)
+  These never reach the repo. Verified by live wire decode in [S17] §4.
+
+================================================================================
+5. RAW TICK FIELD INVENTORY (SDK models.py - decoded/scaled values)
+================================================================================
+Models carry category="VERIFIED" when observed in [S20]/[S22], "DOCUMENTED"
+when they are SDK-declared but that precise field was not in any capture.
+
+SFeedScrip  (level 2/4/8/16; models.py:150-181)  - "scrip" touch/depth
+  #  field                  type    meaning / source
+  1  type                   str     literal "scrip" (SDK-synthesized)
+  2  level                  int     depth level 2/4/8/16 (wire level byte)
+  3  last_traded_price      float   LTP, rupees (÷divider)
+  4  open_price             float   day open (÷divider)
+  5  high_price             float   day high
+  6  low_price              float   day low
+  7  close_price            float   prev-day close
+  8  average_trade_price    float   volume-weighted avg
+  9  last_trade_time        int     epoch sec, last trade (0 pre-open)
+ 10  last_update_time       int     epoch sec, broker update (neg -> 0)
+ 11  last_trade_qty         int     last traded quantity
+ 12  total_buy_quantity     int     cumulative buy qty day
+ 13  total_sell_quantity    int     cumulative sell qty day
+ 14  volume_traded_today    int     day volume
+ 15  open_interest          int     OI (Futures/Options)
+ 16  net_change             float   net chg (÷divider)
+ 17  net_change_percent     float   net chg % (÷100)
+ 18  upper_circuit_limit    float   circuit upper
+ 19  lower_circuit_limit    float   circuit lower
+ 20  yearly_high            float   52w high
+ 21  yearly_low             float   52w low
+ 22  total_traded_value     float   day traded value
+ 23  market_lot             int     lot size
+ 24  precision              int     price decimals
+ 25  multiplier             int     multiplier
+ 26  auction                bool    auction_flag>0
+ 27  buy  [DepthLevel]      list    1..N book rows (bid)
+ 28  sell [DepthLevel]      list    1..N book rows (ask)
+ 29  exchange_segment       str     nse_cm etc (wire exchange_id -> name)
+ 30  instrument_token       str     token (u32 -> str)
+ 31  trading_symbol         str     enriched from subscribe-ack 1109 map
+  (31 total, incl. 3 inherited; matches raw.blob count in [S20] §10.)
+  Not projected by SDK/scaled: prices ÷100, net_chg_percent ÷100 [S2].
+
+SFeedScripLite (level 1; models.py:183-196) - NOT USED by this app
+  type, last_traded_price, last_trade_time, last_trade_qty, close_price,
+  net_change, net_change_percent, market_lot, precision, multiplier
+  (+exchange_segment, instrument_token, trading_symbol). The repo never calls
+  subscribe_scrips_lite, so this model is reachable but not subscribed.
+
+SFeedIndex (msg 7207; models.py:198-215)
+  type, name, last_traded_price, open_price, high_price, low_price,
+  close_price, change (= (index_value-close)/divider, computed), 
+  net_change_percent, yearly_high, yearly_low, last_trade_time, precision,
+  multiplier (+inherited). index_value is renamed last_traded_price.
+
+SFeedMarketStatus (105/6511/6521; models.py:217-246)
+  type, exchange_segment, status_code (int, MarketStatusCode enum), status
+  (static text from MARKET_STATUS_TEXT, NOT the raw wire string).
+  NO instrument_token by design (wire carries none).
+
+SFeedCasChange (104; models.py:248-262)
+  type, ref_price (float, ÷divider), imbalance_qty (int),
+  imbalance_qty_at_market (int) (+inherited). Dropped (None) when all three
+  are 0 outside the CAS window (protocol.py:241).
+
+DepthLevel (models.py:142-148)
+  quantity (int), price (float), orders (int) - one book row.
+
+================================================================================
+6. NORMALIZATION LAYER (canonical.py)
+================================================================================
+Validated/projected message types: SFeedScrip, SFeedScripLite, SFeedIndex,
+SFeedMarketStatus, SFeedCasChange (canonical.py:17-24).
+
+Per-message projection maps (canonical.py:30-94):
+  _SCRIP_FIELDS (24 -> fields): ltp, ltq, open, high, low, prev_close,
+    avg_price, volume, total_buy_quantity, total_sell_quantity, open_interest,
+    net_change, net_change_pct, upper_circuit_limit, lower_circuit_limit,
+    yearly_high, yearly_low, total_traded_value, market_lot, precision,
+    multiplier, auction, last_trade_time, last_update_time
+  _LITE_FIELDS (9)   : ltp, ltq, prev_close, net_change, net_change_pct,
+    market_lot, precision, multiplier, last_trade_time
+  _INDEX_FIELDS (13) : name, ltp, open, high, low, prev_close, net_change,
+    net_change_pct, yearly_high, yearly_low, last_trade_time, precision,
+    multiplier
+  _MARKET_STATUS_FIELDS (2): status_code, status
+  _CAS_FIELDS (3)    : ref_price, imbalance_qty, imbalance_qty_at_market
+  + "buy"/"sell" (depth) for SFeedScrip (111-118, 167).
+  Renames are pure aliasing (canonical name -> SFeed attribute); NO value
+  transformation (scaling already done by SDK). Canonical docstring: raw
+  values copied verbatim, DERIVED never enter (canonical.py:1-7).
+
+Envelope (canonical.py:187-213), 16 keys:
+  event_id (tck_%012d), event_type "tick", schema_version "1.0",
+  sdk_version "3.0.6", received_at (engine wall clock), broker_timestamp
+  (last_trade_time or last_update_time), broker_update_time
+  (last_update_time or last_trade_time), sequence (getattr None - SDK has
+  none -> always null), exchange_segment, instrument_token (str),
+  trading_symbol, feed_type (scrip/scrip_lite/touch_line/depth/full_depth/
+  index/market_status/cas_change via _feed_type, 121-131), feed_level,
+  fields {projected block}, raw_reference (preserved|<md5 digest>),
+  source "kotak_neo_sfeed".
+
+Immutability: PreservedRawStore (canonical.py:216-251) keeps the raw
+message.model_dump(mode="json") blob (20,000-entry window) keyed by digest;
+raw_reference resolves it (engine.raw_lookup, engine.py:637).
+
+Default-level note (canonical.py:121-131): level 4 maps to feed_type
+"touch_line"; the repo's own live data ([S20], [S22]) is 100% touch_line.
+
+================================================================================
+7. WHAT THE CANONICAL SURFACE COVERS OF THE 344-FIELD SCHEMA
+================================================================================
+Master schema: ws_socket/engine/fields.py `_FIELDS` = exactly 344 rows
+(field_count()=344) [+18 additional discovered fields below].
+Runtime-confirmed counts (live /api/services/websocket/field-verification,
+same as static import):
+  DIRECT_WS                : 30   (real SFeed attributes)
+  WS_CONDITIONAL           : 35   (only in some feed contexts)
+  QUOTE_REST_ONLY          : 4    (REST quote only)
+  OTHER_API                : 7    (scrip master / option chain / quote)
+  DERIVED                  : 237  (Feature-Engine computed, NOT in raw stream)
+  TARGET_LABEL             : 24   (AI target/label, training only)
+  NOT_PROVIDED_BY_KOTAK_WS : 5    (sequence_number, instrument_type, ...)
+  NOT_VERIFIED             : 2    (sector, industry)
+The 30 DIRECT_WS fields are the true raw-stream surface:
+  symbol, exchange, exchange_token, instrument_token, exchange_timestamp,
+  lot_size, market_segment, ltp, ltq, last_trade_price, last_trade_quantity,
+  open, high, low, previous_close, price_change, price_change_pct,
+  average_trade_price, upper_circuit, lower_circuit, last_trade_timestamp,
+  volume, buy_volume, sell_volume, best_bid_price, best_bid_qty,
+  best_ask_price, best_ask_qty, top_level_depth, open_interest.
+18 ADDITIONAL fields found beyond the 344 (additional_fields()):
+  total_traded_value, yearly_high, yearly_low, auction, precision,
+  multiplier, bid_order_count/ask_order_count, depth_row_count,
+  market_status_code, index_name, cas_reference_price, cas_imbalance_qty,
+  cas_imbalance_qty_at_market, message_type, feed_level, last_update_time,
+  total_buy_quantity/total_sell_quantity, net_change/net_change_percent.
+
+================================================================================
+8. FIELD SOURCE BY FEED LEVEL (observed availability)
+================================================================================
+From live trials (SDK audit [S17] + WIPRO matrix [S19], 2026-09-15) - VERIFIED:
+  Source        L4(touch)   L8(depth)   L16(full)   quote/all   master CSV
+  LTP/OHLC/prev YES         YES         NO*         YES        -
+  avg/change/%  YES         YES         NO*         YES        -
+  upper/lower   YES         YES         NO*         YES        YES
+  yearly H/L    YES         YES         NO*         YES        -
+  last trade q  YES         YES         NO*         YES        -
+  times         YES         YES         NO*         YES        -
+  volume/ttv    YES         YES         NO*         YES        -
+  tbv/tsv       YES         YES         NO*         YES        -
+  OI            YES         YES         NO*         YES        YES
+  market_lot    YES         YES         NO*         -          -
+  precision/multi YES       YES         NO*         -          YES
+  auction       YES         YES         NO*         -          -
+  depth rows    1+1         (5+5)       EMPTY (static)  snapshot  -
+  ISIN/company  -           -           -           -          YES
+  tick_size     -           -           -           -          YES
+  seq_no        wire-only; DISCARDED by SDK on all levels (NOT VERIFIED app-side)
+  * L16 = ACK-accepted but STATIC reference snapshot only; NOT a live book.
+Book-row counts observed: L4 exactly 1 bid + 1 ask (protocol.py:328-332);
+[20] confirms buy/sell arrays size exactly 1 in 50/50 docs.
+
+================================================================================
+9. MARKET-DEPTH AUDIT
+================================================================================
+  - Depth rows structurally: DepthLevel{quantity,price,orders} (models.py:142).
+  - Wire: rows after byte 144, 16 B each, count = buy_depth_count +
+    sell_depth_count except level 4 forces 1+1 (protocol.py:328-345).
+  - L4 touch-line: buy/sell = exactly 1 row. VERIFIED live ([S20] 3509 msgs,
+    100% touch_line; 50/50 docs exactly 1 item each; buy[0] price=90.0,
+    sell[0] 61.56 examples; bp/bq/sp/sq derived from row 0).
+  - L8 depth: 5+5 real rows, prices matched the Quote API book (SDK audit
+    [S17] §6). VERIFIED on WIPRO trial (2026-09-15).
+  - L16 full depth: ACK-accepted; delivered static ref snapshot with 0+0 rows,
+    volume=0, tbv/tsv=0, last_trade_time=0 (method 32 zero pad bytes) in two
+    capture windows. VERIFIED NOT available for this account on 3.0.6.
+  - App-level: the running system subscribes L4 for ALL instruments because
+    the instrument master has ZERO isDepth instruments ([S20] §6). The engine
+    route currently active: only data_saver FULL_RAW P0 (status active_consumers=1).
+  - Live depth claim in older report [S21] ("buy/sell depth DIRECT_FROM_KOTAK
+    (L8)") was corrected by [S20]: observed L4 only. Documented caveat.
+
+================================================================================
+10. CURRENT CODE - FIELD SURFACE THE CODE READS/DERIVES
+================================================================================
+  _flat_tick (engine.py:270-298) - FLAT consumer payload, keys emitted only
+  when not None: instrumentToken, exchangeSegment, symbol(trading_symbol),
+  ltp, lastPrice(=ltp), volume, timestamp, open, high, low, prevClose,
+  netChange, netChangePercent, receivedAt, brokerUpdateTimestamp, source.
+  BUG-adjacent note: ltp and lastPrice are duplicated aliases (same value).
+  tick_buffer.add (tick_buffer.py:158-237) normalizes keys when absent:
+  symbol from sym/trdSym, instrumentToken from tk/token/instrument_token,
+  tradingSymbol from trdSym/trading_symbol/sym; merges a per-token latest map
+  (fields with value not None/"" overwrite; non-price CAS/status merges are
+  excluded from price history, 252-253).
+  Price-history: _record_price_history (240-277) keeps (ts, wall, ltp) per
+  token, min 2s spacing, 60 min/1200 pts; momentum 1/3/5/10/15/30/60m from it.
+  Field reads in consumers/engines that subscribe to ticks (feature_engine,
+  watchlist_engine, market_state, pnl etc.) focus on: instrumentToken,
+  exchangeSegment, symbol, ltp, volume, timestamp/receivedAt.
+
+================================================================================
+11. STORAGE / PERSISTENCE AUDIT (Mongo)
+================================================================================
+  to_storage_doc (storage.py:32-113) builds the db.ticks document (superset):
+    identity : symbol (tradingSymbol minus "-suffix"), tradingSymbol,
+               instrumentToken, exchangeSegment
+    legacy 28 : ltp, open, high, low, close(=prev_close), volume, ltq, tbq
+               (=total_buy_quantity), tsq (=total_sell_quantity), bp, bq, sp,
+               sq, bs, averagePrice, change, changePercent, oi,
+               upper_circuit_limit, lower_circuit_limit, total_traded_value,
+               last_update_time, (+ symbol/tradingSymbol/instrumentToken/
+               exchangeSegment/ts/receivedAt as read above)
+    lossless extras : last_trade_time, yearly_high, yearly_low, market_lot,
+               precision, multiplier, auction, buy, sell, level, message_type,
+               ref_price, imbalance_qty, imbalance_qty_at_market, status_code,
+               status, index_name
+    envelope : event_id, event_type, schema_version, sdk_version, source,
+               feed_type, feed_level, raw_reference, raw (immutable blob)
+    time     : ts (= broker_timestamp epoch -> UTC dt), receivedAt
+  CONFIRMED FIELD-ALIAS BUG (code-verified, flagged by [S20] §20.3):
+    storage.py:68  "bs": sq  -> the "bid-size" legacy key is populated with
+    the ASK quantity; it should be the bid side (bq) or is at best
+    misleading. Live sample: bs == sq == 942 while bp=550.25, bq=327,
+    sp=366.85.
+  Write path:
+    ConnectionManager._drain_persistence (connection_engine.py:711-761):
+    drains data_saver consumer -> to_storage_doc -> db_writer_engine.ingest
+    (db_writer_engine.py:138-165; rejects docs without instrument identity).
+    tick_buffer.add (tick_buffer.py:158) -> _flush_loop / _flush_all ->
+    db.ticks.bulk_write(ops=[InsertOne], ordered=False)
+    (tick_buffer.py:620-698). Hard cap 100,000 buffered docs (142), oldest
+    dropped (counted as write errors) when Mongo is down. No re-queue on
+    failure (716-721). Final flush on stop (536-553).
+    daily_summaries upsert counts totalTicks/totalWrites (727-739).
+  Mongo doc shape verified against live data: [S20] inventory (54 top-level
+  fields incl. raw; 48 stable).
+
+================================================================================
+12. DOWNSTREAM / REPORTED DATA (the live audit's own numbers)
+================================================================================
+[20] live audit (2026-09-16 09:00-09:12 IST, pre-market, production db):
+  - 3,509 messages, 8 symbols, ~6.2 ticks/s, all touch_line (L4).
+  - 54 total top-level fields across docs; all 48 core fields present 50/50
+    (100%). Raw blob 31-field SFeedScrip preserved in 100%.
+  - CAS fields present 18/50 (36%, pre-open auction); market_status & index
+    fields 0% (no such messages this window - not a provider absence).
+  - last_trade_time = 0 pre-open; ts uses last_update_time-epoch; server
+    receivedAt ~579 ms later (network transit).
+  - feed level in production = L4 only: master has zero isDepth instruments.
+  - Only SFeedScrip + SFeedCasChange appeared; no SFeedIndex/ScripLite/
+    MarketStatus.
+
+================================================================================
+13. SERVE LAYER (API / SSE)
+================================================================================
+  GET /api/ticks/stream   (ticks.py:26-52) SSE: each buffered tick JSON as
+    `data: {...}` from tick_buffer.add_listener (add() -> _deliver_to_listeners
+    tick_buffer.py:340-361); sanitize_for_json converts datetimes to ISO.
+    15s heartbeat comment frames; cleanup removes listener.
+  GET /api/ticks/recent   (ticks.py:55-65) Mongo db.ticks sorted by ts desc,
+    limit <= 200, optional symbol filter.
+  GET /api/ticks/stats    (ticks.py:68-149) memory-only aggregation of
+    tick_buffer.stats + ws_manager.status + scheduler; derives pipelineState.
+  GET /api/websocket/system/stream (api/websocket.py:131) service-control
+    SSE (system/ledger/pipeline events incl. TICK_SAVE_SUCCESS/FALURE via
+    state_store publish, tick_buffer.py:58-87).
+  Engine control plane: /api/services/websocket/* (status/metrics/health/
+    field-verification/raw-lookup/subscriptions/...; ws_engine.py).
+
+================================================================================
+14. FRONTEND CONSUMPTION
+================================================================================
+  Single-shared-SSE design: lib/shared-sse.ts openStream() New EventSource(
+  getTickStreamUrl()); getTickStreamUrl = `${API_BASE}/api/ticks/stream`
+  (lib/api.ts:691). Subscribers via subscribeTicks/subscribeSseState; reconnect
+  backoff 2-15 s; consumer-count based open/close.
+  Data consumers:
+    hooks/use-latest-ticks.ts:14 DcLiveTick { symbol, ltp, ts } - Data Center
+    stock list; 1 Hz batching; backfill from /api/ticks/recent.
+    Page usage (field-level):
+      live-ticks page  : symbol, ltp, close, tradingSymbol, instrumentToken
+      data-insights    : symbol, ltp, volume, close
+      calculator       : ltp, symbol, tradingSymbol, instrumentToken
+      stocks page      : symbol/latest tick (watchlist)
+      watch-list       : symbol, tradingSymbol, instrumentToken
+    i.e. frontend uses a tiny subset: symbol, ltp, close, volume,
+    instrumentToken, tradingSymbol, ts. Everything beyond ltp/close is unused
+    at the UI - depth, volume, OI, timestamps all persist but are not rendered.
+
+================================================================================
+15. SDK DOCS vs CODE (what the docs claim vs what the code does)
+================================================================================
+  Claim                     | Basis               | Verdict
+  single WS owner           | ws_manager.py (+api wiring)  | VERIFIED (code + status owner=WebSocketManager)
+  kotakneoapi 3.0.6         | pin/dist-info/runtime       | VERIFIED (3 independent checks)
+  5 SFeed message types,3 kept| protocol.py decode          | VERIFIED (runtime message types)
+  seq_no not exposed        | protocol.py:124             | VERIFIED (+[S17] wire)
+  depth at L4 => 1+1 rows   | protocol.py:328             | VERIFIED ([S20] reality)
+  L8 5+5 book               | models/protocol + WIPRO run | VERIFIED (live 2026-09-15)
+  L16 full book             | SDK supports; runtime static | VERIFIED NOT for this account
+  344-field master          | fields.py + field-verification | VERIFIED (runtime 344)
+  30 DIRECT_WS at most      | fields.py statuses          | VERIFIED (runtime counts)
+  MarketPicture keeps all live SFeedScrip fields in raw blob | storage.py raw | VERIFIED ([S20] 31/31)
+  `bs` meaningful           | storage.py:68 "bs": sq     | INFERRED BUG (contradicts bid-side intent)
+
+================================================================================
+16. RUNTIME RESPONSE (live backend queried during this audit, 2026-09-18)
+================================================================================
+  /api/services/websocket/status : sdk_version 3.0.6; owner WebSocketManager;
+      connection_connected True; subscription_count 0; desired 0;
+      active_consumers 1 (data_saver); routes 1; raw_bucket_tokens 8.
+  /api/services/websocket/metrics : messages_by_type = {SFeedScrip: 10293,
+      SFeedCasChange: 3}; ticks_ingested 10296.
+  /api/services/websocket/field-verification : 344 total; status counts equal
+      to the static catalog (Section 7) - catalog is live-served.
+  Reading: the running process only ever saw SFeedScrip + SFeedCasChange
+  (touch-line universe). No SFeedIndex/ScripLite/MarketStatus frames arrived,
+  matching [S20] and confirming L4 touch-line as the effective live surface.
+
+================================================================================
+17. FIELD-BY-FIELD CLASSIFICATION (the 344, condensed per status)
+================================================================================
+Matching rule = semantic, not by name (per [S21] rules).
+  DOCUMENTED / VERIFIED surface (reach the app):
+    DIRECT_WS (30)     - DOCUMENTED + VERIFIED for the scrip subset actually
+                         observed ([S20]: ltp/open/high/low/close/volume/ltq/
+                         tbq/tsq/upper/lower/last_update_time/yearly H-L/
+                         market_lot/precision/multiplier/auction/buy/sell all
+                         50/50; symbol/exchange/token/trading_symbol identity).
+    WS_CONDITIONAL (35) - DOCUMENTED; VERIFIED dependencies: market_status/cas
+                         observed only when messages arrive (CAS 36% pre-open
+                         [S20]; market-status 0% / index 0% that window).
+    QUOTE_REST_ONLY (4) - DOCUMENTED (quote/all), live quote verified in
+                         [S17][S18] but the specific 4 schema fields (e.g.
+                         series/currency from quote) VERIFIED via [S17] keys.
+    OTHER_API (7)       - DOCUMENTED (scrip master CSV); master VERIFIED live
+                         ([S18] §5 9868 rows, WIPRO row, ISIN/company).
+  NOT in live stream: DERIVED (237) fn-derived feature fields - INFERRED/
+    DOCUMENTED as out-of-scope for the raw WS by design (fields.py + consumer
+    contract §5); they are compute targets of the Feature Engine.
+  NOT in live stream: TARGET_LABEL (24) - DOCUMENTED as training labels.
+  NOT AVAILABLE: NOT_PROVIDED_BY_KOTAK_WS (5): sequence_number (wire only,
+    SDK drops, VERIFIED), instrument_type, date_isin-independent entries -
+    DOCUMENTED.
+  NOT_VERIFIED (2): sector, industry - static repo pending source decision.
+18 fields beyond the 344 (additional_fields) - DOCUMENTED +
+  VERIFIED for all that are SFeedScrip attributes observed in [S20].
+
+================================================================================
+18. GAPS / DISCREPANCIES / RISKS / RECOMMENDATIONS
+================================================================================
+  G1  BUG (field alias)      : storage.py:68 `bs: sq` stores ASK qty under a
+      legacy key that downstream pcd-style consumers read as bid-side.
+      [S20] §20.3 flagged it. Recommended fix: `bs` = bid quantity (bq) or
+      drop the key; document the rename in CHANGELOG before any consumer
+      relies on it. (Source-audit finding; remains a live quirk.)
+  G2  seq_no / trading_status / indicative_close / market_cap never expose:
+      broker provides seq_no on the wire header only - NOT VERIFIED app-side;
+      trading_status/indicative_close/market_cap are unpacked + dropped by the
+      SDK. If microstructure features need them, the SDK protocol.py must be
+      patched (copy _trading_status/_indicative_close onto the models) or the
+      repo must decode the raw binary itself - a real capability gap vs the
+      344 field schema's F/G/H categories.
+  G3  Feed-level mismatch    : production subscribes L4 touch-line for every
+      instrument (master has 0 isDepth). L8 depth (5+5) is proven available
+      ([S17]) but unused; L16 is ACK-only/static on this account. If the
+      feature engine needs depth/order-book features, mark a watchlist subset
+      isDepth=true and route them via subscribe_depth.
+  G4  No SFeedIndex / MarketStatus in the running process : index/market-context
+      fields (K-category) stay unobserved live; subscribing indices / exchange
+      broadcast (subscribe_exchange) is required before those WS_CONDITIONAL
+      fields can be VERIFIED live.
+  G5  L16 static-snapshot risk: relying on subscribe_full_depth for live book
+      would silently yield stale/zero data (two-window [S17]); treat L16 as
+      unsupported for this account + SDK version.
+  G6  sec/docs drift         : architecture.md/consumer-contract describe the
+      pipeline accurately, but "buy/sell depth (L8)" claim in [S21] Level 1
+      report is not the production reality (L4) - [S20] already corrected it.
+  G7  Raw blob memory bound  : PreservedRawStore is 20,000 entries in-memory
+      (canonical.py:231); deep raw forensics beyond that window need the Mongo
+      `raw` field (kept), not the store.
+  G8  Frontend surface tiny  : UI consumes only symbol/ltp/close/volume/ts;
+      the persisted superset is not yet used by any page (opportunity, not bug).
+  G9  Two backend instances live (earlier session: PIDs 9032 & 13084 on 8000 -
+      PID 9032 served these queries) - avoid stale-instance divergence; only
+      one should own the session + socket.
+
+  OVERALL VERDICT: Pipeline L4 SFeedScrip -> SDK 3.0.6 models -> canonical ->
+  data_saver -> to_storage_doc -> tick_buffer -> Mongo -> SSE is VERIFIED
+  end-to-end by three independent live captures plus live endpoints. The
+  344-field schema is rigorously classified (30 direct / 35 conditional /
+  4 quote / 7 other API / 237 derived / 24 target / 5 not-provided /
+  2 not-verified); every claimed raw field that is actually reachable live was
+  observed. The only code-level defect found is the `bs` alias (G1).
+================================================================================
+  END OF REPORT - 18 sections
+================================================================================

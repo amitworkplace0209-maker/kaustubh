@@ -1,0 +1,165 @@
+KOTAK NEO WEBSOCKET - L8 FULL DEPTH FIELD INVENTORY
+====================================================
+Business date : 2026-09-18 (NSE cash market, live session)
+Generated     : 2026-09-18 ~13:40 IST (feed LIVE, all 8 active stocks subscribed at L8)
+Sources (primary, not docs):
+  * Installed SDK source : C:\project\.venv\Lib\site-packages\neo_api_client\websocket\feed\models.py
+                           (kotakneoapi 3.0.6 - SFeedScrip / DepthLevel models)
+  * Canonical adapter    : ws_socket/engine/canonical.py (_SCRIP_FIELDS + _depth_list + _feed_type)
+  * Storage doc builder  : ws_socket/engine/storage.py (to_storage_doc)
+  * Live Mongo evidence  : db.ticks docs persisted AFTER the 13:33 IST backend restart
+                           (1,101 depth docs observed; 0 L4; 0 bs/bq mismatches)
+
+--------------------------------------------------------------------
+1. L8 SUBSCRIPTION SEMANTICS (verified at runtime)
+--------------------------------------------------------------------
+- The backend now classifies unlabelled market-data tokens as FULL-DEPTH
+  subscribers: ws_manager._group_intents() routes them to subscribe_depth
+  (the Kotak "depth" feed), which the SDK delivers as message_code 3401
+  decoded to neo_api_client SFeedScrip with level == 8.
+- 8 active pipeline stocks (db.stocks) were observed subscribed at L8 after
+  the restart: CUPID, EIHOTEL, HIKAL, IFCI, IRCTC, BOSCHLTD, ONGC, WIPRO.
+- Runtime proof (fresh documents in db.ticks):
+    feed_level = 8 | feed_type = "depth" | buy rows = 5 | sell rows = 5
+    across 1,101 consecutive depth docs.      ^^^     ^^^^
+  Zero docs retained feed levels 1/2/4 (legacy touch-line) after the restart.
+
+--------------------------------------------------------------------
+2. SDK MODEL: SFeedScrip (level 8), DepthLevel          [models.py:142-180]
+--------------------------------------------------------------------
+DepthLevel (one bid/ask row):
+    quantity : int      (row quantity)
+    price    : float    (row price)
+    orders   : int      (orders in that row)
+
+SFeedScrip scalar + identity surface:
+    exchange_segment, instrument_token, trading_symbol   (identity)
+    last_traded_price, last_trade_time, last_update_time
+    open_price, high_price, low_price, close_price, average_trade_price
+    last_trade_qty, total_buy_quantity, total_sell_quantity
+    volume_traded_today, open_interest, net_change, net_change_percent
+    upper_circuit_limit, lower_circuit_limit
+    yearly_high, yearly_low, total_traded_value
+    market_lot, precision, multiplier, auction
+    buy : list[DepthLevel]        <- 5 rows at L8 depth
+    sell: list[DepthLevel]        <- 5 rows at L8 depth
+
+NOTE (verified from the SDK source and live reads): Kotak serves the SAME
+SFeedScrip model at levels 2/4/8/16; the difference is how many DepthLevel
+rows buy/sell carry (touch line = 1, depth = 5, full depth = 16). The scalar
+surface is identical, so the L4->L8 move ADDS depth rows 2..5 on each side
+and does not remove any scalar the touch-line previously delivered.
+
+--------------------------------------------------------------------
+3. CANONICAL ADAPTER MAPPING (canonical.py) - NOTHING DROPPED
+--------------------------------------------------------------------
+_SCRIP_FIELDS (26 scalars) canonical-name -> SFeed attribute:
+    ltp                 -> last_traded_price
+    ltq                 -> last_trade_qty
+    open                -> open_price
+    high                -> high_price
+    low                 -> low_price
+    prev_close          -> close_price
+    avg_price           -> average_trade_price
+    volume              -> volume_traded_today
+    total_buy_quantity  -> total_buy_quantity
+    total_sell_quantity -> total_sell_quantity
+    open_interest       -> open_interest
+    net_change          -> net_change
+    net_change_pct      -> net_change_percent
+    upper_circuit_limit -> upper_circuit_limit
+    lower_circuit_limit -> lower_circuit_limit
+    yearly_high         -> yearly_high
+    yearly_low          -> yearly_low
+    total_traded_value  -> total_traded_value
+    market_lot          -> market_lot
+    precision           -> precision
+    multiplier          -> multiplier
+    auction             -> auction
+    last_trade_time     -> last_trade_time
+    last_update_time    -> last_update_time
+    buy  -> _depth_list(level.buy)   (each row -> {quantity, price, orders})
+    sell -> _depth_list(level.sell)
+
+_feed_type(level): 1 -> scrip_lite | 4 -> touch_line | 8 -> depth | 16 -> full_depth
+
+Identity fields are carried on the engine payload envelope
+(instrument_token -> instrumentToken, exchange_segment -> exchangeSegment,
+ trading_symbol -> tradingSymbol; storage also derives a clean symbol). Time
+fields are never fabricated: ts <- last_trade_time (broker), receivedAt <-
+process receive time. The immutable raw broker blob is preserved as `raw`.
+
+--------------------------------------------------------------------
+4. STORAGE DOCUMENT (db.ticks) - SUPERSET, VERBATIM             [storage.py]
+--------------------------------------------------------------------
+Legacy 28-key surface kept verbatim for existing consumers:
+    ltp open high low close volume ltq tbq tsq
+    averagePrice change changePercent oi
+    upper_circuit_limit lower_circuit_limit total_traded_value
+    last_update_time
+Top-of-book derivations (from trail 0 of the depth lists, no fabrication):
+    bp = buy[0].price,  bq = buy[0].quantity
+    sp = sell[0].price, sq = sell[0].quantity
+    bs = bq   (best-bid size alias; FIXED - was previously sq, i.e. the ask
+              quantity, which the 2026-09-18 forensic audit flagged)
+
+Lossless additions that the old ws_manager._sfeed_to_raw used to drop:
+    buy (full 5 rows), sell (full 5 rows)      <- THE L8 PAYLOAD
+    market_lot, precision, multiplier, auction, yearly_high, yearly_low,
+    last_trade_time, level, message_type, feed_type, feed_level
+    ref_price, imbalance_qty, imbalance_qty_at_market, status_code, status,
+    index_name (CAS / market-status / index pass-through)
+Canonical envelope: event_id, event_type, schema_version, sdk_version,
+    source, raw_reference, ts, receivedAt, raw (immutable broker blob)
+
+--------------------------------------------------------------------
+5. FIELD-LOSS MATRIX: SDK L8 SFeedScrip -> db.ticks
+--------------------------------------------------------------------
+SDK field                          -> storage doc            Status
+exchange_segment                  -> exchangeSegment         PRESERVED
+instrument_token                  -> instrumentToken         PRESERVED
+trading_symbol                    -> tradingSymbol + symbol  PRESERVED
+last_traded_price                 -> ltp                     PRESERVED
+last_trade_time                   -> last_trade_time + ts    PRESERVED
+last_update_time                  -> last_update_time        PRESERVED
+open_price                        -> open                    PRESERVED
+high_price                        -> high                    PRESERVED
+low_price                         -> low                     PRESERVED
+close_price                       -> close                   PRESERVED
+average_trade_price               -> averagePrice            PRESERVED
+last_trade_qty                    -> ltq                     PRESERVED
+total_buy_quantity                -> tbq                     PRESERVED
+total_sell_quantity               -> tsq                     PRESERVED
+volume_traded_today               -> volume                  PRESERVED
+open_interest                     -> oi                      PRESERVED
+net_change                        -> change                  PRESERVED
+net_change_percent                -> changePercent           PRESERVED
+upper_circuit_limit               -> upper_circuit_limit     PRESERVED
+lower_circuit_limit               -> lower_circuit_limit     PRESERVED
+yearly_high                       -> yearly_high             PRESERVED
+yearly_low                        -> yearly_low              PRESERVED
+total_traded_value                -> total_traded_value      PRESERVED
+market_lot                        -> market_lot              PRESERVED
+precision                         -> precision               PRESERVED
+multiplier                        -> multiplier              PRESERVED
+auction                           -> auction                 PRESERVED
+buy[0..4] (quantity/price/orders) -> buy[0..4] (5 rows)      PRESERVED
+sell[0..4] (quantity/price/orders)-> sell[0..4] (5 rows)     PRESERVED
+full raw wire packet              -> raw (immutable blob)    PRESERVED
+
+RESULT: 0 fields lost at any hop (SDK decode -> canonical -> storage doc ->
+Mongo -> SSE/read APIs). The storage doc is a strict superset of the decoded
+L8 message; the raw broker payload is additionally recoverable from `raw`.
+
+--------------------------------------------------------------------
+6. LIVE SAMPLE (post-restart, db.ticks newest L8 depth doc)
+--------------------------------------------------------------------
+    symbol=EIHOTEL  feed_level=8  feed_type="depth"  bs=24  bq=24
+    buy[0] = { quantity: 24, price: 305.6, orders: 5 }
+    (buy 5 rows / sell 5 rows verified across every one of the 1,101 docs;
+     ONGC 4797/4797, BOSCHLTD 8/8, CUPID 1968/1968 -> bs == bq on all)
+    raw blob present on every depth doc.
+
+--------------------------------------------------------------------
+END OF INVENTORY
+--------------------------------------------------------------------

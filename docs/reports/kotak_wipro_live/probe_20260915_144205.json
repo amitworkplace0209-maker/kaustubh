@@ -1,0 +1,1924 @@
+{
+  "timestamp_ist": "2026-09-15T14:42:05+05:30",
+  "utc_iso": "2026-09-15T09:12:05+00:00",
+  "market": {
+    "ist_now": "2026-09-15T14:41:09+05:30",
+    "weekday": "Tuesday",
+    "weekday_int": 1,
+    "is_weekday": true,
+    "hhmm_ist": 1441,
+    "market_expected_open": true,
+    "window_label": "OPEN (NSE cash 09:15-15:30 IST)"
+  },
+  "sdk": {
+    "version": "3.0.6",
+    "import_name": "neo_api_client",
+    "location": "C:\\project\\.venv\\Lib\\site-packages\\neo_api_client"
+  },
+  "session": {
+    "login_outcome": "session validated (user=XBH6H) source=probe_wipro_depth",
+    "user_id": "XBH6H",
+    "session_active": true,
+    "logged_in": true
+  },
+  "wipro_meta": {
+    "data": {
+      "symbol": "WIPRO",
+      "token": "***",
+      "exchange": "nse_cm",
+      "exchangeSegment": "nse_cm",
+      "tradingSymbol": "WIPRO-EQ",
+      "companyName": "WIPRO LTD",
+      "series": "EQ",
+      "instrumentType": "EQ",
+      "segment": "EQ",
+      "lotSize": "1",
+      "tickSize": "1",
+      "isin": "INE075A01022"
+    },
+    "source": "instrument_master.json (loaded from Kotak scrip master CSV)"
+  },
+  "master": {
+    "csv_url": "https://lapi.kotaksecurities.com/wso2-scripmaster/v1/prod/2026-09-15/transformed-v1/nse_cm-v1.csv",
+    "total_rows_in_csv": 9868,
+    "wipro_row_count": 1,
+    "wipro_rows": [
+      {
+        "pSymbol": "3787",
+        "pGroup": "EQ",
+        "pExchSeg": "nse_cm",
+        "pInstType": "",
+        "pSymbolName": "WIPRO",
+        "pTrdSymbol": "WIPRO-EQ",
+        "pOptionType": "",
+        "pScripRefKey": "WIPRO",
+        "pISIN": "INE075A01022",
+        "pAssetCode": "",
+        "pSubGroup": "",
+        "pCombinedSymbol": "",
+        "pDesc": "WIPRO LTD",
+        "pAmcCode": "",
+        "pContractId": "",
+        "dTickSize ": "1",
+        "lLotSize": "1",
+        "lExpiryDate ": "-1",
+        "lMultiplier ": "-1",
+        "lPrecision": "2",
+        "dStrikePrice;": "-1",
+        "pExchange": "NSE",
+        "pInstName": "",
+        "pExpiryDate": "",
+        "pIssueDate": "470275200",
+        "pMaturityDate": "",
+        "pListingDate": "500256000",
+        "pNoDelStartDate": "0",
+        "pNoDelEndDate": "0",
+        "pBookClsStartDate": "0",
+        "pBookClsEndDate": "0",
+        "pRecordDate": "1469577600",
+        "pCreditRating": "150.66-184.14",
+        "pReAdminDate": "0",
+        "pExpulsionDate": "0",
+        "pLocalUpdateTime": "1473625553",
+        "pDeliveryUnits": "",
+        "pPriceUnits": "",
+        "pLastTradingDate": "",
+        "pTenderPeridEndDate": "",
+        "pTenderPeridStartDate": "",
+        "pSellVarMargin": "",
+        "pBuyVarMargin": "",
+        "pInstrumentInfo": "",
+        "pRemarksText": "",
+        "pSegment": "CASH",
+        "pNav": "",
+        "pNavDate": "",
+        "pMfAmt": "",
+        "pSipSecurity": "",
+        "pFaceValue": "200",
+        "pTrdUnits": "",
+        "pExerciseStartDate": "",
+        "pExerciseEndDate": "",
+        "pElmMargin": "0",
+        "pVarMargin": "20",
+        "pTotProposedLimitValue": "",
+        "pScripBasePrice": "0.0000",
+        "pSettlementType": "T+1",
+        "pCurrectionTime": "315513000",
+        "iPermittedToTrade": "0",
+        "iBoardLotQty ": "1",
+        "iMaxOrderSize ": "594248.00",
+        "iLotSize": "1",
+        "dOpenInterest ": "0",
+        "dHighPriceRange ": "18414",
+        "dLowPriceRange ": "15066",
+        "dPriceNum   ": "1",
+        "dGenDen": "1",
+        "dGenNum": "1",
+        "dPriceQuatation ": "0",
+        "dIssuerate ": "0",
+        "dPriceDen": "1",
+        "dWarningQty ": "0",
+        "dIssueCapital ": "9.90414e+09",
+        "dExposureMargin ": "0",
+        "dMinRedemptionQty ": "0",
+        "lFreezeQty": "594248",
+        "surveillanceMessage": "",
+        "CASEligible": "true"
+      }
+    ],
+    "csv_header_fields": [
+      "CASEligible",
+      "dExposureMargin ",
+      "dGenDen",
+      "dGenNum",
+      "dHighPriceRange ",
+      "dIssueCapital ",
+      "dIssuerate ",
+      "dLowPriceRange ",
+      "dMinRedemptionQty ",
+      "dOpenInterest ",
+      "dPriceDen",
+      "dPriceNum   ",
+      "dPriceQuatation ",
+      "dStrikePrice;",
+      "dTickSize ",
+      "dWarningQty ",
+      "iBoardLotQty ",
+      "iLotSize",
+      "iMaxOrderSize ",
+      "iPermittedToTrade",
+      "lExpiryDate ",
+      "lFreezeQty",
+      "lLotSize",
+      "lMultiplier ",
+      "lPrecision",
+      "pAmcCode",
+      "pAssetCode",
+      "pBookClsEndDate",
+      "pBookClsStartDate",
+      "pBuyVarMargin",
+      "pCombinedSymbol",
+      "pContractId",
+      "pCreditRating",
+      "pCurrectionTime",
+      "pDeliveryUnits",
+      "pDesc",
+      "pElmMargin",
+      "pExchSeg",
+      "pExchange",
+      "pExerciseEndDate",
+      "pExerciseStartDate",
+      "pExpiryDate",
+      "pExpulsionDate",
+      "pFaceValue",
+      "pGroup",
+      "pISIN",
+      "pInstName",
+      "pInstType",
+      "pInstrumentInfo",
+      "pIssueDate",
+      "pLastTradingDate",
+      "pListingDate",
+      "pLocalUpdateTime",
+      "pMaturityDate",
+      "pMfAmt",
+      "pNav",
+      "pNavDate",
+      "pNoDelEndDate",
+      "pNoDelStartDate",
+      "pOptionType",
+      "pPriceUnits",
+      "pReAdminDate",
+      "pRecordDate",
+      "pRemarksText",
+      "pScripBasePrice",
+      "pScripRefKey",
+      "pSegment",
+      "pSellVarMargin",
+      "pSettlementType",
+      "pSipSecurity",
+      "pSubGroup",
+      "pSymbol",
+      "pSymbolName",
+      "pTenderPeridEndDate",
+      "pTenderPeridStartDate",
+      "pTotProposedLimitValue",
+      "pTrdSymbol",
+      "pTrdUnits",
+      "pVarMargin",
+      "surveillanceMessage"
+    ]
+  },
+  "quote": {
+    "elapsed_s": 0.516,
+    "endpoint": "GET script-details/1.0/quotes/neosymbol/{neosymbols}/all",
+    "request_payload": [
+      {
+        "exchange_segment": "nse_cm",
+        "instrument_token": "3787"
+      }
+    ],
+    "quote_type": "all",
+    "response_type": "dict",
+    "top_level_keys": [
+      "data"
+    ],
+    "item_count": 1,
+    "flat_field_count": 51,
+    "flattened_redacted": {
+      "data[0].exchange_token": "3787",
+      "data[0].display_symbol": "WIPRO-EQ",
+      "data[0].exchange": "nse_cm",
+      "data[0].lstup_time": "1789463479",
+      "data[0].ltp": "169.8400",
+      "data[0].last_traded_quantity": "1",
+      "data[0].total_buy": "821111",
+      "data[0].total_sell": "2080884",
+      "data[0].last_volume": "9993684",
+      "data[0].avg_cost": "171.8600",
+      "data[0].open_int": "0",
+      "data[0].change": "2.4400",
+      "data[0].per_change": "1.4600",
+      "data[0].low_price_range": "150.6600",
+      "data[0].high_price_range": "184.1400",
+      "data[0].year_high": "273.1",
+      "data[0].year_low": "165.16",
+      "data[0].ohlc.open": "172.2000",
+      "data[0].ohlc.high": "173.3500",
+      "data[0].ohlc.low": "169.6000",
+      "data[0].ohlc.close": "167.4000",
+      "data[0].depth.buy[0].price": "169.7700",
+      "data[0].depth.buy[0].quantity": "157",
+      "data[0].depth.buy[0].orders": "1",
+      "data[0].depth.buy[1].price": "169.7600",
+      "data[0].depth.buy[1].quantity": "914",
+      "data[0].depth.buy[1].orders": "8",
+      "data[0].depth.buy[2].price": "169.7500",
+      "data[0].depth.buy[2].quantity": "1137",
+      "data[0].depth.buy[2].orders": "5",
+      "data[0].depth.buy[3].price": "169.7400",
+      "data[0].depth.buy[3].quantity": "2049",
+      "data[0].depth.buy[3].orders": "7",
+      "data[0].depth.buy[4].price": "169.7300",
+      "data[0].depth.buy[4].quantity": "3201",
+      "data[0].depth.buy[4].orders": "6",
+      "data[0].depth.sell[0].price": "169.8300",
+      "data[0].depth.sell[0].quantity": "104",
+      "data[0].depth.sell[0].orders": "1",
+      "data[0].depth.sell[1].price": "169.8400",
+      "data[0].depth.sell[1].quantity": "1004",
+      "data[0].depth.sell[1].orders": "4",
+      "data[0].depth.sell[2].price": "169.8500",
+      "data[0].depth.sell[2].quantity": "784",
+      "data[0].depth.sell[2].orders": "3",
+      "data[0].depth.sell[3].price": "169.8600",
+      "data[0].depth.sell[3].quantity": "7349",
+      "data[0].depth.sell[3].orders": "14",
+      "data[0].depth.sell[4].price": "169.8700",
+      "data[0].depth.sell[4].quantity": "747",
+      "data[0].depth.sell[4].orders": "4"
+    },
+    "raw_redacted": {
+      "data": [
+        {
+          "exchange_token": "3787",
+          "display_symbol": "WIPRO-EQ",
+          "exchange": "nse_cm",
+          "lstup_time": "1789463479",
+          "ltp": "169.8400",
+          "last_traded_quantity": "1",
+          "total_buy": "821111",
+          "total_sell": "2080884",
+          "last_volume": "9993684",
+          "avg_cost": "171.8600",
+          "open_int": "0",
+          "change": "2.4400",
+          "per_change": "1.4600",
+          "low_price_range": "150.6600",
+          "high_price_range": "184.1400",
+          "year_high": "273.1",
+          "year_low": "165.16",
+          "ohlc": {
+            "open": "172.2000",
+            "high": "173.3500",
+            "low": "169.6000",
+            "close": "167.4000"
+          },
+          "depth": {
+            "buy": [
+              {
+                "price": "169.7700",
+                "quantity": "157",
+                "orders": "1"
+              },
+              {
+                "price": "169.7600",
+                "quantity": "914",
+                "orders": "8"
+              },
+              {
+                "price": "169.7500",
+                "quantity": "1137",
+                "orders": "5"
+              },
+              {
+                "price": "169.7400",
+                "quantity": "2049",
+                "orders": "7"
+              },
+              {
+                "price": "169.7300",
+                "quantity": "3201",
+                "orders": "6"
+              }
+            ],
+            "sell": [
+              {
+                "price": "169.8300",
+                "quantity": "104",
+                "orders": "1"
+              },
+              {
+                "price": "169.8400",
+                "quantity": "1004",
+                "orders": "4"
+              },
+              {
+                "price": "169.8500",
+                "quantity": "784",
+                "orders": "3"
+              },
+              {
+                "price": "169.8600",
+                "quantity": "7349",
+                "orders": "14"
+              },
+              {
+                "price": "169.8700",
+                "quantity": "747",
+                "orders": "4"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "levels": [
+    {
+      "level": 16,
+      "sdk_level_name": "FULL_DEPTH",
+      "sdk_method": "subscribe_full_depth()",
+      "wire_event": "subscribeFullDepth",
+      "subscription_payload": {
+        "event": "subscribeFullDepth",
+        "tokens": [
+          "nse_cm|3787"
+        ],
+        "ack_symbol": true
+      },
+      "connect": "OK",
+      "url": "wss://sfeed.kotaksecurities.com/apifeed",
+      "dividers": {
+        "1": 100,
+        "2": 100,
+        "3": 10000000,
+        "4": 100,
+        "5": 100,
+        "6": 100,
+        "7": 10000000,
+        "8": 100,
+        "9": 100,
+        "10": 100
+      },
+      "subscribe_returned": "OK",
+      "subscribe_exchange": "OK",
+      "unsubscribe_returned": "OK",
+      "close": "OK",
+      "capture_elapsed_s": 45.006,
+      "total_sdk_messages": 12,
+      "wipro_sdk_messages": 2,
+      "message_types": {
+        "scrip": 2,
+        "market_status": 10
+      },
+      "levels_seen": {
+        "16": 2
+      },
+      "wipro_scrip_by_level": {
+        "16": {
+          "count": 2,
+          "bid_rows_max": 0,
+          "ask_rows_max": 0,
+          "bid_rows_seen": {
+            "0": 2
+          },
+          "ask_rows_seen": {
+            "0": 2
+          },
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30"
+        }
+      },
+      "wipro_depth_samples": {
+        "16": [
+          {
+            "buy": [],
+            "sell": []
+          },
+          {
+            "buy": [],
+            "sell": []
+          }
+        ]
+      },
+      "market_status_seen": {
+        "1": 5,
+        "_text": "Market open",
+        "_seg": "nse_cm",
+        "12": 2,
+        "2": 3
+      },
+      "attrs_seen": [
+        "auction",
+        "average_trade_price",
+        "buy",
+        "close_price",
+        "exchange_segment",
+        "high_price",
+        "instrument_token",
+        "last_trade_qty",
+        "last_trade_time",
+        "last_traded_price",
+        "last_update_time",
+        "level",
+        "low_price",
+        "lower_circuit_limit",
+        "market_lot",
+        "multiplier",
+        "net_change",
+        "net_change_percent",
+        "open_interest",
+        "open_price",
+        "precision",
+        "sell",
+        "status",
+        "status_code",
+        "total_buy_quantity",
+        "total_sell_quantity",
+        "total_traded_value",
+        "trading_symbol",
+        "type",
+        "upper_circuit_limit",
+        "volume_traded_today",
+        "yearly_high",
+        "yearly_low"
+      ],
+      "field_stats": {
+        "exchange_segment": {
+          "count": 12,
+          "types": [
+            "str"
+          ],
+          "first": "nse_cm",
+          "last": "ncd_co",
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:21+05:30",
+          "sample_values": [
+            "nse_cm",
+            "nse_cm",
+            "nse_cm",
+            "nse_fo",
+            "cde_fo"
+          ],
+          "paths": [
+            "scrip.exchange_segment",
+            "market_status.exchange_segment"
+          ]
+        },
+        "instrument_token": {
+          "count": 2,
+          "types": [
+            "str"
+          ],
+          "first": "3787",
+          "last": "3787",
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            "3787",
+            "3787"
+          ],
+          "paths": [
+            "scrip.instrument_token"
+          ]
+        },
+        "trading_symbol": {
+          "count": 2,
+          "types": [
+            "str"
+          ],
+          "first": "WIPRO-EQ",
+          "last": "WIPRO-EQ",
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            "WIPRO-EQ",
+            "WIPRO-EQ"
+          ],
+          "paths": [
+            "scrip.trading_symbol"
+          ]
+        },
+        "type": {
+          "count": 12,
+          "types": [
+            "str"
+          ],
+          "first": "scrip",
+          "last": "market_status",
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:21+05:30",
+          "sample_values": [
+            "scrip",
+            "scrip",
+            "market_status",
+            "market_status",
+            "market_status"
+          ],
+          "paths": [
+            "scrip.type",
+            "market_status.type"
+          ]
+        },
+        "level": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 16,
+          "last": 16,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            16,
+            16
+          ],
+          "paths": [
+            "scrip.level"
+          ]
+        },
+        "last_traded_price": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 167.4,
+          "last": 167.4,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            167.4,
+            167.4
+          ],
+          "paths": [
+            "scrip.last_traded_price"
+          ]
+        },
+        "open_price": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 165.2,
+          "last": 165.2,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            165.2,
+            165.2
+          ],
+          "paths": [
+            "scrip.open_price"
+          ]
+        },
+        "high_price": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 167.75,
+          "last": 167.75,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            167.75,
+            167.75
+          ],
+          "paths": [
+            "scrip.high_price"
+          ]
+        },
+        "low_price": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 165.16,
+          "last": 165.16,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            165.16,
+            165.16
+          ],
+          "paths": [
+            "scrip.low_price"
+          ]
+        },
+        "close_price": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 167.4,
+          "last": 167.4,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            167.4,
+            167.4
+          ],
+          "paths": [
+            "scrip.close_price"
+          ]
+        },
+        "average_trade_price": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 0.0,
+          "last": 0.0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0.0,
+            0.0
+          ],
+          "paths": [
+            "scrip.average_trade_price"
+          ]
+        },
+        "last_trade_time": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 0,
+          "last": 0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0,
+            0
+          ],
+          "paths": [
+            "scrip.last_trade_time"
+          ]
+        },
+        "last_update_time": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 1789065000,
+          "last": 1789065000,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            1789065000,
+            1789065000
+          ],
+          "paths": [
+            "scrip.last_update_time"
+          ]
+        },
+        "last_trade_qty": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 132,
+          "last": 132,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            132,
+            132
+          ],
+          "paths": [
+            "scrip.last_trade_qty"
+          ]
+        },
+        "total_buy_quantity": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 0,
+          "last": 0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0,
+            0
+          ],
+          "paths": [
+            "scrip.total_buy_quantity"
+          ]
+        },
+        "total_sell_quantity": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 0,
+          "last": 0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0,
+            0
+          ],
+          "paths": [
+            "scrip.total_sell_quantity"
+          ]
+        },
+        "volume_traded_today": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 0,
+          "last": 0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0,
+            0
+          ],
+          "paths": [
+            "scrip.volume_traded_today"
+          ]
+        },
+        "open_interest": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 0,
+          "last": 0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0,
+            0
+          ],
+          "paths": [
+            "scrip.open_interest"
+          ]
+        },
+        "net_change": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 0.0,
+          "last": 0.0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0.0,
+            0.0
+          ],
+          "paths": [
+            "scrip.net_change"
+          ]
+        },
+        "net_change_percent": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 0.0,
+          "last": 0.0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0.0,
+            0.0
+          ],
+          "paths": [
+            "scrip.net_change_percent"
+          ]
+        },
+        "upper_circuit_limit": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 184.14,
+          "last": 184.14,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            184.14,
+            184.14
+          ],
+          "paths": [
+            "scrip.upper_circuit_limit"
+          ]
+        },
+        "lower_circuit_limit": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 150.66,
+          "last": 150.66,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            150.66,
+            150.66
+          ],
+          "paths": [
+            "scrip.lower_circuit_limit"
+          ]
+        },
+        "yearly_high": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 273.1,
+          "last": 273.1,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            273.1,
+            273.1
+          ],
+          "paths": [
+            "scrip.yearly_high"
+          ]
+        },
+        "yearly_low": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 165.16,
+          "last": 165.16,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            165.16,
+            165.16
+          ],
+          "paths": [
+            "scrip.yearly_low"
+          ]
+        },
+        "total_traded_value": {
+          "count": 2,
+          "types": [
+            "float"
+          ],
+          "first": 0.0,
+          "last": 0.0,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            0.0,
+            0.0
+          ],
+          "paths": [
+            "scrip.total_traded_value"
+          ]
+        },
+        "market_lot": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 1,
+          "last": 1,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            1,
+            1
+          ],
+          "paths": [
+            "scrip.market_lot"
+          ]
+        },
+        "precision": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 2,
+          "last": 2,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            2,
+            2
+          ],
+          "paths": [
+            "scrip.precision"
+          ]
+        },
+        "multiplier": {
+          "count": 2,
+          "types": [
+            "int"
+          ],
+          "first": 1,
+          "last": 1,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            1,
+            1
+          ],
+          "paths": [
+            "scrip.multiplier"
+          ]
+        },
+        "auction": {
+          "count": 2,
+          "types": [
+            "bool"
+          ],
+          "first": false,
+          "last": false,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            false,
+            false
+          ],
+          "paths": [
+            "scrip.auction"
+          ]
+        },
+        "buy": {
+          "count": 2,
+          "types": [
+            "NoneType"
+          ],
+          "first": null,
+          "last": null,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            null,
+            null
+          ],
+          "paths": [
+            "scrip.buy"
+          ]
+        },
+        "sell": {
+          "count": 2,
+          "types": [
+            "NoneType"
+          ],
+          "first": null,
+          "last": null,
+          "first_ts": "2026-09-15T14:41:20+05:30",
+          "last_ts": "2026-09-15T14:41:20+05:30",
+          "sample_values": [
+            null,
+            null
+          ],
+          "paths": [
+            "scrip.sell"
+          ]
+        },
+        "status_code": {
+          "count": 10,
+          "types": [
+            "int"
+          ],
+          "first": 1,
+          "last": 2,
+          "first_ts": "2026-09-15T14:41:21+05:30",
+          "last_ts": "2026-09-15T14:41:21+05:30",
+          "sample_values": [
+            1,
+            12,
+            1,
+            1,
+            1
+          ],
+          "paths": [
+            "market_status.status_code"
+          ]
+        },
+        "status": {
+          "count": 10,
+          "types": [
+            "str"
+          ],
+          "first": "Market open",
+          "last": "Market closed",
+          "first_ts": "2026-09-15T14:41:21+05:30",
+          "last_ts": "2026-09-15T14:41:21+05:30",
+          "sample_values": [
+            "Market open",
+            "Closing auction (CAS) ended",
+            "Market open",
+            "Market open",
+            "Market open"
+          ],
+          "paths": [
+            "market_status.status"
+          ]
+        }
+      },
+      "acks": [
+        {
+          "ack_ts": "2026-09-15T14:41:20.937+05:30",
+          "trading_symbols_redacted": {
+            "nse_cm|3787": "WIPRO-EQ"
+          },
+          "raw_keys": [
+            "data",
+            "description",
+            "error_code",
+            "message_code",
+            "trading_symbols"
+          ]
+        }
+      ],
+      "raw_text_frames": 2,
+      "raw_binary_frames": 3,
+      "raw_binary_bytes": 512,
+      "raw_first_ts": "2026-09-15T14:41:20.638+05:30",
+      "raw_last_ts": "2026-09-15T14:41:21.275+05:30",
+      "raw_packet_msg_codes": {
+        "7208": 2,
+        "105": 10
+      },
+      "raw_packet_levels": {
+        "16": 2,
+        "0": 4,
+        "1": 6
+      },
+      "outbound_frame_count": 3,
+      "outbound_frames": [
+        {
+          "ts": "2026-09-15T14:41:20.338+05:30",
+          "data_redacted": "{\"event\": \"subscribeFullDepth\", \"inputtoken\": \"nse_cm|3787\", \"ack_symbol\": true}"
+        },
+        {
+          "ts": "2026-09-15T14:41:20.938+05:30",
+          "data_redacted": "{\"event\": \"subscribeExchange\"}"
+        },
+        {
+          "ts": "2026-09-15T14:42:05.344+05:30",
+          "data_redacted": "{\"event\": \"unsubscribeFullDepth\", \"inputtoken\": \"nse_cm|3787\"}"
+        }
+      ],
+      "wipro_messages_per_sec": 0.044,
+      "all_messages_per_sec": 0.267,
+      "raw_evidence_file": "C:\\project\\docs\\reports\\kotak_wipro_live\\evidence_raw_level16_20260915_144205.jsonl",
+      "wire_decoded_samples": [
+        {
+          "header": {
+            "message_length": 176,
+            "message_code": 7208,
+            "exchange_id": 1,
+            "level": 16,
+            "auction_flag": 0,
+            "seq_no": 0,
+            "bitmask_length": 0
+          },
+          "depth_rows": [],
+          "body": {
+            "token": 3787,
+            "total_buy_qty": 0,
+            "total_sell_qty": 0,
+            "volume_traded_today": 0,
+            "last_trade_time": 0,
+            "last_update_time": 1789065000,
+            "open_price": 16520,
+            "close_price": 16740,
+            "high_price": 16775,
+            "low_price": 16516,
+            "last_traded_price": 16740,
+            "last_trade_qty": 132,
+            "avg_trade_price": 0,
+            "_indicative_close": 0,
+            "buy_depth_count": 0,
+            "sell_depth_count": 0,
+            "_trading_status": 0,
+            "net_chg_percent": 0,
+            "open_interest": 0,
+            "total_traded_value": 0.0,
+            "net_chg": 0,
+            "upper_circuit": 18414,
+            "lower_circuit": 15066,
+            "yearly_high": 27310,
+            "yearly_low": 16516,
+            "market_lot": 1,
+            "precision": 2,
+            "multiplier": 1
+          },
+          "frame_ts": "2026-09-15T14:41:20.935+05:30"
+        },
+        {
+          "header": {
+            "message_length": 176,
+            "message_code": 7208,
+            "exchange_id": 1,
+            "level": 16,
+            "auction_flag": 0,
+            "seq_no": 0,
+            "bitmask_length": 0
+          },
+          "depth_rows": [],
+          "body": {
+            "token": 3787,
+            "total_buy_qty": 0,
+            "total_sell_qty": 0,
+            "volume_traded_today": 0,
+            "last_trade_time": 0,
+            "last_update_time": 1789065000,
+            "open_price": 16520,
+            "close_price": 16740,
+            "high_price": 16775,
+            "low_price": 16516,
+            "last_traded_price": 16740,
+            "last_trade_qty": 132,
+            "avg_trade_price": 0,
+            "_indicative_close": 0,
+            "buy_depth_count": 0,
+            "sell_depth_count": 0,
+            "_trading_status": 0,
+            "net_chg_percent": 0,
+            "open_interest": 0,
+            "total_traded_value": 0.0,
+            "net_chg": 0,
+            "upper_circuit": 18414,
+            "lower_circuit": 15066,
+            "yearly_high": 27310,
+            "yearly_low": 16516,
+            "market_lot": 1,
+            "precision": 2,
+            "multiplier": 1
+          },
+          "frame_ts": "2026-09-15T14:41:20.938+05:30"
+        }
+      ],
+      "wire_hex_samples": [
+        {
+          "ts": "2026-09-15T14:41:20.935+05:30",
+          "size": 176,
+          "hex": "b000281c0110000000cb0e0000000000000000000000000000000000000000000000000000000000000000000028f7a26a00000000884000006441000087410000844000006441000084000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ee470000da3a0000ae6a0000844000000100000002010000000000000000000000000000000000000000000000000000000000000000000000",
+          "sha256": "b1ac9ac30e4b22c6"
+        },
+        {
+          "ts": "2026-09-15T14:41:20.938+05:30",
+          "size": 176,
+          "hex": "b000281c0110000000cb0e0000000000000000000000000000000000000000000000000000000000000000000028f7a26a00000000884000006441000087410000844000006441000084000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ee470000da3a0000ae6a0000844000000100000002010000000000000000000000000000000000000000000000000000000000000000000000",
+          "sha256": "b1ac9ac30e4b22c6"
+        },
+        {
+          "ts": "2026-09-15T14:41:21.275+05:30",
+          "size": 160,
+          "hex": "10006900010001000001004f50454e001000690002000100000c00434153450010006900030100000001004f50454e0010006900040100000001004f50454e0010006900050001000001004f50454e001000690006000100000c004341534500100069000701000000020000000000001000690008010000000200000000000010006900090100000001004f50454e00100069000a0100000002000000000000",
+          "sha256": "eea2a168ee32b650"
+        }
+      ]
+    }
+  ],
+  "sdk_vs_raw": [
+    {
+      "level": 16,
+      "rows": [
+        {
+          "raw_wire_field": "header.message_length",
+          "sdk_field": "(none)",
+          "status": "SENT_BY_KOTAK_DISCARDED_BY_SDK",
+          "transformation": "header kept in model? No - length not exposed"
+        },
+        {
+          "raw_wire_field": "header.message_code",
+          "sdk_field": "(none)",
+          "status": "SENT_BY_KOTAK_DISCARDED_BY_SDK",
+          "transformation": "routing only; not exposed as a field"
+        },
+        {
+          "raw_wire_field": "header.exchange_id",
+          "sdk_field": "exchange_segment",
+          "status": "PRESERVED",
+          "transformation": "exchange_id mapped to segment string"
+        },
+        {
+          "raw_wire_field": "header.level",
+          "sdk_field": "level",
+          "status": "PRESERVED",
+          "transformation": "header level byte preserved verbatim"
+        },
+        {
+          "raw_wire_field": "header.auction_flag",
+          "sdk_field": "auction",
+          "status": "PRESERVED",
+          "transformation": "flag>0 converted to bool"
+        },
+        {
+          "raw_wire_field": "header.seq_no",
+          "sdk_field": "(none)",
+          "status": "SENT_BY_KOTAK_DISCARDED_BY_SDK",
+          "transformation": "DISCARDED - seq_no decoded but never exposed"
+        },
+        {
+          "raw_wire_field": "header.bitmask_length",
+          "sdk_field": "(none)",
+          "status": "SENT_BY_KOTAK_DISCARDED_BY_SDK",
+          "transformation": "DISCARDED - decoded but never exposed"
+        },
+        {
+          "raw_wire_field": "body.token",
+          "sdk_field": "instrument_token",
+          "status": "PRESERVED",
+          "transformation": "int token -> str instrument_token"
+        },
+        {
+          "raw_wire_field": "body.total_buy_qty",
+          "sdk_field": "total_buy_quantity",
+          "status": "PRESERVED",
+          "transformation": "integer preserved"
+        },
+        {
+          "raw_wire_field": "body.total_sell_qty",
+          "sdk_field": "total_sell_quantity",
+          "status": "PRESERVED",
+          "transformation": "integer preserved"
+        },
+        {
+          "raw_wire_field": "body.volume_traded_today",
+          "sdk_field": "volume_traded_today",
+          "status": "PRESERVED",
+          "transformation": "integer preserved"
+        },
+        {
+          "raw_wire_field": "body.last_trade_time",
+          "sdk_field": "last_trade_time",
+          "status": "PRESERVED",
+          "transformation": "integer preserved"
+        },
+        {
+          "raw_wire_field": "body.last_update_time",
+          "sdk_field": "last_update_time",
+          "status": "PRESERVED",
+          "transformation": "negative sentinel -> 0"
+        },
+        {
+          "raw_wire_field": "body.open_price",
+          "sdk_field": "open_price",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.close_price",
+          "sdk_field": "close_price",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.high_price",
+          "sdk_field": "high_price",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.low_price",
+          "sdk_field": "low_price",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.last_traded_price",
+          "sdk_field": "last_traded_price",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.last_trade_qty",
+          "sdk_field": "last_trade_qty",
+          "status": "PRESERVED",
+          "transformation": "integer preserved"
+        },
+        {
+          "raw_wire_field": "body.avg_trade_price",
+          "sdk_field": "average_trade_price",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body._indicative_close",
+          "sdk_field": "(none)",
+          "status": "SENT_BY_KOTAK_DISCARDED_BY_SDK",
+          "transformation": "DISCARDED - unpacked, never exposed"
+        },
+        {
+          "raw_wire_field": "body.buy_depth_count",
+          "sdk_field": "(count)",
+          "status": "PRESERVED",
+          "transformation": "drives number of buy rows decoded"
+        },
+        {
+          "raw_wire_field": "body.sell_depth_count",
+          "sdk_field": "(count)",
+          "status": "PRESERVED",
+          "transformation": "drives number of sell rows decoded"
+        },
+        {
+          "raw_wire_field": "body._trading_status",
+          "sdk_field": "(none)",
+          "status": "SENT_BY_KOTAK_DISCARDED_BY_SDK",
+          "transformation": "DISCARDED - unpacked, never exposed"
+        },
+        {
+          "raw_wire_field": "body.net_chg_percent",
+          "sdk_field": "net_change_percent",
+          "status": "PRESERVED",
+          "transformation": "divided by 100"
+        },
+        {
+          "raw_wire_field": "body.open_interest",
+          "sdk_field": "open_interest",
+          "status": "PRESERVED",
+          "transformation": "kept (double on wire)"
+        },
+        {
+          "raw_wire_field": "body.total_traded_value",
+          "sdk_field": "total_traded_value",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.net_chg",
+          "sdk_field": "net_change",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.upper_circuit",
+          "sdk_field": "upper_circuit_limit",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.lower_circuit",
+          "sdk_field": "lower_circuit_limit",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.yearly_high",
+          "sdk_field": "yearly_high",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.yearly_low",
+          "sdk_field": "yearly_low",
+          "status": "PRESERVED",
+          "transformation": "divided by divider (100)"
+        },
+        {
+          "raw_wire_field": "body.market_lot",
+          "sdk_field": "market_lot",
+          "status": "PRESERVED",
+          "transformation": "integer preserved"
+        },
+        {
+          "raw_wire_field": "body.precision",
+          "sdk_field": "precision",
+          "status": "PRESERVED",
+          "transformation": "u8 preserved"
+        },
+        {
+          "raw_wire_field": "body.multiplier",
+          "sdk_field": "multiplier",
+          "status": "PRESERVED",
+          "transformation": "integer preserved"
+        },
+        {
+          "raw_wire_field": "depth rows (wire, from byte 144)",
+          "sdk_field": "buy[]/sell[]",
+          "status": "PRESERVED",
+          "transformation": "level4 forces 1+1; L8/L16 use wire counts"
+        },
+        {
+          "raw_wire_field": "(no direct wire field)",
+          "sdk_field": "type",
+          "status": "SYNTHESIZED_BY_SDK",
+          "transformation": "'scrip' literal"
+        },
+        {
+          "raw_wire_field": "(no direct wire field)",
+          "sdk_field": "trading_symbol",
+          "status": "SYNTHESIZED_BY_SDK",
+          "transformation": "enriched from subscribe-ack trading_symbols map (NOT on wire)"
+        }
+      ]
+    }
+  ],
+  "matrix": [
+    {
+      "field": "LTP",
+      "sdk_attr": "last_traded_price",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Open",
+      "sdk_attr": "open_price",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "High",
+      "sdk_attr": "high_price",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Low",
+      "sdk_attr": "low_price",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Prev Close",
+      "sdk_attr": "close_price",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Avg Trade Price",
+      "sdk_attr": "average_trade_price",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Net Change",
+      "sdk_attr": "net_change",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Net Change %",
+      "sdk_attr": "net_change_percent",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Upper Circuit",
+      "sdk_attr": "upper_circuit_limit",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Lower Circuit",
+      "sdk_attr": "lower_circuit_limit",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Yearly High",
+      "sdk_attr": "yearly_high",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Yearly Low",
+      "sdk_attr": "yearly_low",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Last Trade Qty",
+      "sdk_attr": "last_trade_qty",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Last Trade Time",
+      "sdk_attr": "last_trade_time",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Last Update Time",
+      "sdk_attr": "last_update_time",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Volume",
+      "sdk_attr": "volume_traded_today",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Total Traded Value",
+      "sdk_attr": "total_traded_value",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Total Buy Qty",
+      "sdk_attr": "total_buy_quantity",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Total Sell Qty",
+      "sdk_attr": "total_sell_quantity",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Open Interest",
+      "sdk_attr": "open_interest",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Market Lot",
+      "sdk_attr": "market_lot",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Precision",
+      "sdk_attr": "precision",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Multiplier",
+      "sdk_attr": "multiplier",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Auction Flag",
+      "sdk_attr": "auction",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Instrument Token",
+      "sdk_attr": "instrument_token",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Trading Symbol",
+      "sdk_attr": "trading_symbol",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Exchange Segment",
+      "sdk_attr": "exchange_segment",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "YES",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Depth Bid Price L1",
+      "sdk_attr": "depth_bid1_price",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Depth Bid Qty L1",
+      "sdk_attr": "depth_bid1_qty",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Depth Bid Orders L1",
+      "sdk_attr": "depth_bid1_orders",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Depth Ask Price L1",
+      "sdk_attr": "depth_ask1_price",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Depth Ask Qty L1",
+      "sdk_attr": "depth_ask1_qty",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Depth Ask Orders L1",
+      "sdk_attr": "depth_ask1_orders",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "ISIN",
+      "sdk_attr": "isin",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "YES",
+      "note": ""
+    },
+    {
+      "field": "Company Name",
+      "sdk_attr": "company_name",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "YES",
+      "note": ""
+    },
+    {
+      "field": "Series",
+      "sdk_attr": "series",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Instrument Type",
+      "sdk_attr": "instrument_type",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Symbol",
+      "sdk_attr": "symbol",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Tick Size",
+      "sdk_attr": "tick_size",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Lot Size (master)",
+      "sdk_attr": "lot_size",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": ""
+    },
+    {
+      "field": "Wire Sequence no",
+      "sdk_attr": "seq_no",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": "present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)"
+    },
+    {
+      "field": "Wire Bitmask length",
+      "sdk_attr": "bitmask_length",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": "present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)"
+    },
+    {
+      "field": "Indicative Close (wire)",
+      "sdk_attr": "indicative_close",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": "present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)"
+    },
+    {
+      "field": "Trading Status (wire)",
+      "sdk_attr": "trading_status",
+      "L4": "NOT_VERIFIED",
+      "L8": "NOT_VERIFIED",
+      "L16": "NO",
+      "quote": "NO",
+      "master": "NO",
+      "note": "present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)"
+    }
+  ],
+  "depth": {
+    "4": {
+      "alive": false,
+      "level": 4
+    },
+    "8": {
+      "alive": false,
+      "level": 8
+    },
+    "16": {
+      "alive": true,
+      "level": 16,
+      "count": 2,
+      "bid_rows_seen": {
+        "0": 2
+      },
+      "ask_rows_seen": {
+        "0": 2
+      },
+      "sample0_buy_rows": 0,
+      "sample0_ask_rows": 0
+    }
+  },
+  "errors": [],
+  "allowed_levels": [
+    16
+  ],
+  "not_verified_levels": [],
+  "blocked_levels": [],
+  "recommendations": [
+    "In SDK 3.0.6 the depth level is NOT a parameter: it is chosen by the subscribe method (subscribe_scrips=L4, subscribe_depth=L8, subscribe_full_depth=L16).",
+    "All three levels are delivered as the same SFeedScrip model; the only per-level difference is the number of bid/ask depth rows.",
+    "Use ONE subscribe method per instrument per connection to keep the feed-level tag unambiguous.",
+    "seq_no / bitmask_length / _indicative_close / _trading_status are present on the raw wire but DISCARDED by the SDK parser.",
+    "Do NOT schedule quote or scrip-master refreshes faster than the broker rate limits; treat scrip master as static per-day and quote as on-demand/cached."
+  ]
+}

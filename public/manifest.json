@@ -2,17 +2,25 @@
   "id": "/",
   "name": "KAUSTUBH Trading Platform",
   "short_name": "KAUSTUBH",
-  "description": "Production-grade Kotak Neo trading platform and live data collector",
-  "start_url": "/trading",
-  "display": "standalone",
-  "display_override": "standalone",
-  "background_color": "#0a0f0d",
-  "theme_color": "#0f7a52",
-  "orientation": "any",
+  "description": "Production-grade Kotak Neo trading platform and live market data collector",
+  "start_url": "/login",
   "scope": "/",
+  "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "background_color": "#060a08",
+  "theme_color": "#F28C28",
+  "orientation": "any",
   "lang": "en",
   "dir": "ltr",
   "prefer_related_applications": false,
+  "categories": [
+    "finance",
+    "productivity",
+    "business"
+  ],
   "icons": [
     {
       "src": "/icon-192.png",
@@ -39,25 +47,57 @@
       "purpose": "maskable"
     }
   ],
-  "categories": ["finance", "productivity", "business"],
   "shortcuts": [
     {
       "name": "Dashboard",
       "short_name": "Dashboard",
       "url": "/dashboard",
-      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     },
     {
-      "name": "Trading",
-      "short_name": "Trade",
-      "url": "/trading",
-      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+      "name": "Orders",
+      "short_name": "Orders",
+      "url": "/trading/orders",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     },
     {
       "name": "Live Ticks",
       "short_name": "Ticks",
-      "url": "/live-ticks",
-      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+      "url": "/data-saver/ticks",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Stocks",
+      "short_name": "Stocks",
+      "url": "/data-saver/dashboard",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     }
-  ]
+  ],
+  "launch_handler": {
+    "client_mode": [
+      "focus-existing",
+      "navigate-existing",
+      "auto"
+    ]
+  }
 }

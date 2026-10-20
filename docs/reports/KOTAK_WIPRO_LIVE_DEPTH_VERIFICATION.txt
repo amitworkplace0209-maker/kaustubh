@@ -1,0 +1,191 @@
+================================================================================
+KOTAK WIPRO LIVE DEPTH + QUOTE + SCRIP MASTER FORENSIC VERIFICATION
+================================================================================
+
+Report timestamp (IST)  : 2026-09-18T14:12:38+05:30
+UTC                     : 2026-09-18T08:42:38+00:00
+Market state (IST clock): OPEN (NSE cash 09:15-15:30 IST) | weekday=Friday hhmm=1412
+
+[1] TEST DATE/TIME
+    2026-09-18T14:12:38+05:30 IST during NSE cash session: True
+
+[2] KOTAK SDK
+    package : kotakneoapi 3.0.6
+    import  : neo_api_client
+    location: C:\project\.venv\Lib\site-packages\neo_api_client
+
+[3] SESSION / AUTH
+    outcome      : session validated (user=XBH6H) source=probe_wipro_depth_l16
+    user         : XBH6H
+    session_active: True
+
+[4] WIPRO INSTRUMENT (from real instrument master)
+    symbol              : WIPRO
+    token               : ***
+    exchange            : nse_cm
+    exchangeSegment     : nse_cm
+    tradingSymbol       : WIPRO-EQ
+    companyName         : WIPRO LTD
+    series              : EQ
+    instrumentType      : EQ
+    segment             : EQ
+    lotSize             : 1
+    tickSize            : 1
+    isin                : INE075A01022
+    isIndex             : False
+    isDepth             : True
+    feedLevel           : 8
+    marketData          : L8
+
+[5] REAL SCRIP MASTER (WIPRO row from live CSV)
+    endpoint        : scrip_master(exchange_segment=nse_cm) -> CSV None
+    csv rows        : None
+    wipro matches   : None
+
+[6] REAL QUOTE API (WIPRO, quote_type=all)
+    endpoint     : None
+    elapsed_s    : None
+    response_type: None
+    top_keys     : None
+    item_count   : None
+    flat_fields  : None
+
+[7] WEBSOCKET CONNECT / AUTH PER LEVEL
+    L16 connect=OK subscribe=OK unsub=OK close=OK
+         url=wss://sfeed.kotaksecurities.com/apifeed dividers={1: 100, 2: 100, 3: 10000000, 4: 100, 5: 100, 6: 100, 7: 10000000, 8: 100, 9: 100, 10: 100}
+
+[8] LEVEL RESULTS + PERMISSION
+    LEVEL 16 (FULL_DEPTH)
+      sdk method         : subscribe_full_depth()
+      subscription payload: {"event": "subscribeFullDepth", "tokens": ["nse_cm|3787"], "ack_symbol": true}
+      subscribe returned  : OK
+      ack captured        : YES (1)
+      wipro scrip msgs    : 2
+      SDK level tags seen : {'16': 2}
+      msg types           : {'scrip': 2, 'market_status': 10}
+      bid rows seen       : {0: 2}
+      ask rows seen       : {0: 2}
+      wipro msgs/sec      : 0.067
+      data verdict        : STATIC_ONLY
+      data reason         : level-16 accepted (ack) but delivered ONLY a static reference snapshot: 2 scrip msgs with 0 bid + 0 sell rows, volume=0, total buy/sell=0. NOT a live book depth feed for this account/SDK window.
+      raw bin/txt frames  : 3 / 2
+      raw packet codes    : {7208: 2, 105: 10}
+      raw packet levels   : {'16': 2, '0': 4, '1': 6}
+      market_status seen  : {'1': 5, '_text': 'Market open', '_seg': 'nse_cm', '12': 2, '2': 3}
+      raw evidence file   : C:\project\docs\reports\kotak_wipro_live\evidence_raw_level16_20260918_141238.jsonl
+      string errors       : none
+      PERMISSION          : ALLOWED
+      reason              : ack received and level-16 WIPRO market data observed (2 scrip messages)
+
+[9] RAW MESSAGE TYPES (merged)
+    message_codes : {7208: 2, 105: 10}
+    levels        : {'16': 2, '0': 4, '1': 6}
+
+[10] FIELD-BY-FIELD WS AUDIT (SDK-delivered, per level)
+    ---- LEVEL 16 ----
+      auction                            n=    2 types=['bool'] first=False last=False fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      average_trade_price                n=    2 types=['float'] first=0.0 last=0.0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      buy                                n=    2 types=['NoneType'] first=None last=None fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      close_price                        n=    2 types=['float'] first=167.4 last=166.4 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      exchange_segment                   n=   12 types=['str'] first=nse_cm last=ncd_co fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      high_price                         n=    2 types=['float'] first=167.75 last=167.6 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      instrument_token                   n=    2 types=['str'] first=3787 last=3787 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      last_trade_qty                     n=    2 types=['int'] first=132 last=1 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      last_trade_time                    n=    2 types=['int'] first=0 last=0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      last_traded_price                  n=    2 types=['float'] first=167.4 last=166.4 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      last_update_time                   n=    2 types=['int'] first=1789065000 last=1789583400 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      level                              n=    2 types=['int'] first=16 last=16 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      low_price                          n=    2 types=['float'] first=165.16 last=165.02 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      lower_circuit_limit                n=    2 types=['float'] first=150.66 last=149.76 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      market_lot                         n=    2 types=['int'] first=1 last=1 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      multiplier                         n=    2 types=['int'] first=1 last=1 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      net_change                         n=    2 types=['float'] first=0.0 last=0.0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      net_change_percent                 n=    2 types=['float'] first=0.0 last=0.0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      open_interest                      n=    2 types=['int'] first=0 last=0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      open_price                         n=    2 types=['float'] first=165.2 last=165.75 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      precision                          n=    2 types=['int'] first=2 last=2 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      sell                               n=    2 types=['NoneType'] first=None last=None fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      status                             n=   10 types=['str'] first=Market open last=Market closed fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      status_code                        n=   10 types=['int'] first=1 last=2 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      total_buy_quantity                 n=    2 types=['int'] first=0 last=0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      total_sell_quantity                n=    2 types=['int'] first=0 last=0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      total_traded_value                 n=    2 types=['float'] first=0.0 last=0.0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      trading_symbol                     n=    2 types=['str'] first=WIPRO-EQ last=WIPRO-EQ fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      type                               n=   12 types=['str'] first=scrip last=market_status fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      upper_circuit_limit                n=    2 types=['float'] first=184.14 last=183.04 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      volume_traded_today                n=    2 types=['int'] first=0 last=0 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      yearly_high                        n=    2 types=['float'] first=273.1 last=273.1 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+      yearly_low                         n=    2 types=['float'] first=165.16 last=165.02 fts=2026-09-18T14:12:08+05:30 lts=2026-09-18T14:12:08+05:30
+
+[11] DEPTH ROW COMPARISON
+    LEVEL 4: alive=False count=None bid_rows_seen=None ask_rows_seen=None sample0_buy=None sample0_ask=None
+              verdict=None | None
+    LEVEL 8: alive=False count=None bid_rows_seen=None ask_rows_seen=None sample0_buy=None sample0_ask=None
+              verdict=None | None
+    LEVEL 16: alive=True count=2 bid_rows_seen={0: 2} ask_rows_seen={0: 2} sample0_buy=0 sample0_ask=0
+              verdict=STATIC_ONLY | level-16 accepted (ack) but delivered ONLY a static reference snapshot: 2 scrip msgs with 0 bid + 0 sell rows, volume=0, total buy/sell=0. NOT a live book depth feed for this account/SDK window.
+    LEVEL 16 depth samples (SDK model):
+
+[12] OBSERVED MESSAGES/SEC
+    L16: wipro=0.067/s all=0.4/s over 30.014s
+
+[13] FIRST/LAST RAW FRAME TIMESTAMPS
+    L16: first=2026-09-18T14:12:08.273+05:30 last=2026-09-18T14:12:08.390+05:30
+
+[14] SDK VS RAW WIRE COMPARISON (independent decode)
+    ---- LEVEL 16 ----
+      raw=header.message_length          sdk=(none)                 [SENT_BY_KOTAK_DISCARDED_BY_SDK] header kept in model? No - length not exposed
+      raw=header.message_code            sdk=(none)                 [SENT_BY_KOTAK_DISCARDED_BY_SDK] routing only; not exposed as a field
+      raw=header.exchange_id             sdk=exchange_segment       [PRESERVED] exchange_id mapped to segment string
+      raw=header.level                   sdk=level                  [PRESERVED] header level byte preserved verbatim
+      raw=header.auction_flag            sdk=auction                [PRESERVED] flag>0 converted to bool
+      raw=header.seq_no                  sdk=(none)                 [SENT_BY_KOTAK_DISCARDED_BY_SDK] DISCARDED - seq_no decoded but never exposed
+      raw=header.bitmask_length          sdk=(none)                 [SENT_BY_KOTAK_DISCARDED_BY_SDK] DISCARDED - decoded but never exposed
+      raw=body.token                     sdk=instrument_token       [PRESERVED] int token -> str instrument_token
+      raw=body.total_buy_qty             sdk=total_buy_quantity     [PRESERVED] integer preserved
+      raw=body.total_sell_qty            sdk=total_sell_quantity    [PRESERVED] integer preserved
+      raw=body.volume_traded_today       sdk=volume_traded_today    [PRESERVED] integer preserved
+      raw=body.last_trade_time           sdk=last_trade_time        [PRESERVED] integer preserved
+      raw=body.last_update_time          sdk=last_update_time       [PRESERVED] negative sentinel -> 0
+      raw=body.open_price                sdk=open_price             [PRESERVED] divided by divider (100)
+      raw=body.close_price               sdk=close_price            [PRESERVED] divided by divider (100)
+      raw=body.high_price                sdk=high_price             [PRESERVED] divided by divider (100)
+      raw=body.low_price                 sdk=low_price              [PRESERVED] divided by divider (100)
+      raw=body.last_traded_price         sdk=last_traded_price      [PRESERVED] divided by divider (100)
+      raw=body.last_trade_qty            sdk=last_trade_qty         [PRESERVED] integer preserved
+      raw=body.avg_trade_price           sdk=average_trade_price    [PRESERVED] divided by divider (100)
+      raw=body._indicative_close         sdk=(none)                 [SENT_BY_KOTAK_DISCARDED_BY_SDK] DISCARDED - unpacked, never exposed
+      raw=body.buy_depth_count           sdk=(count)                [PRESERVED] drives number of buy rows decoded
+      raw=body.sell_depth_count          sdk=(count)                [PRESERVED] drives number of sell rows decoded
+      raw=body._trading_status           sdk=(none)                 [SENT_BY_KOTAK_DISCARDED_BY_SDK] DISCARDED - unpacked, never exposed
+      raw=body.net_chg_percent           sdk=net_change_percent     [PRESERVED] divided by 100
+      raw=body.open_interest             sdk=open_interest          [PRESERVED] kept (double on wire)
+      raw=body.total_traded_value        sdk=total_traded_value     [PRESERVED] divided by divider (100)
+      raw=body.net_chg                   sdk=net_change             [PRESERVED] divided by divider (100)
+      raw=body.upper_circuit             sdk=upper_circuit_limit    [PRESERVED] divided by divider (100)
+      raw=body.lower_circuit             sdk=lower_circuit_limit    [PRESERVED] divided by divider (100)
+      raw=body.yearly_high               sdk=yearly_high            [PRESERVED] divided by divider (100)
+      raw=body.yearly_low                sdk=yearly_low             [PRESERVED] divided by divider (100)
+      raw=body.market_lot                sdk=market_lot             [PRESERVED] integer preserved
+      raw=body.precision                 sdk=precision              [PRESERVED] u8 preserved
+      raw=body.multiplier                sdk=multiplier             [PRESERVED] integer preserved
+      raw=depth rows (wire, from byte 144) sdk=buy[]/sell[]           [PRESERVED] level4 forces 1+1; L8/L16 use wire counts
+      raw=(no direct wire field)         sdk=type                   [SYNTHESIZED_BY_SDK] 'scrip' literal
+      raw=(no direct wire field)         sdk=trading_symbol         [SYNTHESIZED_BY_SDK] enriched from subscribe-ack trading_symbols map (NOT on wire)
+
+[15] SAMPLE RAW WIRE DECODE (WIPRO packets, independent of SDK)
+    L16 raw sample: code=7208 level=16 exch=1 token=3787 seq_no=0 indicative_close=0 trading_status=0 ltp_raw=16740 depth_rows=0
+    L16 raw sample: code=7208 level=16 exch=1 token=3787 seq_no=0 indicative_close=0 trading_status=0 ltp_raw=16640 depth_rows=0
+
+[16] RATE-LIMIT / API ERROR OBSERVATIONS
+    errors: (none recorded)
+    quote elapsed_s: None | scrip master: n/a
+
+[17] FINAL RECOMMENDATIONS
+    - In SDK 3.0.6 the depth level is NOT a parameter: it is chosen by the subscribe method (subscribe_scrips=L4, subscribe_depth=L8, subscribe_full_depth=L16).
+    - L4 (touch line, 1+1 rows) and L8 (depth, 5+5 rows) delivered a REAL live, evolving book for WIPRO during NSE cash hours (verified).
+    - L16 (full depth) was ACK-accepted but delivered ONLY a static reference snapshot: prev-session OHLC, volume=0, total buy/sell=0, EMPTY book (0+0 rows) in two separate capture windows. Treat subscribe_full_depth as NOT delivering live full-book depth for this account/kotakneoapi 3.0.6 until provisioned.
+    - Use ONE subscribe method per instrument per connection to keep the feed-level tag unambiguous.
+    - seq_no / bitmask_length / _indicative_close / _trading_status are present on the raw wire but DISCARDED by the SDK parser.
+    - Do NOT schedule quote or scrip-master refreshes faster than the broker rate limits; treat scrip master as static per-day and quote as on-demand/cached.
+

@@ -1,10 +1,13 @@
 import './globals.css';
-import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
-import { ThemeProvider } from '@/components/theme-provider';
+import type { Metadata, Viewport } from 'next';
+import { Inter, JetBrains_Mono } from 'next/font/google';
 import { RegisterSW } from '@/components/pwa/register-sw';
+import { PWAIdentity } from '@/components/pwa/pwa-identity';
+import { PwaPrompts } from '@/components/pwa/pwa-prompts';
+import { AppProviders } from '@/components/layout/app-providers';
 
-const inter = Inter({ subsets: ['latin'] });
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
+const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono-jb' });
 
 export const metadata: Metadata = {
   title: 'KAUSTUBH Trading Platform',
@@ -22,7 +25,16 @@ export const metadata: Metadata = {
     ],
     apple: [{ url: '/icon-192.png', sizes: '192x192', type: 'image/png' }],
   },
-  themeColor: '#0f7a52',
+};
+
+export const viewport: Viewport = {
+  themeColor: '#F28C28',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  // Required for edge-to-edge PWA + working safe-area insets on iOS standalone.
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({
@@ -31,16 +43,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <head>
-        <meta name="theme-color" content="#0f7a52" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-      </head>
-      <body className={inter.className}>
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${mono.variable}`}>
+      <body className={`${inter.className} font-sans antialiased`}>
+        <AppProviders>
           {children}
           <RegisterSW />
-        </ThemeProvider>
+          <PwaPrompts />
+          <PWAIdentity />
+        </AppProviders>
       </body>
     </html>
   );

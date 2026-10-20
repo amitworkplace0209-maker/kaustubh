@@ -1,0 +1,596 @@
+========================================================================================================================
+KAUSTUBH - KOTAK NEO FIELD-BY-FIELD LIVE DATA VERIFICATION REPORT
+========================================================================================================================
+
+SOURCE SCHEMA : master_stock_ai_340_field_schema (1).txt (344 fields, categories A-P)
+REPORT DATE  : 2026-09-15
+AUDIT TYPE   : LEVEL 1 (static code/SDK/data-source audit) + LEVEL 2 (live observation) -
+               LEVEL 2 NOT PERFORMED: no live Kotak session/credentials available from this
+               environment (backend runs dummy/offline mode).
+
+RULES APPLIED (from the request):
+  1. Every one of the 344 schema fields gets an individual row below; none skipped.
+  2. No fabrication: a field is never claimed live without a real observation. Fields whose
+     Kotak availability is asserted but not live-verified are CHECK=NOT VERIFIED.
+  3. Matching is semantic (by meaning), not by name. Kotak raw names differ from KAUSTUBH
+     names (e.g. KAUSTUBH ltp -> Kotak last_traded_price; KAUSTUBH exchange_token -> Kotak
+     inputtoken '<exchange_segment>|<instrument_token>'; prev-day close -> SFeed close_price).
+  4. RESULT classification is exactly one of:
+       DIRECT_FROM_KOTAK | DERIVED_FROM_KOTAK | KAUSTUBH_CALCULATED |
+       NOT_AVAILABLE_FROM_KOTAK | NOT_VERIFIED
+  5. Credentials/tokens redacted throughout.
+
+LEVEL 1 EVIDENCE BASIS (files inspected for this audit):
+  INSTALLED SDK : kotakneoapi 3.0.6 (neo_api_client) at .venv/Lib/site-packages/neo_api_client
+    - websocket/feed/models.py    : SFeedScrip, SFeedScripLite, SFeedIndex, SFeedMarketStatus,
+                                    SFeedCasChange, DepthLevel, WsToken, Level, MarketStatusCode
+    - websocket/feed/protocol.py  : native_batch wire decode (msg codes, depth rows, divider)
+    - websocket/feed/client.py    : subscribe_scrips(level4) / scrips_lite(1) / depth(8) /
+                                    full_depth(16) / index / exchange
+    - services/quotes.py          : GET /api/.../quotes/neosymbol/<seg>|<tok>[, ...]/<all> raw JSON
+    - services/scrip_master.py    : scrip-master CSV file list endpoint
+    - services/option_chain.py    : option chain REST (underlying/expiry/type/count)
+  REPO (python-service):
+    - ws_socket/engine/fields.py   : existing 344-field master audit (kotak_attr/status/evidence)
+    - ws_socket/engine/canonical.py: canonical tick envelope + raw-reference store (digest)
+    - ws_socket/ws_manager.py      : SFeed subscription routing (scrips/index/depth) + publish hook
+    - data/instrument_master.json  : downloaded Kotak nse_cm master, 9868 rows, 2026-09-15T10:36:17
+    - ws_socket/engine/verification.py : documents one historical live 3.0.6 session
+  NOTE: The SDK quote/option-chain clients return raw JSON passthrough, so the exact REST key
+        names below are partly asserted by the existing fields.py audit and NOT yet confirmed
+        by any live REST response captured in this repo.
+
+LEVEL 2 (LIVE) STATUS:
+  NO live Kotak session could be established from this environment, so per-field values,
+  message rates/sec and live field pickup are NOT VERIFIED. One historical live session is
+  documented in verification.py (RELIANCE nse_cm|2885 + INFY nse_cm|1594):
+    SFeedScrip 12763 / SFeedCasChange 5 / SFeedMarketStatus 0 (not subscribed) /
+    trades received 13371 / written 13370. Session duration is not recorded, therefore
+    per-second rates CANNOT be computed from it and remain NOT VERIFIED. That session proves
+    the SFeed -> engine -> data_saver -> MongoDB pipeline runs end-to-end on SDK 3.0.6.
+
+REAL DATA SOURCES PRESENT IN THE REPO (static):
+  data/instrument_master.json (nse_cm only): keys = symbol, token, exchange, exchangeSegment,
+    tradingSymbol, companyName, series, instrumentType, segment, lotSize, tickSize, isin.
+    NO F&O rows -> no expiry/strikePrice/currency in this download. So F&O identity fields rely
+    on quote REST (unverified) or a full Kotak scrip-master CSV download (scrip_master_init).
+
+FIELD-BY-FIELD TABLE (all 344)
+  COLUMN KEY:
+    #    : schema field number
+    FIELD: KAUSTUBH schema field name
+    CAT  : schema category (A-P)
+    CHECK: YES (directly obtained from Kotak data) / NO (not a Kotak field) / NOT VERIFIED
+    RESULT: DIRECT_FROM_KOTAK | DERIVED_FROM_KOTAK | KAUSTUBH_CALCULATED | NOT_AVAILABLE_FROM_KOTAK | NOT_VERIFIED
+    RAW  : exact Kotak raw field / path (SFeed attribute, or REST key, or master key)
+    NORM : canonical engine field name (canonical.py) or '-' if none
+    TYPE : value origin: SFeed | REST quote | REST/master | engine | label
+    FEED : SFeed level / message context or API
+    FREQ : per-message / per-poll frequency
+    /SEC : messages or values per second (NOT VERIFIED without a live capture)
+    LIVE : live-verification status in this environment
+    VALUE: observed value (only where a real repo artifact holds one)
+    EVIDENCE / NOTES
+
+  # | FIELD | CAT | CHECK | RESULT | RAW KOTAK FIELD | NORM | TYPE | FEED | FREQ | /SEC | LIVE | VALUE | EVIDENCE | NOTES
+------------------------------------------------------------------------------------------------------------------------
+1|symbol|A|YES|DIRECT_FROM_KOTAK|trading_symbol|-|SFeed|subscription ack (msg 1109)|once per subscribe batch|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedInstrumentMessage.trading_symbol (models.py), resolved from subscribe ack 1109|
+2|exchange|A|YES|DIRECT_FROM_KOTAK|exchange_segment|-|SFeed|any|per SFeed tick msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedBase.exchange_segment (models.py)|
+3|exchange_token|A|YES|DIRECT_FROM_KOTAK|inputtoken|-|SFeed|any|per SFeed tick msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|WsToken.inputtoken  '<exchange>|<token>' (models.py)|
+4|instrument_token|A|YES|DIRECT_FROM_KOTAK|instrument_token|-|SFeed|any|per SFeed tick msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedBase.instrument_token (models.py)|
+5|instrument_type|A|YES|DIRECT_FROM_KOTAK|instrument_master.instrumentType|-|str|instrument_master.json (static)|static (per download)|N/A (static)|N/A (static master, repo 2026-09-15T10:36:17)|EQ (RELIANCE)|None of the five SFeed message types carry instrument type|Reason: no SFeed attribute; obtain from scrip master / quote REST instrumentType.
+6|timestamp|A|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Engine reception wall-clock; broker sends no wall timestamp in SFeed|Canonical 'received_at' field added by engine (raw data untouched).
+7|exchange_timestamp|A|YES|DIRECT_FROM_KOTAK|last_update_time (scrip) / last_trade_time (index/lite)|-|SFeed|any|per SFeed tick msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.last_update_time, SFeedIndex.last_trade_time, SFeedScripLite.last_trade_time|
+8|date|A|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|ISO date derived from exchange_timestamp|Feature-Engine / normalizer output.
+9|trading_session|A|YES|DIRECT_FROM_KOTAK|SFeedMarketStatus.status / status_code|-|SFeed|market status (msg 105/6511/6521, subscribe_exchange)|per market-status broadcast|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|MarketStatusCode (models.py): market open/closed/pre-open/auction broadcasts|Exchange-level session state, not per-instrument.
+10|sequence_number|A|NO|NOT_AVAILABLE_FROM_KOTAK|-|-|-|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|protocol.py header carries seq_no but decode_packet discards it (_seq_no); model has no attribute|Reason: SDK does not expose the wire seq_no; cannot be claimed as direct.
+11|isin|A|YES|DIRECT_FROM_KOTAK|instrument_master.isin|-|str|instrument_master.json (static)|static (per download)|N/A (static)|N/A (static master, repo 2026-09-15T10:36:17)|INE002A01018 (RELIANCE)|neo_api_client.services.scrip_master (search/identifiers); quote REST scrip master|
+12|company_name|A|YES|DIRECT_FROM_KOTAK|instrument_master.companyName|-|str|instrument_master.json (static)|static (per download)|N/A (static)|N/A (static master, repo 2026-09-15T10:36:17)|RELIANCE INDUSTRIES LTD (RELIANCE)|neo_api_client.services.scrip_master search result companyName|
+13|sector|A|NO|NOT_VERIFIED|-|-|-|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Not present in any SFeed message; local/third-party sector mapping source not fixed|Pending: pick a sector taxonomy source before claiming.
+14|industry|A|NO|NOT_VERIFIED|-|-|-|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Not present in any SFeed message; local/third-party industry mapping source not fixed|Pending: same as sector.
+15|series|A|YES|DIRECT_FROM_KOTAK|instrument_master.series|-|str|instrument_master.json (static)|static (per download)|N/A (static)|N/A (static master, repo 2026-09-15T10:36:17)|EQ (RELIANCE)|scrip_master/quote response series (EQ/FUT/OPT...); not in SFeed|
+16|lot_size|A|YES|DIRECT_FROM_KOTAK|instrument_master.lotSize|-|str|instrument_master.json (static)|static (per download)|N/A (static)|N/A (static master, repo 2026-09-15T10:36:17)|1 (RELIANCE)|SFeedScrip.market_lot / SFeedScripLite.market_lot (models.py)|
+17|tick_size|A|YES|DIRECT_FROM_KOTAK|instrument_master.tickSize|-|str|instrument_master.json (static)|static (per download)|N/A (static)|N/A (static master, repo 2026-09-15T10:36:17)|10 (RELIANCE)|1 / 10^precision from SFeedScrip.precision|precision is direct; tick_size is computed from it.
+18|currency|A|NOT VERIFIED|DIRECT_FROM_KOTAK|scrip master currency|-|REST / master|N/A - REST|per REST poll|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|scrip master currency field (INR/USD...); not in SFeed|
+19|market_segment|A|YES|DIRECT_FROM_KOTAK|exchange_segment|-|SFeed|any|per SFeed tick msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedBase.exchange_segment / WsToken.exchange_segment|
+20|trading_status|A|YES|DIRECT_FROM_KOTAK|SFeedMarketStatus.status (exchange-level)|-|SFeed|market status (msg 105/6511/6521, subscribe_exchange)|per market-status broadcast|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedMarketStatus.status_code/status|Per-instrument trading_status bit exists on the wire but is discarded by protocol.py (_trading_status).
+21|ltp|B|YES|DIRECT_FROM_KOTAK|last_traded_price|last_traded_price|SFeed|any|per SFeed tick msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip/SFeedScripLite/SFeedIndex.last_traded_price|
+22|ltq|B|YES|DIRECT_FROM_KOTAK|last_trade_qty|last_trade_qty|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.last_trade_qty / SFeedScripLite.last_trade_qty|
+23|last_trade_price|B|YES|DIRECT_FROM_KOTAK|last_traded_price|-|SFeed|any|per SFeed tick msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|same as ltp|
+24|last_trade_quantity|B|YES|DIRECT_FROM_KOTAK|last_trade_qty|-|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|same as ltq|
+25|open|B|YES|DIRECT_FROM_KOTAK|open_price|open_price|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.open_price / SFeedIndex.open_price|
+26|high|B|YES|DIRECT_FROM_KOTAK|high_price|high_price|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.high_price / SFeedIndex.high_price|
+27|low|B|YES|DIRECT_FROM_KOTAK|low_price|low_price|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.low_price / SFeedIndex.low_price|
+28|previous_close|B|YES|DIRECT_FROM_KOTAK|close_price|prev_close|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.close_price / SFeedScripLite.close_price (prev-day close during session)|
+29|price_change|B|YES|DIRECT_FROM_KOTAK|net_change|net_change|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.net_change / SFeedScripLite.net_change / SFeedIndex.change|
+30|price_change_pct|B|YES|DIRECT_FROM_KOTAK|net_change_percent|net_change_pct|SFeed|any|per SFeed tick msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip/SFeedScripLite/SFeedIndex.net_change_percent (already /100 by protocol)|
+31|average_trade_price|B|YES|DIRECT_FROM_KOTAK|average_trade_price|avg_price|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.average_trade_price (not in lite/index)|
+32|vwap|B|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine: total_traded_value / volume_traded_today, or use average_trade_price|No separate VWAP attribute in SFeed.
+33|upper_circuit|B|YES|DIRECT_FROM_KOTAK|upper_circuit_limit|-|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.upper_circuit_limit|
+34|lower_circuit|B|YES|DIRECT_FROM_KOTAK|lower_circuit_limit|-|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.lower_circuit_limit|
+35|trade_count|B|NO|NOT_AVAILABLE_FROM_KOTAK|-|-|-|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|No trade-count in any SFeed message (only last_trade_qty)|Reason: not transmitted; DERIVED possible from tick stream.
+36|last_trade_timestamp|B|YES|DIRECT_FROM_KOTAK|last_trade_time|-|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.last_trade_time (epoch, IST exchange time)|
+37|first_trade_price|B|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine: first tick ltp of the day|
+38|day_high_timestamp|B|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine: wall time when high_price last updated|
+39|day_low_timestamp|B|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine: wall time when low_price last updated|
+40|settlement_price|B|NO|NOT_AVAILABLE_FROM_KOTAK|-|-|-|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|No settlement price in any SFeed message|Reason: not transmitted on market feed.
+41|indicative_price|B|YES|DIRECT_FROM_KOTAK|SFeedCasChange.ref_price|-|SFeed|CAS (msg 104, per-script during auction)|per SFeedCasChange msg (104)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedCasChange.ref_price (models.py) during CAS window only|Indicative close (_indicative_close) exists on the wire but is discarded by protocol.py.
+42|previous_day_high|B|NOT VERIFIED|DIRECT_FROM_KOTAK|quote REST previousDayHigh|-|REST quote|N/A - REST|per REST poll|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Kotak quote REST /quotes.../all (previousDayHigh); not in SFeed|SFeed only carries yearly_high/low, not prev-day extremes.
+43|previous_day_low|B|NOT VERIFIED|DIRECT_FROM_KOTAK|quote REST previousDayLow|-|REST quote|N/A - REST|per REST poll|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Kotak quote REST /quotes.../all (previousDayLow); not in SFeed|
+44|previous_day_volume|B|NOT VERIFIED|DIRECT_FROM_KOTAK|quote REST previousDayVolume|-|REST quote|N/A - REST|per REST poll|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Kotak quote REST /quotes.../all (previousDayVolume); not in SFeed|
+45|volume|C|YES|DIRECT_FROM_KOTAK|volume_traded_today|volume_traded_today|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.volume_traded_today|
+46|volume_change|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine delta vs prior snapshot|
+47|volume_pct_change|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+48|buy_volume|C|YES|DIRECT_FROM_KOTAK|total_buy_quantity|-|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.total_buy_quantity|
+49|sell_volume|C|YES|DIRECT_FROM_KOTAK|total_sell_quantity|-|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.total_sell_quantity|
+50|buy_volume_pct|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+51|sell_volume_pct|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+52|volume_imbalance|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+53|cumulative_volume|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|volume_traded_today is already today-cumulative; alias/downsample by Feature-Engine|
+54|average_trade_size|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|volume / trade_count; trade_count not in SFeed|
+55|large_trade_volume|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine threshold on trade qty|
+56|large_trade_count|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+57|trade_rate|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (ticks/min)|
+58|buy_trade_count|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine trade-direction inference|
+59|sell_trade_count|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+60|buy_sell_trade_ratio|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+61|volume_velocity|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+62|volume_acceleration|C|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+63|best_bid_price|D|YES|DIRECT_FROM_KOTAK|buy[0].price|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy first DepthLevel.price|
+64|best_bid_qty|D|YES|DIRECT_FROM_KOTAK|buy[0].quantity|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy first DepthLevel.quantity|
+65|best_ask_price|D|YES|DIRECT_FROM_KOTAK|sell[0].price|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell first DepthLevel.price|
+66|best_ask_qty|D|YES|DIRECT_FROM_KOTAK|sell[0].quantity|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell first DepthLevel.quantity|
+67|spread|D|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|ask0-bid0|
+68|spread_pct|D|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|spread/ltp|
+69|mid_price|D|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|(bid0+ask0)/2|
+70|bid_ask_imbalance|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+71|bid_pressure|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+72|ask_pressure|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+73|bid_qty_change|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+74|ask_qty_change|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+75|mid_price_change|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+76|microprice|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+77|microprice_deviation|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+78|quote_update_rate|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+79|bid_ask_ratio|D|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+80|top_level_depth|D|YES|DIRECT_FROM_KOTAK|buy[0]+sell[0]|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy/sell DepthLevel pairs|
+81|bid1_price|E|YES|DIRECT_FROM_KOTAK|buy[0].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].price, i=0; needs depth/full_depth + buy_depth_count>=1|
+82|bid1_qty|E|YES|DIRECT_FROM_KOTAK|buy[0].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].quantity, i=0|
+83|bid2_price|E|YES|DIRECT_FROM_KOTAK|buy[1].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].price, i=1; needs buy_depth_count>=2|
+84|bid2_qty|E|YES|DIRECT_FROM_KOTAK|buy[1].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].quantity, i=1|
+85|bid3_price|E|YES|DIRECT_FROM_KOTAK|buy[2].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].price, i=2|
+86|bid3_qty|E|YES|DIRECT_FROM_KOTAK|buy[2].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].quantity, i=2|
+87|bid4_price|E|YES|DIRECT_FROM_KOTAK|buy[3].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].price, i=3|
+88|bid4_qty|E|YES|DIRECT_FROM_KOTAK|buy[3].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].quantity, i=3|
+89|bid5_price|E|YES|DIRECT_FROM_KOTAK|buy[4].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].price, i=4|
+90|bid5_qty|E|YES|DIRECT_FROM_KOTAK|buy[4].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.buy[i].quantity, i=4|
+91|total_bid_depth|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|sum(buy[].quantity) from depth snapshot (direct rows, engine aggregation)|
+92|weighted_bid_price|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+93|bid_depth_change|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+94|bid_depth_imbalance|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+95|ask1_price|E|YES|DIRECT_FROM_KOTAK|sell[0].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].price, i=0|
+96|ask1_qty|E|YES|DIRECT_FROM_KOTAK|sell[0].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].quantity, i=0|
+97|ask2_price|E|YES|DIRECT_FROM_KOTAK|sell[1].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].price, i=1|
+98|ask2_qty|E|YES|DIRECT_FROM_KOTAK|sell[1].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].quantity, i=1|
+99|ask3_price|E|YES|DIRECT_FROM_KOTAK|sell[2].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].price, i=2|
+100|ask3_qty|E|YES|DIRECT_FROM_KOTAK|sell[2].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].quantity, i=2|
+101|ask4_price|E|YES|DIRECT_FROM_KOTAK|sell[3].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].price, i=3|
+102|ask4_qty|E|YES|DIRECT_FROM_KOTAK|sell[3].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].quantity, i=3|
+103|ask5_price|E|YES|DIRECT_FROM_KOTAK|sell[4].price|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].price, i=4|
+104|ask5_qty|E|YES|DIRECT_FROM_KOTAK|sell[4].quantity|-|SFeed|depth (level 8, subscribe_depth)|per SFeedScrip depth msg (level 8)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.sell[i].quantity, i=4|
+105|total_ask_depth|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|sum(sell[].quantity) from depth snapshot (direct rows, engine aggregation)|
+106|weighted_ask_price|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+107|ask_depth_change|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+108|ask_depth_imbalance|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+109|total_orderbook_depth|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+110|orderbook_imbalance|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+111|depth_imbalance_level1|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+112|depth_imbalance_level3|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+113|depth_imbalance_level5|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+114|book_pressure|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+115|weighted_mid_price|E|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+116|trade_direction|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeed gives no maker/taker tag; infer from trade vs bid/ask|Feature-Engine.
+117|aggressive_buy_volume|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+118|aggressive_sell_volume|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+119|cumulative_delta|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+120|delta_change|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+121|order_flow_imbalance|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+122|bid_cancel_volume|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|From depth snapshot diffs|Feature-Engine.
+123|ask_cancel_volume|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+124|bid_add_volume|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+125|ask_add_volume|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+126|order_arrival_rate|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+127|order_cancel_rate|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+128|order_add_rate|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+129|net_order_flow|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+130|signed_volume|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+131|signed_trade_count|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+132|buy_sell_pressure|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+133|liquidity_pressure|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+134|order_flow_velocity|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+135|order_flow_acceleration|F|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+136|return_1s|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+137|return_5s|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+138|return_10s|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+139|return_25s|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+140|return_30s|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+141|return_1m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+142|return_2m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+143|return_5m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+144|return_10m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+145|return_15m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+146|return_30m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+147|momentum_5s|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+148|momentum_10s|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+149|momentum_30s|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+150|momentum_1m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+151|momentum_5m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+152|momentum_10m|G|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+153|price_distance_from_vwap|G|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+154|price_distance_from_high|G|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+155|price_distance_from_low|G|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+156|mean_5s|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+157|mean_10s|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+158|mean_30s|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+159|mean_1m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+160|mean_5m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+161|mean_10m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+162|mean_15m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+163|mean_30m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+164|median_1m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+165|rolling_std_1m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+166|rolling_std_5m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+167|rolling_std_10m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+168|rolling_min_1m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+169|rolling_max_1m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+170|rolling_min_5m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+171|rolling_max_5m|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+172|rolling_volume_mean|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+173|rolling_volume_std|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+174|rolling_trade_count|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+175|rolling_vwap|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+176|rolling_range|H|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+177|volatility_10s|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+178|volatility_30s|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+179|volatility_1m|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+180|volatility_5m|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+181|volatility_10m|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+182|realized_volatility|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+183|parkinson_volatility|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+184|atr|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+185|atr_pct|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+186|range|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+187|range_pct|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+188|high_low_range|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+189|volatility_change|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+190|volatility_ratio|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+191|downside_volatility|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+192|upside_volatility|I|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+193|rsi|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+194|rsi_5|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+195|rsi_14|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+196|macd|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+197|macd_signal|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+198|macd_histogram|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+199|ema_9|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+200|ema_20|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+201|ema_50|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+202|ema_100|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+203|sma_20|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+204|sma_50|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+205|bollinger_middle|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+206|bollinger_upper|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+207|bollinger_lower|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+208|bollinger_width|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+209|stochastic_k|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+210|stochastic_d|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+211|adx|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+212|plus_di|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+213|minus_di|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+214|cci|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+215|williams_r|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+216|obv|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+217|mfi|J|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+218|nifty_ltp|K|YES|DIRECT_FROM_KOTAK|SFeedIndex.last_traded_price (NIFTY)|-|SFeed|index (msg 7207, subscribe_indices)|per SFeedIndex msg (7207)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedIndex (msg 7207) net index value; requires subscribe_indices for the index token|
+219|nifty_return|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+220|nifty_change_pct|K|YES|DIRECT_FROM_KOTAK|SFeedIndex.net_change_percent|-|SFeed|index (msg 7207, subscribe_indices)|per SFeedIndex msg (7207)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedIndex.net_change_percent|
+221|nifty_vwap|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+222|banknifty_ltp|K|YES|DIRECT_FROM_KOTAK|SFeedIndex.last_traded_price (BANKNIFTY)|-|SFeed|index (msg 7207, subscribe_indices)|per SFeedIndex msg (7207)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedIndex (msg 7207) for BANKNIFTY index token|
+223|banknifty_return|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+224|banknifty_change_pct|K|YES|DIRECT_FROM_KOTAK|SFeedIndex.net_change_percent|-|SFeed|index (msg 7207, subscribe_indices)|per SFeedIndex msg (7207)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedIndex.net_change_percent|
+225|banknifty_vwap|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+226|sector_index_ltp|K|YES|DIRECT_FROM_KOTAK|SFeedIndex.last_traded_price (sector index)|-|SFeed|index (msg 7207, subscribe_indices)|per SFeedIndex msg (7207)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedIndex if the sector index token is subscribable via subscribe_indices|Depends on which index tokens the feed exposes; verify at runtime.
+227|sector_return|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+228|sector_change_pct|K|YES|DIRECT_FROM_KOTAK|SFeedIndex.net_change_percent|-|SFeed|index (msg 7207, subscribe_indices)|per SFeedIndex msg (7207)|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedIndex.net_change_percent (sector index)|
+229|sector_vwap|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+230|sector_rank|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+231|market_breadth|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (universe scan)|
+232|advance_count|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (universe scan)|
+233|decline_count|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (universe scan)|
+234|unchanged_count|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (universe scan)|
+235|advance_decline_ratio|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+236|index_vwap_distance|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+237|stock_vs_index_return|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+238|stock_vs_sector_return|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+239|relative_strength|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+240|market_volatility|K|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+241|seconds_from_open|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (IST session clock)|
+242|minutes_from_open|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+243|minutes_to_close|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+244|seconds_to_close|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+245|day_of_week|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+246|day_of_month|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+247|week_of_year|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+248|month|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+249|is_opening_period|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (IST 09:15-09:45)|
+250|is_closing_period|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (IST 15:00-15:30)|
+251|is_lunch_period|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+252|session_progress_pct|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+253|time_bucket_5m|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+254|time_bucket_15m|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+255|opening_range_high|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (first 15m high)|
+256|opening_range_low|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (first 15m low)|
+257|opening_range_breakout|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+258|closing_range|L|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+259|gap_from_previous_close|L|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|ltp - close_price (both DIRECT fields; difference is engine output)|
+260|gap_pct|L|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+261|expiry|M|NOT VERIFIED|DIRECT_FROM_KOTAK|quote REST expiry / scrip master|-|REST / master|N/A - REST|per REST poll|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Kotak quote /quotes.../all expiry; not in SFeed|
+262|days_to_expiry|M|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+263|strike_price|M|NOT VERIFIED|DIRECT_FROM_KOTAK|quote REST strikePrice / scrip master|-|REST / master|N/A - REST|per REST poll|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Kotak quote /quotes.../all strikePrice; not in SFeed|
+264|option_type|M|NOT VERIFIED|DIRECT_FROM_KOTAK|quote REST instrumentType / scrip master|-|REST / master|N/A - REST|per REST poll|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|instrumentType CE/PE from scrip master/quote; not in SFeed|
+265|open_interest|M|YES|DIRECT_FROM_KOTAK|open_interest|open_interest|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.open_interest|
+266|previous_open_interest|M|NOT VERIFIED|DIRECT_FROM_KOTAK|quote REST previousOI|-|REST quote|N/A - REST|per REST poll|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Kotak quote /quotes.../all previousOI; not in SFeed|
+267|oi_change|M|NO|DERIVED_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (oi - prevOI)|
+268|oi_change_pct|M|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+269|futures_price|M|YES|DIRECT_FROM_KOTAK|SFeedScrip.last_traded_price (FUT token)|-|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Only when the corresponding FUT scrip is subscribed; not part of the underlying's message|
+270|futures_return|M|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+271|basis|M|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (fut - spot)|
+272|basis_pct|M|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+273|futures_volume|M|YES|DIRECT_FROM_KOTAK|SFeedScrip.volume_traded_today (FUT token)|-|SFeed|scrip (level >=2, subscribe_scrips)|per SFeedScrip msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Only when the FUT scrip is subscribed|
+274|futures_vwap|M|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+275|futures_spread|M|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+276|futures_bid|M|YES|DIRECT_FROM_KOTAK|SFeedScrip.buy[0].price (FUT token)|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Only when the FUT scrip is subscribed|
+277|futures_ask|M|YES|DIRECT_FROM_KOTAK|SFeedScrip.sell[0].price (FUT token)|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Only when the FUT scrip is subscribed|
+278|futures_bid_qty|M|YES|DIRECT_FROM_KOTAK|SFeedScrip.buy[0].quantity (FUT token)|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Only when the FUT scrip is subscribed|
+279|futures_ask_qty|M|YES|DIRECT_FROM_KOTAK|SFeedScrip.sell[0].quantity (FUT token)|-|SFeed|touch line (level 4)|per SFeedScrip touch-line msg|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Only when the FUT scrip is subscribed|
+280|implied_volatility|M|NO|NOT_AVAILABLE_FROM_KOTAK|-|-|-|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|No IV field in any SFeed message; also not verified in the quote REST response|Reason: not transmitted by Kotak market feed.
+281|call_volume|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (option chain snapshots)|
+282|put_volume|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+283|call_oi|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+284|put_oi|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+285|call_oi_change|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+286|put_oi_change|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+287|pcr_volume|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+288|pcr_oi|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+289|max_pain|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+290|iv_rank|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+291|iv_change|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+292|iv_percentile|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+293|call_put_spread|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+294|call_put_volume_ratio|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+295|call_put_oi_ratio|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+296|option_chain_depth|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+297|call_delta|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (BS greeks)|
+298|put_delta|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (BS greeks)|
+299|call_gamma|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (BS greeks)|
+300|put_gamma|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (BS greeks)|
+301|call_theta|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (BS greeks)|
+302|put_theta|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (BS greeks)|
+303|call_vega|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (BS greeks)|
+304|put_vega|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine (BS greeks)|
+305|skew|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+306|volatility_smile_slope|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+307|atm_iv|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+308|otm_call_iv|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+309|otm_put_iv|N|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+310|effective_spread|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+311|realized_spread|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+312|quoted_spread|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+313|liquidity_score|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+314|depth_score|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+315|execution_cost_estimate|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+316|slippage_estimate|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+317|market_impact_estimate|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+318|price_impact_per_volume|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+319|turnover|O|YES|DIRECT_FROM_KOTAK|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|SFeedScrip.total_traded_value is the direct turnover value; schema turnover kept as engine alias|
+320|turnover_velocity|O|NO|KAUSTUBH_CALCULATED|-|-|engine|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Feature-Engine|
+321|target_return_10s|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|Training label from future ticks (Feature-Engine, strictly future window)|
+322|target_return_30s|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+323|target_return_1m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+324|target_return_5m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+325|target_return_10m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+326|target_return_15m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+327|target_return_30m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+328|target_direction_10s|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+329|target_direction_30s|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+330|target_direction_1m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+331|target_direction_5m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+332|target_direction_10m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+333|target_direction_15m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+334|target_direction_30m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+335|target_max_future_return_1m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+336|target_max_future_return_5m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+337|target_max_future_return_10m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+338|target_max_future_drawdown_1m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+339|target_max_future_drawdown_5m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+340|target_max_future_drawdown_10m|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+341|target_hit_take_profit|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+342|target_hit_stop_loss|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+343|target_risk_reward|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+344|target_future_vwap_distance|P|NO|KAUSTUBH_CALCULATED|-|-|label|-|-|NOT VERIFIED (no live capture)|NOT VERIFIED - live session required|N/A (no live capture)|future window|
+
+========================================================================================================================
+CLASSIFICATION COUNTS (RESULT) - all 344 fields
+========================================================================================================================
+  DIRECT_FROM_KOTAK          79
+  DERIVED_FROM_KOTAK         10
+  KAUSTUBH_CALCULATED       249
+  NOT_AVAILABLE_FROM_KOTAK    4
+  NOT_VERIFIED                2
+  TOTAL                  344
+
+CHECK COUNTS:
+  YES            71
+  NO            265
+  NOT VERIFIED    8
+
+========================================================================================================================
+PER-CATEGORY CLASSIFICATION MAP
+========================================================================================================================
+  A. IDENTITY, INSTRUMENT & TIME           DIRECT_FROM_KOTAK=15, KAUSTUBH_CALCULATED=2, NOT_VERIFIED=2, NOT_AVAILABLE_FROM_KOTAK=1
+  B. PRICE & TRADE DATA                    DIRECT_FROM_KOTAK=18, KAUSTUBH_CALCULATED=3, NOT_AVAILABLE_FROM_KOTAK=2, DERIVED_FROM_KOTAK=1
+  C. VOLUME & TRADE ACTIVITY               KAUSTUBH_CALCULATED=15, DIRECT_FROM_KOTAK=3
+  D. BEST BID / ASK                        KAUSTUBH_CALCULATED=10, DIRECT_FROM_KOTAK=5, DERIVED_FROM_KOTAK=3
+  E. ORDER BOOK DEPTH                      DIRECT_FROM_KOTAK=20, KAUSTUBH_CALCULATED=15
+  F. ORDER-FLOW / MICROSTRUCTURE FEATURES  KAUSTUBH_CALCULATED=20
+  G. SHORT-TERM RETURNS / MOMENTUM         KAUSTUBH_CALCULATED=17, DERIVED_FROM_KOTAK=3
+  H. ROLLING / WINDOW FEATURES             KAUSTUBH_CALCULATED=21
+  I. VOLATILITY / RANGE                    KAUSTUBH_CALCULATED=16
+  J. TECHNICAL INDICATORS                  KAUSTUBH_CALCULATED=25
+  K. MARKET / INDEX CONTEXT                KAUSTUBH_CALCULATED=17, DIRECT_FROM_KOTAK=6
+  L. TIME / SESSION CONTEXT                KAUSTUBH_CALCULATED=18, DERIVED_FROM_KOTAK=2
+  M. FUTURES / F&O                         DIRECT_FROM_KOTAK=11, KAUSTUBH_CALCULATED=7, DERIVED_FROM_KOTAK=1, NOT_AVAILABLE_FROM_KOTAK=1
+  N. OPTIONS CHAIN / DERIVED OPTIONS FEATURES KAUSTUBH_CALCULATED=29
+  O. LIQUIDITY / EXECUTION FEATURES        KAUSTUBH_CALCULATED=10, DIRECT_FROM_KOTAK=1
+  P. AI TARGET / LABEL FIELDS              KAUSTUBH_CALCULATED=24
+
+========================================================================================================================
+WS MESSAGE TYPES (native_batch wire)
+========================================================================================================================
+  code  | model             | produced by subscribe          | carries
+  1109  | (ack, control)    | subscribe_scrips(ack_symbol)   | trading_symbol map
+  7207  | SFeedIndex        | subscribe_index                | index LTP/OHLC/change/net_chg%/yearly hl
+  7208  | SFeedScrip        | subscribe_scrips/depth/full_depth| market picture (see matrix)
+  105   | SFeedMarketStatus | subscribe_exchange             | status_code + status text
+  6511  | SFeedMarketStatus | (market-open header broadcast)  | status_code=1 'Market open'
+  6521  | SFeedMarketStatus | (market-close header broadcast) | status_code=2 'Market closed'
+  104   | SFeedCasChange    | subscribe_scrips/depth (CAS window) | ref_price, imbalance_qty, imbalance_qty_at_market
+  note: 1117/1119 are auth responses; seq_no/bitmask_lth/auction flag live in the 9-byte header.
+
+========================================================================================================================
+API / MESSAGE vs KOTAK RAW FIELD MATRIX
+========================================================================================================================
+  SFeedScrip level 4 (touch; subscribe_scrips):
+    last_traded_price, open_price, high_price, low_price, close_price, average_trade_price,
+    last_trade_time, last_update_time, last_trade_qty, total_buy_quantity, total_sell_quantity,
+    volume_traded_today, open_interest, net_change, net_change_percent, upper_circuit_limit,
+    lower_circuit_limit, yearly_high, yearly_low, total_traded_value, market_lot, precision,
+    multiplier, auction, buy[0]{quantity,price,orders}, sell[0]{quantity,price,orders} +
+    exchange_segment, instrument_token, trading_symbol(ack 1109), level
+  SFeedScrip level 8/16 (depth): adds buy[1..N]/sell[1..N] rows (N = buy_depth_count/sell_depth_count)
+  SFeedScripLite level 1: last_traded_price, last_trade_time, last_trade_qty, close_price,
+    net_change, net_change_percent, market_lot, precision, multiplier
+  SFeedIndex msg 7207: name, last_traded_price, open/high/low/close, change, net_change_percent,
+    yearly_high, yearly_low, last_trade_time, precision, multiplier
+  SFeedMarketStatus 105/6511/6521: exchange_segment, status_code, status(text)
+  SFeedCasChange 104: exchange_segment, instrument_token, ref_price, imbalance_qty, imbalance_qty_at_market
+  Quote REST /quotes/neosymbol/<seg>|<tok>[/all] (raw JSON; keys asserted not live-captured):
+    previousDayHigh, previousDayLow, previousDayVolume, previousOI, strikePrice, expiry,
+    instrumentType, series, currency, tickSize, lotSize ... (SDK returns passthrough json())
+  Scrip master REST (scrip_master_init): CSV file-list -> full exchange master (isin, companyName,
+    instrumentType, series, expiry, strikePrice, currency, lotSize, tickSize ...)
+  Option chain REST (get_option_chain): per underlying/expiry option rows (feed for option features)
+  instrument_master.json (repo, nse_cm): symbol, token, exchange, exchangeSegment, tradingSymbol,
+    companyName, series, instrumentType, segment, lotSize, tickSize, isin
+
+========================================================================================================================
+ADDITIONAL REAL KOTAK FIELDS DISCOVERED (not named in the 344-schema)
+========================================================================================================================
+  1001 | total_traded_value                            | SFeedScrip.total_traded_value (daily turnover value) - not in schema
+  1002 | yearly_high                                   | SFeedScrip.yearly_high / SFeedIndex.yearly_high - distinct from prev-day high
+  1003 | yearly_low                                    | SFeedScrip.yearly_low / SFeedIndex.yearly_low
+  1004 | auction                                       | SFeedScrip.auction from wire auction_flag (protocol.py)
+  1005 | precision                                     | SFeedScrip.precision / SFeedScripLite/SFeedIndex - decimal places
+  1006 | multiplier                                    | SFeedScrip.multiplier (contract multiplier)
+  1007 | bid_order_count / ask_order_count             | SFeedScrip.buy[i].orders / sell[i].orders (orders behind each level)
+  1008 | depth_row_count                               | row counts from depth-level packets (protocol.py buy_depth_count/sell_depth_count)
+  1009 | market_status_code                            | SFeedMarketStatus.status_code + MARKET_STATUS_TEXT (models.py)
+  1010 | index_name                                    | SFeedIndex.name
+  1011 | cas_reference_price                           | SFeedCasChange.ref_price during CAS
+  1012 | cas_imbalance_qty                             | SFeedCasChange.imbalance_qty during CAS
+  1013 | cas_imbalance_qty_at_market                   | SFeedCasChange.imbalance_qty_at_market during CAS
+  1014 | message_type                                  | SFeed*.type ('scrip'/'scrip_lite'/'index'/'market_status'/'cas_change')
+  1015 | feed_level                                    | SFeedScrip.level (2/4/8/16)
+  1016 | last_update_time                              | SFeedScrip.last_update_time (market-picture update clock, epoch)
+  1017 | total_buy_quantity / total_sell_quantity      | SFeedScrip totals (schema buy_volume/sell_volume map to these)
+  1018 | net_change / net_change_percent               | SFeedScrip/SFeedScripLite/SFeedIndex (schema price_change / price_change_pct map to these)
+
+========================================================================================================================
+SAMPLE REAL VALUES FROM REPO ARTIFACTS
+========================================================================================================================
+  instrument_master.json RELIANCE (nse_cm):
+    symbol           RELIANCE
+    token            2885
+    exchange         nse_cm
+    exchangeSegment  nse_cm
+    tradingSymbol    RELIANCE-EQ
+    companyName      RELIANCE INDUSTRIES LTD
+    series           EQ
+    instrumentType   EQ
+    segment          EQ
+    lotSize          1
+    tickSize         10
+    isin             INE002A01018
+
+  canonical tick envelope example (canonical.py, schema 1.0):
+    field 'ltp' -> SFeedScrip.last_traded_price; 'prev_close' -> close_price; 'avg_price' ->
+    average_trade_price; 'net_change_pct' -> net_change_percent (/100); 'volume' ->
+    volume_traded_today; depth rows -> list of {quantity, price, orders}; raw preserved under
+    raw_reference = 'preserved|<md5 digest>'.
+
+========================================================================================================================
+FREQUENCY ANALYSIS
+========================================================================================================================
+  Attribute counts per message (from protocol.py decode, deterministic):
+    SFeedScrip level 4  : 25 scalar attributes + 2 depth rows (bid0/ask0) [+symbol/level]
+    SFeedScrip level 8/16: 25 scalars + up to N bid/ask rows (N = depth counts)
+    SFeedScripLite      : 9 scalars
+    SFeedIndex (7207)   : 12 scalars (+name)
+    SFeedMarketStatus   : status_code + status
+    SFeedCasChange      : ref_price, imbalance_qty, imbalance_qty_at_market
+  Field-level FREQ is per message of its type (see table); the arrival rate of those messages
+  in ticks/sec could not be re-measured in this environment -> per-second column is NOT VERIFIED
+  for all fields. Historical session totals (12,763 SFeedScrip / 13,371 trades) have no recorded
+  duration, so they cannot be converted to /sec either.
+
+========================================================================================================================
+NOT VERIFIED REGISTER (CHECK = NOT VERIFIED)
+========================================================================================================================
+    18 currency                         RAW=scrip master currency | scrip master currency field (INR/USD...); not in SFeed
+    42 previous_day_high                RAW=quote REST previousDayHigh | Kotak quote REST /quotes.../all (previousDayHigh); not in SFeed
+    43 previous_day_low                 RAW=quote REST previousDayLow | Kotak quote REST /quotes.../all (previousDayLow); not in SFeed
+    44 previous_day_volume              RAW=quote REST previousDayVolume | Kotak quote REST /quotes.../all (previousDayVolume); not in SFeed
+   261 expiry                           RAW=quote REST expiry / scrip master | Kotak quote /quotes.../all expiry; not in SFeed
+   263 strike_price                     RAW=quote REST strikePrice / scrip master | Kotak quote /quotes.../all strikePrice; not in SFeed
+   264 option_type                      RAW=quote REST instrumentType / scrip master | instrumentType CE/PE from scrip master/quote; not in SFeed
+   266 previous_open_interest           RAW=quote REST previousOI | Kotak quote /quotes.../all previousOI; not in SFeed
+
+========================================================================================================================
+RECOMMENDATIONS / NOTABLE FINDINGS (audit only - no business-logic changes made)
+========================================================================================================================
+  1. identity fields that are NOT in the SFeed (instrument_type, isin, company_name, series,
+     lot_size, tick_size) must come from a master/quote join. The repo master (nse_cm) proves
+     isin/companyName/series/instrumentType/lotSize/tickSize exist; the engine should join on
+     token/exchange_segment at subscribe time.
+  2. previous_day_high/low/volume and previous_open_interest are marked QUOTE_REST_ONLY by the
+     existing audit but nothing in the repo parses these keys and no live quote response is
+     captured -> MUST be live-verified once credentials exist (CHECK stayed NOT VERIFIED).
+  3. expiry / strike_price / currency / option_type: not present in the repo nse_cm master;
+     scrip master (REST CSV) or a live quote /all capture is required. nse_fo master must be
+     downloaded for F&O identity.
+  4. depth fields bid2-5/ask2-5 (and total depth sums) only arrive when a LEVEL 8 (subscribe_depth)
+     subscription is active; current runtime subscribes scrips(level4)+index+depth(-flagged tokens).
+  5. trading_session / trading_status come from SFeedMarketStatus which requires subscribe_exchange()
+     verification.py notes it was NOT subscribed in the historical session. Also protocol.py discards
+     the per-instrument trading_status bit -> only exchange-level status is available.
+  6. implied_volatility is NOT on the WS feed and is not confirmed in quote REST -> currently
+     NOT_AVAILABLE_FROM_KOTAK; if required, needs a live option-chain/quote check before claiming.
+  7. settlement_price: not on the feed; NOT_AVAILABLE_FROM_KOTAK for live market data.
+  8. sequence_number: wire header seq_no is discarded by protocol.py -> would need SDK change.
+  9. sector / industry: genuinely NOT VERIFIED - a taxonomy source must be chosen (NSE segment,
+     BSE/S&P sector maps, etc.) before any claim.
+  10. The 344-file's own statuses and the report RESULT differ by design: fields.py only judges
+      SFeed availability + asserts REST keys; this report's RESULT is the 5-way Kotak-source
+      classification and keeps REST-only claims at CHECK=NOT VERIFIED without live proof.
+
+END OF REPORT

@@ -1,0 +1,320 @@
+KOTAK NEO WS - L8 DEPTH UPGRADE - FINAL REPORT
+==============================================
+Business date : 2026-09-18 (live NSE cash session)
+Verification  : 2026-09-18 13:33-13:41 IST via controlled backend restart
+Report draft  : 21 sections below (section numbering draft; re-align to the
+                canonical 21-section enumeration if a newer one supersedes)
+
+--------------------------------------------------------------------
+1. OBJECTIVE & SCOPE
+--------------------------------------------------------------------
+Replace the active Kotak market-data feed from L4 touch-line to L8 depth on
+the existing pipeline, end-to-end, with zero field loss and without any
+architectural redesign or parallel WebSocket implementation. L4 is no longer
+the active or default level anywhere. Secondary defects discovered along the
+way were fixed where in-scope (most notably the storage-doc bs=sq bug).
+
+Pipeline in one line:
+  cash equities (db.stocks) -> session-manager desired subscriptions ->
+  engine registry -> ws_manager (single SDK SFeedWebSocket owner) ->
+  subscribe_depth (L8) -> SFeedScrip(level=8) decode -> canonical adapter ->
+  Data Saver -> connection-engine persistence drain -> storage doc ->
+  DBWriter -> Mongo db.ticks -> SSE / read APIs -> frontend.
+  (Feature Engine receives the same canonical payload as a separate
+   TICK_VALIDATED channel; persistence does NOT pass through it.)
+
+--------------------------------------------------------------------
+2. ACTUAL WS IMPLEMENTATION (no second socket; single owner)
+--------------------------------------------------------------------
+One SDK SFeedWebSocket is owned by C:\project\python-service\ws_socket\
+ws_manager.py and drives the whole pipeline. Order-path details and
+reconnect/supervisor wiring were audited in the preceding forensic report
+(KOTAK_WS_TICK_FIELD_FORENSIC_AUDIT.txt) Section 2; no changes to socket
+ownership were required for the L8 move.
+
+--------------------------------------------------------------------
+3. SDK VERSION (pinned / installed / runtime)
+--------------------------------------------------------------------
+kotakneoapi 3.0.6 / neo_api_client (installed in C:\project\.venv).
+Runtime decoder verified against installed source at:
+  C:\project\.venv\Lib\site-packages\neo_api_client\websocket\feed\
+  (models.py, protocol.py, client.py)
+Feed messages delivered as decoded SFeed models (SFeedScrip at level 8).
+
+--------------------------------------------------------------------
+4. RAW TICK WIRE FORMAT (protocol)
+--------------------------------------------------------------------
+L8 depth arrives as message_code 3401 ("depth"), decoded by the SDK to
+SFeedScrip with level==8. subscription acks (1109) resolve trading_symbol.
+Level semantics (from models.py / protocol.py):
+  Level.2  touch line    -> SFeedScrip buy/sell 1+1
+  Level.4  touch line    -> SFeedScrip buy/sell 1+1  (legacy active level)
+  Level.8  depth         -> SFeedScrip buy/sell 5+5  <== ACTIVE NOW
+  Level.16 full depth    -> SFeedScrip buy/sell 16+16 (supported, unused)
+market-data exchange channel (subscribe_exchange) and CAS messages
+(subscribe_scrips/depth) remain untouched.
+
+--------------------------------------------------------------------
+5. RAW TICK FIELD INVENTORY (L8)
+--------------------------------------------------------------------
+SDK SFeedScrip scalar+identity surface: exchange_segment, instrument_token,
+trading_symbol, last_traded_price, last_trade_time, last_update_time,
+open_price, high_price, low_price, close_price, average_trade_price,
+last_trade_qty, total_buy_quantity, total_sell_quantity, volume_traded_today,
+open_interest, net_change, net_change_percent, upper_circuit_limit,
+lower_circuit_limit, yearly_high, yearly_low, total_traded_value, market_lot,
+precision, multiplier, auction. Depth rows (DepthLevel{quantity, price,
+orders}) as buy=[5] and sell=[5] at level 8.
+Full inventory, canonical mapping and the field-loss matrix live in
+docs/reports/KOTAK_L8_FIELD_INVENTORY.txt (Sections 2-5 there). RESULT: the
+L8 move ADDS depth rows 2..5 per side; the scalar surface is the same as the
+touch-line previously delivered (verified from the SDK models source).
+
+--------------------------------------------------------------------
+6. NORMALIZATION LAYER (canonical.py) - lossless
+--------------------------------------------------------------------
+All 26 _SCRIP_FIELDS plus buy/sell are projected verbatim; no field dropped,
+none synthesized. _feed_type maps level 8 -> "depth". Identity fields ride
+the engine envelope. Quality monitor attaches broker timestamp; a tick that
+arrives with NOT_RECEIVED quality is never fabricated (quality module
+contract, unchanged). Canonical payload is the single routing currency for
+Data Saver AND Feature Engine.
+
+--------------------------------------------------------------------
+7. CLASSIFICATION & ROUTING (ws_manager._group_intents)
+--------------------------------------------------------------------
+Classification now returns a 4-tuple (scrips, indices, full_depths, depths):
+  isIndex / feed-level INDEX        -> indices        (subscribe_index)
+  L16 / feed-level 16               -> full_depths    (subscribe_full_depth)
+  L8 / feed-level 8 / isDepth       -> depths         (subscribe_depth)
+  explicit L1/L2/L4/TOUCH_LINE      -> scrips         (subscribe_scrips;
+                                                       legacy explicit only)
+  anything else (unclassified)      -> depths         (subscribe_depth)
+The default for an unlabelled equity token is now DEPTH (L8). No production
+path emits the legacy explicit-script classification anymore (registry,
+session-manager, master, engine all default L8). Feed bookkeeping
+(_record_feed_level) records index subscriptions as "INDEX", default as
+"L8"; feed_levels() = {"L4","L8","L16","INDEX"}.
+
+--------------------------------------------------------------------
+8. REGISTRY & MERGE SEMANTICS (registry.py) - depth wins
+--------------------------------------------------------------------
+RegistryEntry.market_data default "L8". Merge (_tier_of with tier-max of
+entry tiers + default 8) means:
+  * depth subscription can never be downgraded by an L4 pin;
+  * feed_level is kept consistent with the winning tier;
+  * marketData is ALWAYS emitted in the token dict (no longer omitted when
+    "L4"); is_depth = not index and tier >= 8.
+Explicit historical L4 pins remain legal input (classified to legacy scrips)
+but nothing in the active pipeline emits them.
+
+--------------------------------------------------------------------
+9. SESSION-MANAGER FEED-LEVEL POLICY (refresh_desired_subscriptions)
+--------------------------------------------------------------------
+When desired subscriptions are rebuilt from db.stocks each day:
+  * equity rows are promoted to isDepth=True, feed_level=8 (if feed_level not
+    already 8/16), marketData="L8";
+  * L16 rows are preserved (marketData="L16");
+  * index rows -> isIndex=True, isDepth=False, feed_level=None,
+    marketData="INDEX".
+_sanitize_feed_level accepts {4,8,16} for compatibility with stored values;
+the promotion block overrides 4 -> 8.
+
+--------------------------------------------------------------------
+10. INSTRUMENT MASTER / DEFAULT FEED DATA
+--------------------------------------------------------------------
+update_instrument_master.py default branch now emits isDepth=True,
+feedLevel=8, marketData="L8" for every non-index equity. The master was
+re-seeded by running the script (data/instrument_master.json):
+  BEFORE: 4 INDEX | 43 L8 (isDepth) | 9,837 L4
+  AFTER : 4 INDEX | 9,880 L8 (isDepth) | 0 L4
+engine.py default for rows without market_data is now "L8".
+
+--------------------------------------------------------------------
+11. STORAGE / PERSISTENCE (storage.py) - superset + bs fix
+--------------------------------------------------------------------
+to_storage_doc builds a strict superset of the decoded L8 message:
+  * legacy 28-key surface verbatim (ltp open high low close volume ltq tbq
+    tsq averagePrice change changePercent oi circuits total_traded_value
+    last_update_time);
+  * top-of-book scalars from depth trail 0: bp=buy[0].price, bq=buy[0].
+    quantity, sp=sell[0].price, sq=sell[0].quantity;
+  * FIXED BUG: "bs" previously carried sq (ask quantity); it now carries the
+    best-bid quantity bq (legacy alias) - storage.py:68-70;
+  * lossless additions: full buy[5]/sell[5], market_lot, precision,
+    multiplier, auction, yearly_high/low, last_trade_time, level,
+    message_type, feed_type, feed_level, CAS/market-status/index extras,
+    canonical envelope, and the immutable raw broker blob.
+DBWriter -> tick_buffer.bulk_write(ordered=False) persists every tick with
+0 write errors observed after restart; buffer drains at bulkInsertSize=1000.
+
+--------------------------------------------------------------------
+12. DOWNSTREAM / API / SSE
+--------------------------------------------------------------------
+Read APIs tail db.ticks with no level filtering; /api/ticks/stream re-emits
+the same superset document (verified api/ticks.py). Consumers (terminal,
+watchlist, market watch, scanners) keep receiving exactly the legacy keys
+they already used, PLUS buy/sell 5+5 and every L8 field. No reshaping, no
+dropping.
+
+--------------------------------------------------------------------
+13. FRONTEND CONSUMPTION
+--------------------------------------------------------------------
+session-manager page fallback for unknown feed levels changed from 'L4' to
+'L8' (app/_pages/session-manager/page.tsx:825). README_local.md (:493) L8
+example corrected to isDepth:true. Feature Engine consumers continue to
+consume flat canonical scalar events (MARKET_DATA_FIELDS); depth rows ride
+the same event payload - feature engine is pure pass-through (no calcs, no
+invented values).
+
+--------------------------------------------------------------------
+14. CHANGES MADE (file-by-file)
+--------------------------------------------------------------------
+python-service:
+  ws_socket/ws_manager.py      feed_levels(), _group_intents() -> 4-tuple,
+                               _send_subscribe/_send_unsubscribe handle full
+                               depth, _record_feed_level (L8 default, INDEX
+                               label), _reload_subscriptions_from_db equity/
+                               index defaults, comment at :249
+  ws_socket/engine/registry.py RegistryEntry.market_data/add_instrument
+                               default "L8", _TIER_TO_LABEL/_tier_of,
+                               _token_dict depth-wins + marketData always
+  ws_socket/engine/engine.py   :352 default "L8"
+  ws_socket/engine/storage.py  "bs"=sq -> bq fix (+ comment)
+  services/session/session_manager.py  equity promotion block in
+                               refresh_desired_subscriptions
+  update_instrument_master.py  default branch -> L8 depth; comment update
+  data/instrument_master.json  RESEEDED (4 INDEX / 9880 L8 / 0 L4)
+tests:
+  tests/test_ws_engine.py      _group_intents 4-tuple expectations
+                               (legacy L4 -> scrips, default -> depth),
+                               feed-level recording L8=2/L4=0/INDEX=1,
+                               storage doc bs==bq
+  tests/test_session_manager_subscriptions.py  master-miss now asserts
+                               Depth/8/L8 defaults
+app:
+  app/_pages/session-manager/page.tsx  fallback 'L8'
+docs:
+  docs/reports/KOTAK_L8_FIELD_INVENTORY.txt  NEW (inventory + loss matrix)
+  README_local.md               L8 example isDepth:true
+  docs/reports/KOTAK_WS_L8_DEPTH_UPGRADE_REPORT.txt  THIS FILE
+
+--------------------------------------------------------------------
+15. TESTS & HOW VERIFIED
+--------------------------------------------------------------------
+py_compile: all changed python files COMPILE_OK.
+Isolated unittest runs (venv python):
+  tests.test_ws_engine + tests.test_engine_registry +
+  tests.test_ws_supervisor_sdk + tests.test_scheduler_reconcile_lifecycle
+                                              -> 83 tests OK
+  tests.test_session_manager_subscriptions    -> 12 tests OK
+NOTE: `unittest discover -s tests` is pre-existing polluted at unmodified
+HEAD (5 failures + 113 errors from ordering/Pollution; scheduler lifecycle
+passes in isolation with 15 OK). This pollution predates these changes and is
+not caused by the L8 work.
+
+--------------------------------------------------------------------
+16. RUNTIME VERIFICATION (before / after)
+--------------------------------------------------------------------
+BEFORE (old code, pre-restart, live all day):
+  * 8 subscribed instruments, all SFeedScrip level-4 touch_line;
+  * 41,228 tick messages today, total_index_messages=0, 100% L4/touch_line;
+  * api/ticks/stats: connected=true, phase=LIVE_FEED, pipeline RUNNING.
+
+CONTROLLED RESTART (13:33 IST, user-approved):
+  * old backend pid 9032 stopped via `python start_backend.py stop`
+    (verified KAUSTUBH single instance; port released);
+  * fresh instance started via canonical `run_backend.cmd` (.venv +
+    start_backend.py) -> pid 27836, health OK;
+  * scheduler catch-up recovered the WS session (ledger ws_start COMPLETED),
+    reconnected feed with 0 write errors, 8 registry entries.
+
+AFTER (new code, live verified 13:33-13:41 IST):
+  * 1,101 fresh db.ticks docs analysed:
+      feed_level=8: 1101  |  feed levels 1/2/4: 0     (legacy level dead)
+      feed_type="depth": 1101 (3 CAS_channel docs carry none, as designed)
+      buy rows = 5 AND sell rows = 5 on every depth doc  -> 0 violations
+      bs != bq anywhere: 0  (storage fix live: ONGC 4797/4797, BOSCHLTD
+                           8/8, CUPID 1968/1968, EIHOTEL 24/24, WIPRO 100/100)
+      raw broker blob present on every depth doc
+  * all 8 active symbols observed at depth: CUPID, EIHOTEL, HIKAL, IFCI,
+    IRCTC, BOSCHLTD, ONGC, WIPRO.
+
+--------------------------------------------------------------------
+17. FIELD-LOSS MATRIX - SUMMARY
+--------------------------------------------------------------------
+Every decoded L8 SFeedScrip attribute (26 scalars + 5+5 depth rows + 3
+identity fields) is PRESERVED to db.ticks with 0 losses; the messy wire blob
+remains recoverable from `raw`. Full matrix: KOTAK_L8_FIELD_INVENTORY.txt
+Section 5. Derived top-of-book scalars (bp/bq/bs/sp/sq) are computed from
+real depth-trail-0 values, never fabricated; bs was corrected from ask to
+best-bid quantity.
+
+--------------------------------------------------------------------
+18. DEFECTS FOUND & FIXED
+--------------------------------------------------------------------
+  * storage.py "bs": sq -> fixed to bq (ask -> best-bid size).
+  * Pipeline-wide default feed was L4 (registry, engine:352, _reload
+    subscriptions, master JSON default, session-manager refresh, frontend
+    fallback) -> all switched to L8 while keeping legacy explicit
+    L4-from-storage values classified to the (now unsupported-by-policy)
+    scrips route instead of silently downgrading depth.
+  * index subscriptions were bookkept as feed-level "L4" -> now "INDEX".
+  * registry silently omitted marketData==""L4"" from token dicts -> marketData
+    is now always emitted; depth-wins merge prevents L4 pins downgrading.
+  * master JSON carried 9,837 rows defaulted to L4 -> re-seeded to L8.
+
+--------------------------------------------------------------------
+19. NOT VERIFIED / DEFERRED (honest list - nothing fabricated)
+--------------------------------------------------------------------
+  * Live index subscription (subscribe_index) and its "INDEX" bookkeeping:
+    not exercised today (all 8 active stocks are equities; no index in the
+    live desired set) - covered by unit tests only.
+  * Live L16 full-depth subscribe: supported but unused; unit-tested only.
+  * Feature Engine live depth values end-to-end into its output store:
+    code path verified pass-through by inspection; no live feature-output
+    capture performed this session.
+  * feed_levels() is not exposed via REST; runtime proof used db.ticks +
+    /api/ticks/stats. A read-only diagnostic endpoint could be added later.
+  * Periodic probes (_probe_kotak_live_fields.py / _probe_kotak_wipro_depth
+    .py) could not run: no .env with credentials exists; they are BLOCKED
+    (exit 3) without a session. Live L8 evidence was instead captured from
+    the production pipeline itself.
+  * SSE capture via PowerShell is blocked by non-interactive console mode;
+    SSE path verified by code read (read-through of the SAME superset doc).
+  * Full `unittest discover` still shows its pre-existing 5F/113E pollution;
+    L8-related suites pass in isolation.
+
+--------------------------------------------------------------------
+20. RISKS & RECOMMENDATIONS
+--------------------------------------------------------------------
+  * L4 now exists only as explicit-input compatibility in classification and
+    _sanitize_feed_level {4,8,16}; nothing emits it. Recommend leaving the
+    compatibility in place (older stored rows resolve without downgrades).
+  * Two uvicorn processes were found this morning on port 8000 (one bare
+    `uvicorn app:app` bypassing the singleton guard). Use ONLY
+    `run_backend.cmd` / `start_backend.py`; the launcher's single-instance
+    guard prevents duplicate lifespan sidecars.
+  * Depth rows 2..5 increase storage: ~2x rows/field volume per tick vs
+    touch-line. bulk_insert_size=1000 + buffer 5000 absorbed ~7 t/s easily
+    (buffer 0, write errors 0). Monitor db size growth on heavy days.
+  * The scheduler catch-up proved restart-safe mid-session today (login
+    at 08:50 stayed COMPLETED; WS session re-established at 13:33 via stored
+    session); avoid restarts in the 15:16-16:00 square-off/logout window.
+  * Consider exposing feed_levels() + feedLevelCounts in /api/websocket
+    /status for future deterministic assertions without Mongo access.
+
+--------------------------------------------------------------------
+21. SUMMARY & CONCLUSION
+--------------------------------------------------------------------
+The pipeline now consumes Kotak L8 full depth by default for every cash
+equity, end-to-end, with the complete 5+5 depth surface and every decoded
+field persisted losslessly to a superset Mongo document; default feed is L8
+everywhere (manager, registry, engine, session-manager, master, frontend),
+legacy L4 is no longer active or produced, the bs=sq defect is fixed, and
+runtime verification on the live open market (1,101 consecutive L8 depth
+docs, 0 L4, 0 bs/bq mismatch, 0 write errors, all 8 symbols 5+5) confirms
+the change in production. Remaining live-only items (index, L16, feature
+output capture) are covered by unit tests and honestly marked NOT VERIFIED.
+--------------------------------------------------------------------
+END OF REPORT

@@ -1,7 +1,44 @@
-neo-api-client @ git+https://github.com/Kotak-Neo/Kotak-neo-api-v2.git@v2.0.2
+# Kotak Neo official SDK (import module: neo_api_client). 3.0.7 is the current
+# PyPI release and is REQUIRED over 3.0.6 for two defects in the exact live-feed
+# paths this project uses:
+#   * SFeedWebSocket._handle_disconnect recursed on itself, adding one stack
+#     frame per failed reconnect attempt -> RecursionError during a broker
+#     outage instead of continuing to retry.
+#   * OrderFeedWebSocket.__anext__ recursed per 1s idle timeout -> RecursionError
+#     on a quiet order/position feed.
+# Both are now flat `while True` loops. No public API was removed: the NeoAPI
+# REST surface, SFeedWebSocket subscribe_* / unsubscribe_* family and the
+# OrderFeedWebSocket constructor are unchanged from 3.0.6.
+kotakneoapi==3.0.7
+# Shoonya official OAuth SDK (published dist name "NorenRestApiOAuth"; its
+# import module is NorenRestApiPy.NorenApi). Implementation verified against
+# 0.0.41: class NorenApi(host, websocket) with OAuth getOAuthURL/getAccessToken/
+# injectOAuthHeader + REST/place/modify/cancel + noren websocket feed methods.
+# The legacy password/TOTP packages (NorenApiPy, ShoonyaApiPy) are NOT used.
+NorenRestApiOAuth==0.0.41
 fastapi==0.115.0
 uvicorn==0.30.6
 python-dotenv==1.0.0
 pydantic==2.9.0
 motor==3.5.1
+# DNS resolver required for MongoDB Atlas `mongodb+srv://` connection strings.
+dnspython==2.7.0
 psutil==6.0.0
+# websockets drives BOTH the ASGI server-side WebSocket protocol (FastAPI /ws,
+# via uvicorn) AND the kotakneoapi (v3) SFeedWebSocket live feed, which now
+# imports the async "websockets" package directly.
+# uvicorn 0.30.6 imports websockets.legacy.*, which only exists in websockets
+# 10.x-13.x, so the version MUST stay in that range. kotakneoapi 3.0.7 declares
+# websockets>=12.0 (no upper bound), so websockets==13.1 satisfies both consumers.
+websockets==13.1
+# kotakneoapi 3.0.7 still requires websocket-client>=1.9.0 (unchanged since 3.0.2).
+websocket-client==1.9.1
+openpyxl==3.1.5
+
+pyyaml==6.0.3
+odfpy==1.4.1
+fastavro==1.12.2
+requests
+# Mode Lock: PBKDF2 PIN hashing + server-side WebAuthn (COSE/ECDSA) verification.
+cryptography==50.0.1
+pywebpush==2.5.0

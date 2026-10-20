@@ -1,0 +1,523 @@
+================================================================================
+KOTAK L16 FULL-DEPTH FEED - FORENSIC AUDIT REPORT
+================================================================================
+Business date : 2026-09-18 (NSE cash session; market OPEN during testing)
+Probe date    : 2026-09-18 14:12 IST (fresh isolated live test, this audit)
+Comparisons   : prior isolated live trials 2026-09-15 (two capture windows)
+Account       : XBH6H (production account)      SDK: kotakneoapi 3.0.6
+
+IMPORTANT: PRODUCTION L8 CONFIGURATION WAS NOT CHANGED. This was a
+read-only forensic audit plus a temporary isolated L16 subscription on a
+separate WebSocket; the live production feed (8 stocks at L8) was NOT
+touched and was re-verified healthy immediately after (connected=CONNECTED,
+feed=RECEIVING, ticks flowing).
+
+================================================================================
+VERDICT (concise answer at the top, per task)
+================================================================================
+L16 SDK SUPPORT               : YES   (Level.FULL_DEPTH=16; subscribe_full_depth)
+L16 PROTOCOL SUPPORT          : YES   (event "subscribeFullDepth"; native_batch
+                                       level byte 16; message_code 7208 decoded)
+L16 LIVE FEED AVAILABLE       : NO    (see below - subscription ACCEPTED, packets
+                                       arrive, but book is EMPTY 0+0; verified live
+                                       today AND on 2026-09-15, two windows)
+L16 BUY DEPTH                 : 0 rows observed live (expected 16 only if the
+                                       exchange sends buy_depth_count=16; it sends 0)
+L16 SELL DEPTH                : 0 rows observed live
+L16 TOTAL DEPTH ROWS          : 0 (live)   [expected model: buy+sell via wire counts]
+L16 TOP-LEVEL FIELDS          : 31 on SFeedScrip (3 identity + type + level +
+                                       24 scalars + buy + sell)
+L16 SCALAR FIELDS             : 24 (+3 identity) - identical set to L8
+L16 DEPTH-ROW FIELDS          : 3 per row (quantity, price, orders)
+L16 FIELDS UNIQUE VS L8       : NONE - same fields; only the level byte (16 vs 8)
+                                       and per-side row count differ
+L16 FIELDS LOST IN CURRENT PIPELINE : 0 (canonical + storage preserve the whole
+                                       decoded message + raw blob; verified 16x16
+                                       rows survive on the real code path)
+CURRENT SYSTEM CAN HANDLE L16 : YES structurally (no hard-coded 5-row boundary in
+                                       canonical/storage/validation/FE/API/Mongo);
+                                       BUT live L16 has no book data for this
+                                       account today, so nothing usable would flow
+PRODUCTION L8 CHANGED         : NO
+
+================================================================================
+1. OBJECTIVE
+================================================================================
+Determine from PRIMARY evidence (installed SDK source + fresh isolated live
+probe + preserved raw-wire evidence) exactly what Kotak L16 full-depth
+subscription provides, how much data, which fields, how many buy/sell rows,
+and whether it actually works for the current account (XBH6H) + SDK 3.0.6.
+Scope strictly investigatory; no production pipeline or configuration change.
+
+================================================================================
+2. CURRENT PRODUCTION STATE
+================================================================================
+Production feed is LIVE at L8 (5+5 depth) for 8 active cash stocks. Verified
+at the time of this audit: backend connected=CONNECTED, feedState=RECEIVING,
+uninterrupted tick persistence (tens of thousands of docs today), 0 write
+errors, total_index_messages=0. This report does not alter that state.
+The project codebase has already codified prior L16 knowledge at
+services/session/session_manager.py:211:
+    "L8 = live 5+5 (platform default), L16 = ACK-only/static on the tested account"
+
+================================================================================
+3. SDK VERSION
+================================================================================
+Package : kotakneoapi 3.0.6
+Module  : neo_api_client
+Path    : C:\project\.venv\Lib\site-packages\neo_api_client\websocket\feed\
+Files   : models.py, protocol.py, client.py
+Runtime : The live pipeline decodes with this exact installed SDK (verified by
+          sdk_version stamps on db.ticks documents).
+
+--------------------------------------------------------------------------------
+4. SDK L16 IMPLEMENTATION  [CODE VERIFIED - installed source]
+--------------------------------------------------------------------------------
+models.py:87-91  Level enum:
+    MINI_TOUCH_LINE = 1, TOUCH_LINE = 4, DEPTH = 8, FULL_DEPTH = 16
+models.py:142-148 DepthLevel (a single bid/ask row):
+    quantity: int | price: float | orders: int
+models.py:150-180 SFeedScrip - the market picture model:
+    type='scrip', level, and 24 scalars + buy/sell lists (see section 8).
+client.py:878-884:
+    async def subscribe_full_depth(tokens) -> _subscribe(tokens, "full_depth")
+    async def unsubscribe_full_depth(tokens) -> _unsubscribe(tokens, "full_depth")
+client.py:52-57  control-plane event map:
+    "full_depth": "subscribeFullDepth" / "unsubscribeFullDepth"
+client.py:715-742 _send_subscribe sends (ack_symbol=True):
+    {"event": "subscribeFullDepth", "tokens": ["<seg>|<token>"], "ack_symbol": true}
+    (observed live payload: {"event": "subscribeFullDepth",
+     "tokens": ["nse_cm|3787"], "ack_symbol": true})
+The SDK does NOT accept a depth-level number; the level is picked by the
+choice of subscribe method. subscribe_full_depth implies level 16.
+
+--------------------------------------------------------------------------------
+5. L16 PROTOCOL / MESSAGE SEMANTICS  [CODE VERIFIED + LIVE VERIFIED]
+--------------------------------------------------------------------------------
+protocol.py:51-52 header: message_length u16, message_code u16, exchange_id i8,
+            level u8, auction_flag u8, seq_no u8, bitmask_length u8.
+protocol.py:158 routing: levels {2, 4, 8, 16} all decode to SFeedScrip via
+            _decode_market_picture (message_code 7208 = MSG_MARKET_PICTURE,
+            protocol.py:38). Level 16 is NOT a separate message_code.
+protocol.py:282-377 _decode_market_picture:
+    * Token + 23 market scalars unpacked from the fixed 135-byte body (@9..@144).
+    * buy_depth_count and sell_depth_count are READ FROM THE WIRE (body u32s).
+    * Touch line (level 4) forces buy_n=sell_n=1 (hard-coded).
+    * ALL OTHER LEVELS (incl. 16) use buy_depth_count/sell_depth_count verbatim.
+    * Depth rows are read after byte 144 as consecutive 16-byte rows
+      (qty i64, price i32, orders i32 -> price/divider).
+    * If the packet ends before the advertised rows, decoding stops (partial
+      book is possible; broken rows are NOT synthesised).
+CONCLUSION: the SDK does NOT guarantee "16+16" for level 16. The number of
+rows is whatever buy_depth_count/sell_depth_count say in each packet. Level
+16 in the SDK only names the subscription tier; the actual book size is a
+runtime property of the feed. URL-level doc value "FULL_DEPTH=16" is the
+level tag, not a promised row count.  [DOCUMENTED vs CODE vs LIVE separated]
+Discarded wire fields (decoded but never exposed on any SFeed model):
+    message_length, message_code (routing only), seq_no, bitmask_length,
+    _indicative_close, _trading_status.     [CODE VERIFIED; also see section 12]
+
+--------------------------------------------------------------------------------
+6. EXPECTED L16 STRUCTURE  [CODE VERIFIED]
+--------------------------------------------------------------------------------
+For a level-16 packet the SDK returns an SFeedScrip whose buy/sell lengths
+equal the wire buy_depth_count/sell_depth_count. With a "true" 16-level
+full-depth feed the expectation would be buy=16, sell=16 (16+16). Whether
+the LIVE Kotak feed actually sends 16+16 for this account is answered by
+the runtime evidence below: it sends 0+0 for account XBH6H / SDK 3.0.6.
+
+--------------------------------------------------------------------------------
+7. ACTUAL L16 RUNTIME VERIFICATION  [LIVE VERIFIED 2026-09-18 + 2026-09-15]
+--------------------------------------------------------------------------------
+Test method: isolated, read-only, non-intrusive live probe
+  (_probe_kotak_wipro_depth.py --levels 16 --duration 30 --login):
+  * separate process, separate SFeedWebSocket, WIPRO (nse_cm, token 3787) only;
+  * subscribe_full_depth -> capture decoded + raw frames -> unsubscribe -> close;
+  * production L8 socket/config untouched; production health re-checked after.
+
+TODAY (2026-09-18 14:12 IST, NSE OPEN, WIPRO actively trading):
+  subscribe returned : OK        ack captured: YES (1)
+  WIPRO scrip msgs   : 2         market_status msgs: 10
+  msg types seen     : {'scrip': 2, 'market_status': 10}
+  SDK level tags seen: {'16': 2} (both scrip msgs labeled level 16)
+  bid rows seen      : {0: 2}     (i.e. BOTH packets carried 0 buy rows)
+  ask rows seen      : {0: 2}     (i.e. BOTH packets carried 0 sell rows)
+  volume_traded_today: 0 on both; total_buy=0; total_sell=0; open_interest=0
+  average_trade_price: 0; net_change=0; net_change_percent=0
+  last_trade_time    : 0 on both (never-updated trade clock)
+  last_update_time   : 1789065000 (2026-09-10T18:30Z) and
+                       1789583400 (2026-09-16T18:30Z) - STALE REFERENCE stamps,
+                       NOT the live 14:12 trade clock
+  OHLC / circuits / yearly high: present but static reference values
+  WIPRO msgs/sec     : 0.067 (2 scrip messages in 30s, then silence)
+  VERDICT            : STATIC_ONLY - subscription ACCEPTED (ack) + level-16
+                       packets DO arrive, but they carry an EMPTY BOOK 0+0
+                       and non-live reference scalars. Not a live full-book
+                       feed for this account/SDK window.
+
+PRIOR (2026-09-15, two capture windows, same account/SDK):
+  LEVEL 16: ack OK, 2 scrip msgs, bid rows {'0':2}, ask rows {'0':2},
+            volume=0, total buy/sell=0 -> identical STATIC_ONLY result.
+  Raw evidence preserved at:
+    docs/reports/kotak_wipro_live/evidence_raw_level16_20260915_143739.jsonl
+    docs/reports/kotak_wipro_live/evidence_raw_level16_20260915_144205.jsonl
+    docs/reports/kotak_wipro_live/evidence_raw_level16_20260915_145106.jsonl
+    docs/reports/kotak_wipro_live/evidence_raw_level16_20260918_141238.jsonl
+
+So: L16 is "ALLOWED" (entitled/permitted) but currently feeds NO live book
+rows and NO live scalars to this account. Request the correct entitlement /
+segment provisioning from Kotak if full-book depth is ever needed.
+
+--------------------------------------------------------------------------------
+8. COMPLETE L16 FIELD INVENTORY  [CODE VERIFIED + LIVE VERIFIED]
+--------------------------------------------------------------------------------
+SFeedScrip (SDK 3.0.6, level 16). "n=" counts are observed in TODAY's live
+capture (2 scrip msgs); "static/default" marks values at level 16 today.
+
+ RAW SDK NAME          CANONICAL  DB(ticks)  TYPE    SOURCE      EXAMPLE*   PRESENT?  DEPTH?  DIRECT/DERIVED  PRESERVED? DROPPED?  VERIFIED?
+ --------------------  ---------  ---------  ------  ----------  ---------  --------  ------  --------------  ---------  -------  --------
+ exchange_segment      (envelope) exchangeSegment str  wire/ID   nse_cm       YES(2/2) no   DIRECT          YES        no       LIVE
+ instrument_token      (envelope) instrumentToken  str  wire/ID   "3787"      YES(2/2) no   DIRECT          YES        no       LIVE
+ trading_symbol        (envelope) tradingSymbol   str  ack-map   WIPRO-EQ    YES(2/2) no   SYNTH (ack)     YES        no       LIVE
+ type                  feed_type   message_type   str  literal   scrip       YES(2/2) no   DIRECT(literal) YES        no       LIVE
+ level                 feed_level  feed_level     int  header    16          YES(2/2) no   DIRECT          YES        no       LIVE
+ last_traded_price     ltp         ltp            float wire     167.4       YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ open_price            open        open           float wire     165.2       YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ high_price            high        high           float wire     167.75      YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ low_price             low         low            float wire     165.16      YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ close_price           prev_close  close          float wire     167.4       YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ average_trade_price   avg_price   averagePrice   float wire     0.0         YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ last_trade_time       last_trade_time ts (epoch) int  wire     0           YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ last_update_time      last_update_time ...       int  wire     1789065000  YES(2/2) no   DIRECT          YES        no       LIVE(stale)
+ last_trade_qty        ltq         ltq            int  wire     132         YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ total_buy_quantity    total_buy_quantity tbq     int  wire     0           YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ total_sell_quantity   total_sell_quantity tsq    int  wire     0           YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ volume_traded_today   volume      volume         int  wire     0           YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ open_interest         open_interest oi           int  wire     0           YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ net_change            net_change  change         float wire     0.0         YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ net_change_percent    net_change_pct changePct   float wire     0.0         YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ upper_circuit_limit   upper_circuit_limit ...    float wire     184.14      YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ lower_circuit_limit   lower_circuit_limit ...    float wire     150.66      YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ yearly_high           yearly_high ...           float wire     273.10      YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ yearly_low            yearly_low  ...           float wire     165.16      YES(2/2) no   DIRECT          YES        no       LIVE(static)
+ total_traded_value    total_traded_value ...    float wire     0.0         YES(2/2) no   DIRECT          YES        no       LIVE(0)
+ market_lot            market_lot  market_lot     int  wire     1           YES(2/2) no   DIRECT          YES        no       LIVE
+ precision             precision   precision      int  wire     2           YES(2/2) no   DIRECT          YES        no       LIVE
+ multiplier            multiplier  multiplier     int  wire     1           YES(2/2) no   DIRECT          YES        no       LIVE
+ auction               auction     auction        bool header    0/False     YES(2/2) no   DIRECT(bool)    YES        no       LIVE
+ buy  (DepthLevel list) buy        buy            list 1 row/16B  [] (0 rows) YES(2/2) YES  DIRECT          YES        no       LIVE (EMPTY)
+ sell (DepthLevel list) sell       sell           list 1 row/16B  [] (0 rows) YES(2/2) YES  DIRECT          YES        no       LIVE (EMPTY)
+
+ * EXAMPLE = observed value in today's capture (packet 1). Static/zero values
+   printed verbatim - NOTHING is invented here.
+
+COUNTS (per task):
+  1. Total top-level SDK fields : 31 (3 identity + type + level + 24 scalars + buy + sell)
+  2. Identity fields            : 3 (exchange_segment, instrument_token, trading_symbol)
+  3. Scalar fields              : 24 (see grid; equal to L8's scalar surface)
+  4. Depth arrays               : 2 (buy, sell)
+  5. Depth-row fields           : 3 (quantity, price, orders) per row
+  6. Total buy depth rows live  : 0     7. Total sell depth rows live: 0
+  8. Individual depth values    : 0 live (row model supports 3, no rows sent)
+  9. Derived fields             : top-of-book scalars in storage (bp,bq,bs,sp,sq)
+                                  - derived ONLY from the first row when rows exist;
+                                  with an empty book they are null (never fabricated)
+  10. Metadata fields           : feed_type, feed_level, event_id, event_type,
+                                  schema_version, sdk_version, source,
+                                  raw_reference (+ immutable raw blob), ts, receivedAt
+
+--------------------------------------------------------------------------------
+9. COMPLETE L16 DEPTH INVENTORY (LIVE)
+--------------------------------------------------------------------------------
+   buy rows observed  : 0 (both packets)
+   sell rows observed : 0 (both packets)
+   per-row schema     : quantity:int, price:float (scaled by divider 100),
+                        orders:int  (DepthLevel, models.py:142; wire 16 bytes,
+                        protocol.py:70-72)
+   fixed/max length   : none fixed at SDK level - lengths are wire-driven.
+   observed row lengths over every frame: buy 0 / sell 0 (10+ level-16
+   packets decoded across 3 capture windows on two dates, plus 2 packets
+   this audit - identical result).
+   empty rows / zero qty / zero orders / duplicate price levels: NO rows were
+   ever sent, so none of these conditions were observable at level 16.
+   (For contrast: L8 live rows always came back 5+5 with real quantities.)
+
+--------------------------------------------------------------------------------
+10. L4 vs L8 vs L16 COMPARISON (FACTUAL - no ranking)
+--------------------------------------------------------------------------------
+                       L4              L8              L16
+  Feed level           4               8               16
+  Feed type            touch_line      depth           full_depth
+  SDK call             subscribe_scrips subscribe_depth subscribe_full_depth
+  SDK event            subscribeScrips  subscribeDepth   subscribeFullDepth
+  SDK message model    SFeedScrip      SFeedScrip      SFeedScrip
+  Wire message code    7208            7208            7208
+  Buy rows (live obs)  1               5               0
+  Sell rows (live obs) 1               5               0
+  Total depth rows live 2              10              0
+  Scalar fields        24              24              24
+  Depth-row fields     3/row           3/row           3/row
+  Extra fields         none            none            none
+  Wire fields          identical picture body; identical discarded fields
+  SDK supported        YES             YES             YES
+  Runtime verified     2026-09-15      2026-09-15, 09-18 2026-09-15(x2), 09-18
+                       (live, 23 msgs) (live, 23 msgs)  (accepted; 0+0 book)
+  Available for        YES             YES             subscription accepted
+  current account      (live 1+1)      (live 5+5)      but NO live book rows
+                                                       -> effectively NO
+
+  Differences between the three are ONLY: level byte, choice of subscribe
+  method, and the number of buy/sell rows the exchange actually sends in
+  the packet (counts come from the wire body). The SDK model, scalar set,
+  depth-row fields and message code are shared.
+
+--------------------------------------------------------------------------------
+11. L8 vs L16 FIELD DIFFERENCES  [CODE VERIFIED + LIVE VERIFIED]
+--------------------------------------------------------------------------------
+  1. Fields in BOTH         : every field (identical SFeedScrip model; both
+                              carry the 24 scalar + 3 identity set).
+  2. Fields ONLY in L16     : NONE at message level.
+  3. Fields ONLY in L8      : NONE at message level.
+  4. Scalar fields identical: YES - same names, same types, same decode.
+  5. ONLY difference row count: YES in theory; in the LIVE observations the
+                              difference was buy/sell row counts delivered
+                              (L8=5+5 real rows; L16=0+0 EMPTY book).
+  6. Extra microstructure   : NONE delivered. L16 sent fewer rows than L8, not
+                              more (0 vs 5 per side), for this account today.
+  7. Extra message-level fields: NONE.
+  8. SDK discards from L16  : same discard list as L8/L4 (message_length,
+                              message_code, seq_no, bitmask_length,
+                              _indicative_close, _trading_status).
+  9. Protocol vs SFeedScrip : the only things on the wire that do not reach
+                              the model are that discard list; buy_depth_count
+                              / sell_depth_count drive row counts but are not
+                              exposed as fields; identity token/trading_symbol
+                              are mapped onto the model.
+
+--------------------------------------------------------------------------------
+12. RAW -> CANONICAL MAPPING  [CODE VERIFIED; ws_socket/engine/canonical.py]
+--------------------------------------------------------------------------------
+canonical._SCRIP_FIELDS (24) map canonical names onto SFeed attributes:
+  ltp<-last_traded_price ltq<-last_trade_qty open<-open_price high<-high_price
+  low<-low_price prev_close<-close_price avg_price<-average_trade_price
+  volume<-volume_traded_today total_buy_quantity total_sell_quantity
+  open_interest net_change net_change_pct<-net_change_percent
+  upper_circuit_limit lower_circuit_limit yearly_high yearly_low
+  total_traded_value market_lot precision multiplier auction
+  last_trade_time last_update_time
+Depth: buy/sell projected verbatim via _depth_list -> [{quantity,price,orders}].
+_feed_type(16) = "full_depth"  (canonical.py:128-129)
+Identity rides the engine envelope (instrument_token/exchange_segment).
+Engine attaches sanitized source, event ids, sdk_version, schema_version,
+received_at and the IMMUTABLE raw broker blob (canonical.py:195-216).
+
+--------------------------------------------------------------------------------
+13. CANONICAL -> DB MAPPING  [CODE VERIFIED; ws_socket/engine/storage.py]
+--------------------------------------------------------------------------------
+to_storage_doc maps the canonical envelope into the db.ticks superset doc:
+  legacy surface: ltp open high low close volume ltq tbq tsq averagePrice
+    change changePercent oi circuits total_traded_value last_update_time
+  top-of-book scalars derived from depth row 0 ONLY when a row exists:
+    bp=buy[0].price bq=buy[0].quantity bs=bq (best-bid size, corrected)
+    sp=sell[0].price sq=sell[0].quantity   (empty book -> all None, no
+    fabrication; verified below)
+  lossless additions: full buy[]/sell[], market_lot precision multiplier
+    auction yearly_high yearly_low last_trade_time level message_type
+    feed_type feed_level, CAS/market-status/index extras, canonical envelope,
+    ts <- last_trade_time (epoch), receivedAt <- receive time, raw blob.
+  buy/sell are copied with NO slice - arbitrary length survives (see 18).
+
+--------------------------------------------------------------------------------
+14. FIELD-LOSS MATRIX (L16)  [CODE VERIFIED + TEST VERIFIED]
+--------------------------------------------------------------------------------
+  SDK SFeedScrip (31 fields) -> canonical (envelope + 24 scalars + buy/sell)
+  -> db.ticks: 100% preserved for every decoded field. Real L16 payloads were
+  pushed through canonicalize()+to_storage_doc() in a test path (section 18)
+  and the 24 scalars + identity landed in the doc; buy/sell (empty in L16
+  live) preserved; raw blob preserved. Only non-model wire bytes are dropped
+  (message_length, message_code, seq_no, bitmask_length, _indicative_close,
+  _trading_status) - by the SDK itself, before the pipeline starts.
+  LOST IN CURRENT PIPELINE: 0 fields.
+
+--------------------------------------------------------------------------------
+15. HARD-CODED DEPTH AUDIT  [WHOLE-CODEBASE SEARCH]
+--------------------------------------------------------------------------------
+Searched: buy[:5] sell[:5] [0:5] range(5) range(1,6) MAX_DEPTH DEPTH_LEVELS
+depth=5 depth_level=5 max_depth map depth '#5 5+5 L8 L16 full_depth
+subscribe_full_depth across python-service AND app/.
+  python-service ws_socket/engine/canonical.py:           NOT hard-coded -
+            _depth_list iterates every DepthLevel; _feed_type maps 16.
+  python-service ws_socket/engine/storage.py:             NOT hard-coded -
+            copies buy/sell verbatim; only buy[0]/sell[0] used for the legacy
+            top-of-book scalars (which is correct and documented).
+  python-service ws_socket/engine/quality.py:49-59:       full_depth map entry
+            = _SCRIP_EXPECTED ("buy"/"sell" exempt from numeric validation,
+            any row count valid). No 5-row validation anywhere.
+  python-service ws_socket/ws_manager.py:249,1881,2019-2064: L16 full-depth
+            group -> subscribe_full_depth routed; feed_levels() includes L16.
+  python-service services/session/session_manager.py:211-216,1361-1372: L16
+            tier accepted and PRESERVED when requested (feed_level 16).
+  python-service ws_socket/engine/registry.py:35:         _TIER_TO_LABEL[16]="L16"
+  app/_pages/websocket-engine/page.tsx:574:               renders live
+            buy.length / sell.length (dynamic, not fixed 5).
+  app/**  data insights / analytics: only UI-list comma/JSON slices (slice(0,5)
+            on sample-previews/notifications), none touch depth rows.
+  CLASSIFICATION: zero ACTIVE production code depends on a 5-row assumption.
+  All depth passes are verbatim; the "5+5" only ever appears in the LIVE L8
+  book itself and in tests/docs.
+
+--------------------------------------------------------------------------------
+16. CURRENT ARCHITECTURE L16 COMPATIBILITY (trace)  [CODE VERIFIED]
+--------------------------------------------------------------------------------
+  L16 ws packet -> protocol decode(level 16 -> SFeedScrip)          OK
+  -> ws_manager._record_feed_level("L16") / feed_levels()           OK
+  -> WebSocketEngine.on_feed_message -> canonicalize                OK
+       (canonical projects full SCript fields + all depth rows; no slice)
+  -> Feature Engine (separate TICK_VALIDATED channel, pass-through,
+       no depth slicing, no fabrication)                            OK
+  -> ConnectionEngine._drain_persistence -> to_storage_doc          OK
+  -> DBWriterEngine -> tick_buffer.bulk_write(ordered=False)        OK
+  -> Mongo db.ticks (schemaless; buy/sell any length)               OK
+  -> /api/ticks/stream + read APIs (no projection/filter on depth)  OK
+  -> Frontend (renders buy.length/sell.length dynamically)         OK
+  NO validation layer rejects L16 (quality.py:49-59 accepts it;
+  session-manager _sanitize_feed_level accepts {4,8,16}).
+  Only requirement NOT met today is upstream: the Kotak feed itself sent an
+  EMPTY book for the L16 subscription on this account.
+
+--------------------------------------------------------------------------------
+17. FEATURE ENGINE COMPATIBILITY  [CODE VERIFIED]
+--------------------------------------------------------------------------------
+The Feature Engine consumes canonical fields and is a pure pass-through:
+TICK_VALIDATED carries the flat canonical scalar surface; buy/sell ride the
+same envelope untouched; no FE calculator reads/slices depth rows and no FE
+output was observed fabricating depth. full_depth feed_type is accepted by
+quality validation (section 15). 16+16 depth would flow through unfiltered.
+
+--------------------------------------------------------------------------------
+18. MONGO / STORAGE COMPATIBILITY (test-path proof, non-polluting)  [TEST VERIFIED]
+--------------------------------------------------------------------------------
+In a throwaway in-memory script (no Mongo writes) the REAL production
+functions canonicalize() + to_storage_doc() were exercised with three
+payloads:
+
+  (a) TODAY'S REAL L16 packet (0+0 book, real scalars):
+        canonical: feed_type=full_depth, feed_level=16, 24 scalars, buy 0,
+        sell 0; storage doc identical + raw blob. Top-of-book bp/bq/bs/sp/sq
+        = None (correctly NOT fabricated on an empty book). PASS.
+
+  (b) A REAL archived L8 depth doc (EIHOTEL, today, 5+5):
+        canonical + storage preserved all 5+5 rows and derived bp/bq/bs/sp/sq
+        from row 0 with bs==bq. Proves arbitrary-length arrays already flow
+        unchanged through the exact production path. PASS.
+
+  (c) STRUCTURAL 16+16 SFeedScrip built ONLY with the real SDK DepthLevel
+        model (scalars = real L16 values; depth rows synthetically assigned
+        and explicitly labelled): canonical + storage preserved ALL 16 buy
+        rows + 16 sell rows verbatim; top-of-book scalars derived from row 0;
+        raw blob preserved. This PROVES the pipeline has NO 5-row boundary:
+        16+16 would survive to Mongo. PASS (structural only).
+Mongo stores arrays of arbitrary length (schemaless), tick_buffer inserts
+starred ordered=False, and the read/SSE layer does not reshape. So storage
+cannot truncate L16.
+
+--------------------------------------------------------------------------------
+19. ACTUAL SAMPLE PAYLOAD (packet 1 of today's L16 capture, INDEPENDENT raw
+    wire decode - not the SDK)  [LIVE VERIFIED - VERBATIM]
+--------------------------------------------------------------------------------
+  header : message_length=176 msg_code=7208 exchange_id=1 (nse_cm) level=16
+           auction_flag=0 seq_no=0 bitmask_length=0
+  body   : token=3787 total_buy_qty=0 total_sell_qty=0 volume_traded_today=0
+           last_trade_time=0 last_update_time=1789065000 (2026-09-10T18:30:00Z,
+           STALE reference, not the live clock) open_price=16520 close_price=16740
+           high_price=16775 low_price=16516 last_traded_price=16740
+           last_trade_qty=132 avg_trade_price=0 _indicative_close=0
+           buy_depth_count=0 sell_depth_count=0 _trading_status=0
+           net_chg_percent=0 open_interest=0 total_traded_value=0.0 net_chg=0
+           upper_circuit=18414 lower_circuit=15066 yearly_high=27310
+           yearly_low=16516 market_lot=1 precision=2 multiplier=1
+  depth   : depth_rows=[] (0 rows; method l=176 leaves 32 bytes of row room
+           for 2 rows, but buy/sell counts are 0, so 0 rows are decoded)
+  packet 2 identical except: last_update_time=1789583400 (2026-09-16T18:30Z),
+           close=16640, ltp=16640 last_trade_qty=1 upper=18304 lower=14976
+           low=16502.
+  Both packets: internal count fields = 0 -> EMPTY BOOK.
+
+--------------------------------------------------------------------------------
+20. RUNTIME EVIDENCE (evidence trail)
+--------------------------------------------------------------------------------
+  docs/reports/kotak_wipro_live/evidence_raw_level16_20260918_141238.jsonl
+  docs/reports/kotak_wipro_live/probe_20260918_141238.json
+  docs/reports/KOTAK_WIPRO_LIVE_DEPTH_VERIFICATION.txt        (today's run)
+  (2026-09-15 L16 evidence files preserved under docs/reports/kotak_wipro_live/
+    evidence_raw_level16_2026091{5}*.jsonl + probe_20260915_*.json)
+  Production health BEFORE and AFTER probe: connected=CONNECTED,
+    feedState=RECEIVING, ticks persisted continuously, 0 write errors.
+
+--------------------------------------------------------------------------------
+21. NOT VERIFIED / LIMITATIONS
+--------------------------------------------------------------------------------
+  * Whether Kotak CAN deliver real 16+16 full depth on ANY account - we only
+    prove it does NOT for account XBH6H + SDK 3.0.6 today (0+0). A provisioned
+    higher-entitlement account might receive rows (INFERRED - not testable
+    from here).
+  * L4/L8 live L16 in the SAME second window: not possible (one subscribe
+    method per instrument per connection; L8 was kept production-separate).
+  * Full book on OTHER symbols: only WIPRO (token 3787) was subscribed for
+    the L16 trial; we did not fan out to more tokens (isolated test policy).
+  * Whether "16+16" is the Kotak-documented expectation for level 16: not
+    asserted from docs - only the SDK row-count mechanism (wire counts) is
+    code-verified. Treat "16+16" as INFERRED expectation, 0+0 as the OBSERVED
+    reality on this account.
+  * STORAGE 16+16 live run: not possible (no live 16+16 data); verified
+    structurally through the real functions instead (section 18c).
+
+--------------------------------------------------------------------------------
+22. RISKS
+--------------------------------------------------------------------------------
+  * Do not switch production to L16 expecting a live book: today's and 09-15
+    evidence says the account receives static/empty packets (volume=0,
+    0+0 rows); a switch would DROP live data that L8 currently provides.
+  * subscribe_full_depth is PERMITTED (ack + 7208 packets) but delivers stale
+    reference scalars (settlement-time stamps, week-old values, volume=0).
+    Any consumer must not interpret L16 packets as live ticks today.
+  * The project's L8 pipeline is deliberately the safe default; keep the
+    session_manager codified note (session_manager.py:211) accurate: L16 =
+    ACK-only/static on the tested account.
+  * If Kotak later provisions full-depth entitlement to this account, this
+    report's structural findings show the pipeline (canonical/storage/quality/
+    Mongo/FE/API/frontend) will accept 16+16 without code changes.
+
+--------------------------------------------------------------------------------
+23. CONCLUSION
+--------------------------------------------------------------------------------
+  * Does L16 actually feed data? At the protocol/SDK level YES it is fully
+    supported (Level 16, subscribeFullDepth, message 7208, SFeedScrip decode).
+    For the CURRENT account (XBH6H) + SDK 3.0.6, LIVE today, L16 subscription
+    is ACCEPTED and delivers packets - but ONLY a static reference snapshot
+    with an EMPTY book: buy_depth_count=0, sell_depth_count=0 -> 0+0 rows,
+    volume=0, stale timestamps. So as a live full-book depth feed: NO, not
+    available to this account today (verified across 3 capture windows on
+    2026-09-15 and again live on 2026-09-18).
+  * How many fields? SFeedScrip carries 31 top-level fields (3 identity +
+    type + level + 24 scalars + buy + sell), depth rows of 3 fields each.
+  * How many buy/sell levels? Observed live: 0+0. The SDK decodes as many as
+    the packet declares; it does not promise 16+16.
+  * What fields? Identical scalar/identity set to L8 (full inventory in
+    section 8); no unique L16 fields.
+  * What is different from L8? Nothing except the level byte (16 vs 8) and -
+    on this account - the delivered rows (0+0 vs 5+5) and the fact that L16
+    scalars are static reference data vs L8's live evolving values.
+  * Can the current architecture handle it? YES structurally - no hard-coded
+    5-row limit anywhere (canonical/storage/quality/FE/session/API/Mongo/
+    frontend verified; 16+16 rows proven to survive the real code path).
+    The blocker is upstream: the account receives no live L16 book today.
+
+  NET: keep production at L8. L16 support exists in code AND is provisionally
+  allowed by the feed, but it delivers NO usable live depth for this account
+  or SDK version as of 2026-09-18. Re-test L16 only after Kotak confirms
+  full-depth entitlement on the account.
+
+================================================================================
+END OF L16 FORENSIC REPORT
+================================================================================

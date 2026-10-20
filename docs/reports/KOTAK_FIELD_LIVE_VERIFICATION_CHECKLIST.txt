@@ -1,0 +1,284 @@
+================================================================================
+KOTAK FIELD LIVE-VERIFICATION CHECKLIST  (LEVEL 2)
+================================================================================
+Scope        : Live-verify the 344-field market-data schema against the REAL
+               Kotak Neo SDK feed (kotakneoapi 3.0.6 / neo_api_client) and the
+               real broker account. Complements the static Level-1 audit in
+               KOTAK_FIELD_VERIFICATION.txt.
+Companion    : python-service/_probe_kotak_live_fields.py  (the executable probe)
+Generated    : 2026-09-15
+================================================================================
+
+GOLDEN RULES
+--------------------------------------------------------------------------------
+1. LIVE DATA ONLY. Every result in LEVEL 2 of the report MUST come from real
+   broker responses captured by the probe during a real session. Never hand-write
+   or fabricate a live result.
+2. NO CREDENTIALS. Never paste view_token / trade_token / access tokens / MPIN /
+   TOTP secret / consumer keys / passwords into any doc, log, or report fragment.
+   Evidence snippets are redacted automatically by the probe (see REDACTION).
+3. NO BROKER MUTATIONS. The probe is READ-ONLY: WebSocket subscribe + REST quote
+   + option chain + scrip search only. It never places/modifies/cancels orders.
+4. BLOCKED, NOT FAKED. If no valid Kotak session exists the probe exits with
+   "LIVE TEST STATUS: BLOCKED - VALID KOTAK SESSION REQUIRED" and prints the exact
+   command to rerun. That is the correct, honest outcome.
+5. LEVEL 1 IS FROZEN. Live verification never rewrites the static Level-1
+   classification table. Fresh evidence is appended as a separate LEVEL 2 section.
+
+--------------------------------------------------------------------------------
+1. WHAT IS BEING VERIFIED
+--------------------------------------------------------------------------------
+ALL 344 fields of master_stock_ai_340_field_schema, prioritised:
+
+  8 fields currently NOT VERIFIED (the reason LEVEL 2 exists):
+      previous_day_high    -> "quote REST previousDayHigh"
+      previous_day_low     -> "quote REST previousDayLow"
+      previous_day_volume  -> "quote REST previousDayVolume"
+      previousOI           -> "quote REST previousOI"
+      strike_price         -> "quote REST strikePrice / scrip master"
+      expiry               -> "quote REST expiry / scrip master"
+      currency             -> "scrip master currency field (INR/USD...)"
+      option_type          -> "quote REST instrumentType / scrip master"
+
+Source labels evaluated per field (WebSocket | REST | scrip master | derived | none):
+  WebSocket feed  : SFeedScrip (level 4/8/16), SFeedScripLite (level 1),
+                    SFeedIndex (7207), SFeedCasChange (104),
+                    SFeedMarketStatus (105 / 6511 / 6521)
+  REST quote      : /script-details/1.0/quotes/neosymbol/<seg>|<tok>/all ...
+  scrip master    : data/instrument_master.json (12 real CM keys)
+  option chain    : /.../optionchain (F&O)  -> strike_price, expiry, currency,
+                    option_type, previousOI
+
+--------------------------------------------------------------------------------
+2. PREREQUISITES
+--------------------------------------------------------------------------------
+[ ] The repo python-service/.venv has kotakneoapi==3.0.6 installed.
+[ ] python-service/.env.local exists (gitignored) and is populated with:
+        CLIENT_ID=          (client code / UCC, e.g. XBH6H)
+        CONSUMER_KEY=       (API consumer key)
+        CONSUMER_SECRET=    (API consumer secret)
+        MOBILE_NUMBER=      (registered mobile)
+        MPIN=               (Kotak MPIN)
+        TOTP_SECRET=        (Base32 TOTP seed)
+        MONGODB_URI=        (default mongodb://localhost:27017/kaustubh)
+        MONGODB_DATABASE=
+        BROKER_MODE=kotak   (default mode)
+  (Config fields come from python-service/config/settings.py. Do NOT copy real
+   values into any doc.)
+[ ] Internet reachable and the Kotak REST host is reachable
+    (hosts seen in production logs: e41.kotaksecurities.com,
+     wss://sfeed.kotaksecurities.com/apifeed).
+[ ] Instrument master is loadable: python-service/data/instrument_master.json
+    (RELIANCE nse_cm token 2885, INFY nse_cm token 1594 - proof values used by the
+    probe when the cache is empty).
+[ ] Recommended run window: after broker login is valid (normally 08:50 IST
+    scheduler login; WS window 08:25-15:31 IST) and OUTSIDE lunch-break market
+    pauses if you want live bid2-5/ask2-5 depth. Together with the probe both
+    snapshot REST fields (previous day buckets, option chain) and streaming
+    WebSocket fields verify cleanly.
+[ ] No other process MUST hold the sole broker session while the probe logs in
+    (see §3 SESSION POLICY). A Kotak account typically supports one active session.
+
+--------------------------------------------------------------------------------
+3. SESSION POLICY  (probe behaviour)
+--------------------------------------------------------------------------------
+The probe runs in its own process. kotak_session there starts empty, so:
+  * If no active session in THIS process AND --login is NOT passed
+        => probe reports LIVE TEST STATUS: BLOCKED and exits code 3.
+  * If --login is passed, kotak_session.login(source="probe") performs the real
+    TOTP + MPIN login from .env.local, then the probe proceeds. If login fails it
+    reports the failure (reason only, never the token) and exits code 4.
+  * Default is NO auto-login on purpose: a fresh broker login from a second
+    process can invalidate the login of another process that already uses the
+    account (e.g. a running backend). Plan the run accordingly:
+      - Easiest: run the probe FIRST (before the 08:25 scheduler login), or
+      - Stop the backend first: python start_backend.py stop, then run the probe,
+        then python start_backend.py run, or
+      - Run the probe with the backend stopped and verify no live feed exists
+        before --login.
+
+--------------------------------------------------------------------------------
+4. EXACT RUN COMMAND
+--------------------------------------------------------------------------------
+From python-service (the probe does sys.path inserts like _probe_quote.py):
+
+  # 30-second observation, RELIANCE + INFY, tries option chain for F&O fields:
+  C:\project\.venv\Scripts\python.exe _probe_kotak_live_fields.py ^
+      --duration 30 --symbols RELIANCE INFY --login --source probe
+
+  Options:
+    --duration N        observation seconds (live WS window). Default 30.
+    --symbols A B ...   CM symbols to subscribe (default RELIANCE INFY).
+    --login             allow REAL TOTP+MPIN login from .env.local (see §3).
+    --source NAME       login source tag logged as probe source (default probe).
+    --out DIR           where level2_<ts>.json / level2_<ts>.txt are written.
+                        Default docs/reports/live.
+    --append-report     append the generated LEVEL 2 section (level2_<ts>.txt)
+                        to docs/reports/KOTAK_FIELD_VERIFICATION.txt. No --login
+                        and no live evidence => this is refused.
+    --no-fno            skip the option-chain / F&O REST probe (default: on).
+
+  If the probe reports BLOCKED there is no global session state to reuse;
+  rerun with --login after confirming §3.
+
+--------------------------------------------------------------------------------
+5. WHAT THE PROBE CAPTURES
+--------------------------------------------------------------------------------
+For each of the 344 fields it records a row:
+    FIELD | CATEGORY | STATIC STATUS (from fields.py) | LIVE FLAG | MATCH TYPE |
+    SOURCE (ws/rest/master/derived/none) | COUNT | FIRST/LAST SEEN (IST) |
+    SAMPLE VALUE (redacted) | FREQUENCY | NOTES
+
+Observed message inventory per WS message (type, message level, symbol/token,
+   timestamps, occurrence counts per nested attribute path and value type).
+
+WebSocket subscriptions used (must be reported, §6):
+    subscribe_scrips     -> level 4 touch line       (bid1/ask1)
+    subscribe_depth      -> level 8 depth            (bid1-5 / ask1-5)
+    subscribe_index      -> index feed (7207)        (optional; needs index token)
+    subscribe_exchange   -> market status (105 / 6511/6521) - NOT used by the app
+                            today; the probe reports it separately.
+    (SDK also offers level 1 scrips_lite and level 16 full_depth - not required.)
+
+Plus one REST quote (quote_type="all") per symbol for the snapshot-only fields,
+and an option-chain call (nse_fo) for F&O fields when --fno is on.
+
+--------------------------------------------------------------------------------
+6. SUBSCRIPTION LEVEL REPORTING (required)
+--------------------------------------------------------------------------------
+The probe prints, and writes into the JSON artifact:
+    Observed max depth level: 4 | 8 | 16 | n/a
+    Bid rows observed : 1=n,2=n,3=n,4=n,5=n     (counts of live level-8 frames)
+    Ask rows observed : 1=n,2=n,3=n,4=n,5=n
+    subscribe_exchange used: yes/no        (market status evidence present or not)
+Any field that needs level 16 (full depth) must say so explicitly rather than
+claiming verification.
+
+--------------------------------------------------------------------------------
+7. SEQUENCE NUMBER - 3-WAY CLASSIFICATION (required, verified in net-new run)
+--------------------------------------------------------------------------------
+The wire header carries a seq_no, but per SDK protocol.py it is DISCARDED at
+decode time and NO SDK model exposes a sequence_number attribute (verified in
+models.py - SFeedScrip/SFeedScripLite/SFeedIndex/SFeedMarketStatus/SFeedCasChange
+have none). The probe reports each observed sample:
+    seq_no: BROKER PROVIDES = YES (wire header, native_batch)
+            SDK EXPOSES      = NO  (not on any model)
+            APPLICATION RECEIVES = NO  (not reachable via ws.on_message / model_dump)
+Nothing in the app pipeline can see a sequence number today; this is an SDK
+limitation, not an app omission.
+
+--------------------------------------------------------------------------------
+8. FREQUENCY RULES (per field type)
+--------------------------------------------------------------------------------
+  WS streaming fields      : ACTUAL OBSERVED RATE = count / observation seconds
+                             (printed as "x.xx/s over Ns").
+  Conditional fields       : e.g. depth rows (only on level 8+),
+                             auction (CAS 104), market status - mark CONDITIONAL
+                             with the observed count and the condition.
+  REST snapshot fields     : ON API REQUEST (1 sample per quote call) - the value
+                             is a snapshot, not a stream.
+  Scrip-master fields      : STATIC (scrip master; 1 sample per symbol).
+  Derived / target labels  : DERIVED FROM LIVE COMPONENTS - verified only to the
+                             extent their inputs were observed (fields.py status
+                             DERIVED / TARGET_LABEL), not as a broker field.
+
+--------------------------------------------------------------------------------
+9. SEMANTIC MATCHING (required)
+--------------------------------------------------------------------------------
+When the live key name differs from the schema field name but clearly carries the
+same meaning, the probe reports:
+    MATCH TYPE: SEMANTIC      (with the mapping shown, e.g. previous_day_high ->
+    "previousDayHigh")
+    MATCH TYPE: EXACT_NAME    (normalised name equality)
+    MATCH TYPE: STATIC_MAPPING(fields.py)  (unchanged Level-1 mapping carried over)
+Matches are by meaning, never by string equality alone; each SEMANTIC row carries
+the observed path so it is independently checkable.
+
+--------------------------------------------------------------------------------
+10. REDACTION (mandatory)
+--------------------------------------------------------------------------------
+Probe redactors mask secret key names at any depth before anything is printed or
+written to disk: access_token, view_token, trade_token, token, sid, consumer_key,
+consumer_secret, jwt_secret, password, mpin, totp, ucc (values). Market-data
+numbers (prices, quantities, OI) are NOT secrets and appear as evidence. Verify
+with a quick grep before sharing a report:
+    rg -i "view_token|trade_token|access_token|consumer_key|mpin|totp" <output>
+
+--------------------------------------------------------------------------------
+11. CAPTURE STEPS (manual run, end to end)
+--------------------------------------------------------------------------------
+01. Confirm prerequisites (§2) and session policy (§3).
+02. cd python-service
+03. Optional quick start check: C:\project\.venv\Scripts\python.exe _probe_quote.py
+04. Run the probe (§4). Watch the console lines:
+       - "PROBE: session validated (user=XBH6H) source=probe"  OR  BLOCKED exit
+       - "PROBE: REST quote keys for RELIANCE: N top-level (M nested)"
+       - "PROBE: WS connected url=wss://sfeed.kotaksecurities.com/apifeed"
+       - "PROBE: subscribed scrips=N depth=N exchange=market-status"
+       - observation progress every 5s (messages received, records so far)
+       - final summary (see §12)
+05. Artifacts are written to docs/reports/live/:
+       level2_<ts>.json          raw evidence + full 344-row matrix (machine)
+       level2_<ts>.txt           LEVEL 2 section, ready to append/read
+06. Option --append-report appends level2_<ts>.txt to
+       docs/reports/KOTAK_FIELD_VERIFICATION.txt
+       (only when live evidence exists; never with a BLOCKED run).
+07. Redaction sanity grep (§10). Commit nothing that contains credentials.
+
+--------------------------------------------------------------------------------
+12. EXPECTED PROBE SUMMARY (printed at end)
+--------------------------------------------------------------------------------
+  LIVE TEST STATUS: PASS (evidence captured) | BLOCKED | FAILED
+  Observation duration             : <N> s
+  Total WS messages received       : <N>
+  Total field records written      : <N>          (records = field rows in matrix)
+  Records per second               : <N> / s
+  Fields LIVE VERIFIED             : <N>  (list counts per source)
+  Fields still NOT VERIFIED        : <N>  (list; must shrink from the 8)
+  Fields only available via REST   : <N>  (list)
+  Fields only available via other API (option chain / scrip master) : <N>
+  Fields blocked by SDK limitations: <N>  (e.g. seq_no, full-depth-only rows)
+  Subscription level seen          : <max level>  bid rows 1-5 / ask rows 1-5
+
+--------------------------------------------------------------------------------
+13. RERUN PROCEDURE
+--------------------------------------------------------------------------------
+* Market restart / new day  : rerun with --login (new session, new master).
+* App changed (fields.py)   : rerun probe to regenerate the LEVEL 2 section.
+* No evidence wants change  : delete docs/reports/live/level2_*.json+txt and the
+  previous LEVEL 2 section in the report before regenerating, to avoid duplicates.
+* Backend running + probe   : stop backend first (§3) if you must --login.
+* Probe timeout / hang      : check network + broker hosts (§2); the probe bounds
+  each REST call and the WS observation with its own deadline, so a dead feed
+  ends the run with a BLOCKED/FAILED line instead of spinning forever.
+
+--------------------------------------------------------------------------------
+14. TROUBLESHOOTING QUICK TABLE
+--------------------------------------------------------------------------------
+  BLOCKED (no session)           -> rerun with --login after confirming §3.
+  AuthenticationError on connect -> session invalid; rerun with --login.
+  No quote data / empty keys      -> wrong symbol/token or cache empty; check
+                                     instrument cache, fallback tokens 2885/1594.
+  No depth frames                -> market closed or symbol not depth-enabled;
+                                     run during market hours and confirm the
+                                     subscription report (§6).
+  No market status               -> subscribe_exchange not used by app today;
+                                     the probe uses it directly - evidence is
+                                     separate from production behaviour.
+  option chain failure           -> F&O fields stay NOT OBSERVED; harmless for CM.
+  seq_no missing                 -> expected: SDK limitation (see §7).
+
+--------------------------------------------------------------------------------
+15. DELIVERABLES / STATUS BASELINE (as of 2026-09-15)
+--------------------------------------------------------------------------------
+  docs/reports/KOTAK_FIELD_VERIFICATION.txt        Level-1 static audit (done).
+  docs/reports/KOTAK_FIELD_LIVE_VERIFICATION_CHECKLIST.txt   THIS FILE.
+  python-service/_probe_kotak_live_fields.py       executable live-verification probe.
+
+  Fields currently still NOT VERIFIED (awaiting a real probe run):
+      previous_day_high, previous_day_low, previous_day_volume, previousOI,
+      strike_price, expiry, currency, option_type
+  No live values have been recorded or appended to the Level-1 report yet.
+  The next real run will produce docs/reports/live/level2_<ts>.json/.txt and,
+  with --append-report, the LEVEL 2 section in the main report.
+================================================================================

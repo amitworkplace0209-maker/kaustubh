@@ -1,0 +1,4 @@
+fastapi>=0.110,<1
+uvicorn>=0.29
+numpy>=1.26
+psutil>=5.9

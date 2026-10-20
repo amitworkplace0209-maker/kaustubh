@@ -1,0 +1,91 @@
+{
+  "id": "/ai",
+  "name": "KAUSTUBH Khumbha AI",
+  "short_name": "Khumbha AI",
+  "description": "KAUSTUBH Khumbha AI - local models, datasets, training and inference",
+  "start_url": "/ai/dashboard",
+  "scope": "/ai/",
+  "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "background_color": "#051218",
+  "theme_color": "#8B5CF6",
+  "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "categories": [
+    "productivity",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192-maskable.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "url": "/ai/dashboard",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Training",
+      "short_name": "Training",
+      "url": "/ai/training",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Inference",
+      "short_name": "Inference",
+      "url": "/ai/inference",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "launch_handler": {
+    "client_mode": [
+      "focus-existing",
+      "navigate-existing",
+      "auto"
+    ]
+  }
+}

@@ -100,7 +100,7 @@ npm run dev
 ```
 Python Service (port 8000)
   ├── Kotak Neo SDK (login, WebSocket, ticks)
-  ├── Scheduler (09:00 login, 15:35 logout IST)
+  ├── Scheduler (09:00 login, 16:00 logout IST)
   └── Tick Forwarder → Node.js
 
 Node.js Backend (port 4000)

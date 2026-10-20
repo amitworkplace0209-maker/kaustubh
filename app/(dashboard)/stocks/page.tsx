@@ -15,8 +15,13 @@ import {
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
-  getStocks, addStock, deleteStock, toggleStock, bulkDeleteStocks, searchStockInfo,
+  getStocks, addStock, deleteStock, toggleStock, bulkDeleteStocks,
 } from '@/lib/api';
+import { searchInstruments } from '@/lib/instrument-search-client';
+import {
+  SEARCH_SUGGESTION_LIMIT, shouldSearch, type CanonicalInstrument,
+} from '@/lib/instrument-search';
+import { PageHeader } from '@/components/design-system';
 import { useToast } from '@/hooks/use-toast';
 
 type Stock = {
@@ -30,108 +35,27 @@ type Stock = {
   active: boolean;
 };
 
-type SearchResult = {
-  symbol: string;
-  trading_symbol: string;
-  token: string;
-  instrument_token: string;
-  exchange: string;
-  ex_seg: string;
-  company_name: string;
-  series: string;
-  isin: string;
-  lot_size?: string | number;
-  tick_size?: string | number;
-  face_value?: string | number;
-  market_type?: string;
-  trading_status?: string;
-  quote?: Record<string, any>;
+const EQUITY_INSTRUMENT_TYPES = new Set(['EQ', 'STK', 'E', 'EQUITY', 'EQUITIES', 'CS']);
 
-  // Original Kotak fields
-  pSymbol?: string | number;
-  pSymbolName?: string;
-  pTrdSymbol?: string;
-  pExchSeg?: string;
-  pExchange?: string;
-  pGroup?: string;
-  pScripRefKey?: string;
-  pISIN?: string;
-  pDesc?: string;
+/**
+ * The stocks subscription list only ever carried cash-market equities. The
+ * canonical row says so through `series` / `instrumentType` / `tradingSymbol`,
+ * so the same intent is expressed against those fields here.
+ */
+function isEquityInstrument(r: CanonicalInstrument): boolean {
+  const series = (r.series ?? '').trim().toUpperCase();
+  const tradingSymbol = r.tradingSymbol.trim().toUpperCase();
+  const instrumentType = r.instrumentType.trim().toUpperCase();
 
-  [key: string]: any;
-};
+  if (instrumentType && !EQUITY_INSTRUMENT_TYPES.has(instrumentType)) return false;
 
-function safeVal(v: any): string {
+  return series === 'EQ' || tradingSymbol.endsWith('-EQ');
+}
+
+function safeVal(v: unknown): string {
   if (v == null || v === '') return '—';
   if (typeof v === 'number') return v.toLocaleString('en-US');
   return String(v);
-}
-function normalizeKotakResult(raw: any): SearchResult {
-  return {
-    ...raw,
-
-    symbol: String(
-      raw.symbol ??
-      raw.pSymbolName ??
-      raw.pScripRefKey ??
-      ''
-    ),
-
-    trading_symbol: String(
-      raw.trading_symbol ??
-      raw.pTrdSymbol ??
-      ''
-    ),
-
-    token: String(
-      raw.token ??
-      raw.instrument_token ??
-      raw.pSymbol ??
-      ''
-    ),
-
-    instrument_token: String(
-      raw.instrument_token ??
-      raw.token ??
-      raw.pSymbol ??
-      ''
-    ),
-
-    exchange: String(
-      raw.exchange ??
-      raw.pExchange ??
-      'NSE'
-    ),
-
-    ex_seg: String(
-      raw.ex_seg ??
-      raw.pExchSeg ??
-      'nse_cm'
-    ),
-
-    company_name: String(
-      raw.company_name ??
-      raw.pDesc ??
-      raw.pSymbolName ??
-      ''
-    ),
-
-    series: String(
-      raw.series ??
-      raw.pGroup ??
-      ''
-    ),
-
-    isin: String(
-      raw.isin ??
-      raw.pISIN ??
-      ''
-    ),
-
-    lot_size: raw.lot_size ?? raw.lLotSize,
-    tick_size: raw.tick_size ?? raw.dTickSize,
-    face_value: raw.face_value ?? raw.pFaceValue,
-  };
 }
 
 export default function StocksPage() {
@@ -142,9 +66,9 @@ export default function StocksPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addOpen, setAddOpen] = useState(false);
   const [kotakSearch, setKotakSearch] = useState('');
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchResults, setSearchResults] = useState<CanonicalInstrument[]>([]);
   const [searching, setSearching] = useState(false);
-  const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
+  const [selectedResult, setSelectedResult] = useState<CanonicalInstrument | null>(null);
   const [adding, setAdding] = useState(false);
   const { toast } = useToast();
 
@@ -236,90 +160,65 @@ export default function StocksPage() {
   };
 }, [fetchStocks]);
 
- const handleKotakSearch = async () => {
-  if (!kotakSearch.trim()) return;
+  const handleKotakSearch = async () => {
+    const query = kotakSearch.trim();
+    if (!shouldSearch(query)) return;
 
-  setSearching(true);
-  setSelectedResult(null);
-  setSearchResults([]);
-
-  try {
-    const data = await searchStockInfo(kotakSearch);
-
-    const eqResults = (data.results || [])
-      .map(normalizeKotakResult)
-      .filter((r: SearchResult) => {
-        const series = String(
-          r.series || r.pGroup || ''
-        ).trim().toUpperCase();
-
-        const tradingSymbol = String(
-          r.trading_symbol || r.pTrdSymbol || ''
-        ).trim().toUpperCase();
-
-        return (
-          series === 'EQ' ||
-          tradingSymbol.endsWith('-EQ')
-        );
-      })
-      .filter((r: SearchResult) => {
-        return Boolean(
-          r.token ||
-          r.instrument_token ||
-          r.pSymbol
-        );
-      });
-
-    // Only EQ instruments will be shown.
-    setSearchResults(eqResults);
-
-    // First EQ result is automatically selected.
-    const selected = eqResults[0] || null;
-
-    setSelectedResult(selected);
-
-    if (selected) {
-      console.log('AUTO SELECTED EQ STOCK:', {
-        token:
-          selected.token ||
-          selected.instrument_token ||
-          selected.pSymbol,
-
-        tradingSymbol:
-          selected.trading_symbol ||
-          selected.pTrdSymbol,
-
-        series:
-          selected.series ||
-          selected.pGroup,
-
-        exchange:
-          selected.exchange ||
-          selected.pExchange ||
-          'NSE',
-
-        exchangeSegment:
-          selected.ex_seg ||
-          selected.pExchSeg ||
-          'nse_cm',
-      });
-    }
-  } catch (err) {
-    toast({
-      title: 'Search failed',
-      description:
-        err instanceof Error
-          ? err.message
-          : 'Kotak API unavailable',
-      variant: 'destructive',
-    });
-
-    setSearchResults([]);
+    setSearching(true);
     setSelectedResult(null);
-  } finally {
-    setSearching(false);
-  }
-};
+    setSearchResults([]);
+
+    try {
+      const response = await searchInstruments(query, { limit: SEARCH_SUGGESTION_LIMIT * 2 });
+
+      if (response.errorCode) {
+        toast({
+          title: 'Search failed',
+          description:
+            response.errorCode === 'SEARCH_INDEX_UNAVAILABLE'
+              ? 'Instrument search is unavailable. Try again shortly.'
+              : response.errorCode,
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const eqResults = response.results
+        .filter(isEquityInstrument)
+        .filter((r) => Boolean(r.token));
+
+      // Only EQ instruments will be shown.
+      setSearchResults(eqResults);
+
+      // First EQ result is automatically selected.
+      const auto = eqResults[0] ?? null;
+      setSelectedResult(auto);
+
+      if (auto) {
+        console.log('AUTO SELECTED EQ STOCK:', {
+          token: auto.token,
+          tradingSymbol: auto.tradingSymbol,
+          series: auto.series,
+          exchange: auto.exchange,
+          exchangeSegment: auto.exchangeSegment,
+        });
+      }
+    } catch (err) {
+      toast({
+        title: 'Search failed',
+        description:
+          err instanceof Error
+            ? err.message
+            : 'Kotak API unavailable',
+        variant: 'destructive',
+      });
+
+      setSearchResults([]);
+      setSelectedResult(null);
+    } finally {
+      setSearching(false);
+    }
+  };
   
 
   
@@ -334,12 +233,7 @@ export default function StocksPage() {
     return;
   }
 
-  const token = String(
-    selectedResult.token ||
-    selectedResult.instrument_token ||
-    selectedResult.pSymbol ||
-    ''
-  );
+  const token = String(selectedResult.token || '');
 
   if (!token) {
     toast({
@@ -351,10 +245,7 @@ export default function StocksPage() {
   }
 
   const symbol = String(
-    selectedResult.pScripRefKey ||
-    selectedResult.pSymbolName ||
-    selectedResult.symbol ||
-    ''
+    selectedResult.symbol || selectedResult.tradingSymbol || ''
   ).trim();
 
   if (!symbol) {
@@ -367,10 +258,7 @@ export default function StocksPage() {
   }
 
   const exchangeSegment = String(
-    selectedResult.exchange_segment ||
-    selectedResult.ex_seg ||
-    selectedResult.pExchSeg ||
-    'nse_cm'
+    selectedResult.exchangeSegment || 'nse_cm'
   );
 
   setAdding(true);
@@ -450,80 +338,60 @@ export default function StocksPage() {
   const inactiveCount = stocks.length - activeCount;
   const todayActive = stocks.filter((s) => s.active).length;
 
-  // Flatten all fields from selectedResult for the info panel
+  // Flatten the canonical instrument for the info panel. Anything the Search
+  // Engine did not supply stays null and renders through safeVal as '—'.
   const infoFields: { label: string; value: string }[] = [];
   if (selectedResult) {
     const r = selectedResult;
-    const fieldMap: { key: string; label: string }[] = [
+    const fieldMap: { key: keyof CanonicalInstrument; label: string }[] = [
       { key: 'symbol', label: 'Symbol' },
-      { key: 'trading_symbol', label: 'Trading Symbol' },
-      { key: 'company_name', label: 'Company Name' },
+      { key: 'tradingSymbol', label: 'Trading Symbol' },
+      { key: 'name', label: 'Company Name' },
       { key: 'exchange', label: 'Exchange' },
-      { key: 'ex_seg', label: 'Segment' },
+      { key: 'exchangeSegment', label: 'Segment' },
       { key: 'series', label: 'Series' },
       { key: 'token', label: 'Token' },
       { key: 'isin', label: 'ISIN' },
-      { key: 'lot_size', label: 'Lot Size' },
-      { key: 'tick_size', label: 'Tick Size' },
-      { key: 'face_value', label: 'Face Value' },
-      { key: 'market_type', label: 'Market Type' },
-      { key: 'trading_status', label: 'Trading Status' },
+      { key: 'lotSize', label: 'Lot Size' },
+      { key: 'tickSize', label: 'Tick Size' },
+      { key: 'instrumentType', label: 'Instrument Type' },
+      { key: 'liveStatus', label: 'Live Status' },
     ];
     for (const f of fieldMap) {
-      if (r[f.key] != null && r[f.key] !== '') {
-        infoFields.push({ label: f.label, value: safeVal(r[f.key]) });
+      const v = r[f.key];
+      if (v != null && v !== '') {
+        infoFields.push({ label: f.label, value: safeVal(v) });
       }
     }
-    // Quote fields
-    const q = r.quote;
-    if (q && typeof q === 'object') {
-      const quoteFields: { key: string; label: string }[] = [
-        { key: 'ltp', label: 'Current Price' },
-        { key: 'last_price', label: 'Last Price' },
-        { key: 'open', label: 'Open' },
-        { key: 'high', label: 'High' },
-        { key: 'low', label: 'Low' },
-        { key: 'close', label: 'Close' },
-        { key: 'vwap', label: 'VWAP' },
-        { key: 'volume', label: 'Volume' },
-        { key: 'bid_price', label: 'Bid' },
-        { key: 'ask_price', label: 'Ask' },
-        { key: 'upper_circuit', label: 'Upper Circuit' },
-        { key: 'lower_circuit', label: 'Lower Circuit' },
-        { key: 'year_high', label: '52 Week High' },
-        { key: 'year_low', label: '52 Week Low' },
-        { key: 'ltq', label: 'Last Traded Qty' },
-        { key: 'tbq', label: 'Total Buy Qty' },
-        { key: 'tsq', label: 'Total Sell Qty' },
-      ];
-      for (const f of quoteFields) {
-        if (q[f.key] != null && q[f.key] !== '') {
-          infoFields.push({ label: f.label, value: safeVal(q[f.key]) });
-        }
-      }
-      // Any extra quote fields not in the map
-      for (const [k, v] of Object.entries(q)) {
-        if (!quoteFields.find((f) => f.key === k) && v != null && v !== '') {
-          infoFields.push({ label: k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()), value: safeVal(v) });
-        }
+    // Live market state
+    const quoteFields: { key: keyof CanonicalInstrument; label: string }[] = [
+      { key: 'ltp', label: 'Current Price' },
+      { key: 'change', label: 'Change' },
+      { key: 'changePct', label: 'Change %' },
+      { key: 'prevClose', label: 'Prev Close' },
+      { key: 'volume', label: 'Volume' },
+      { key: 'bid', label: 'Bid' },
+      { key: 'ask', label: 'Ask' },
+      { key: 'spread', label: 'Spread' },
+      { key: 'upperCircuit', label: 'Upper Circuit' },
+      { key: 'lowerCircuit', label: 'Lower Circuit' },
+      { key: 'timestamp', label: 'Tick Time' },
+      { key: 'tickAgeSeconds', label: 'Tick Age (s)' },
+    ];
+    for (const f of quoteFields) {
+      const v = r[f.key];
+      if (v != null && v !== '') {
+        infoFields.push({ label: f.label, value: safeVal(v) });
       }
     }
-    // Any extra top-level fields not in the map
-    for (const [k, v] of Object.entries(r)) {
-      if (!fieldMap.find((f) => f.key === k) && k !== 'quote' && v != null && v !== '') {
-        infoFields.push({ label: k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()), value: safeVal(v) });
-      }
-    }
+    // Margin
+    infoFields.push({ label: '1 Qty Margin', value: safeVal(r.oneQtyMargin) });
+    infoFields.push({ label: 'Margin Status', value: safeVal(r.marginStatus) });
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Stock Subscription</h1>
-          <p className="text-sm text-muted-foreground">Search, subscribe, and manage NSE stocks</p>
-        </div>
-        <div className="flex gap-2">
+      <PageHeader title="Stock Subscription" subtitle="Search, subscribe, and manage NSE stocks">
           <Button size="sm" variant="ghost" onClick={fetchStocks}><RefreshCw className="h-4 w-4" /></Button>
           <Button size="sm" onClick={() => setAddOpen(true)}>
             <Plus className="h-4 w-4 mr-2" /> Add Stock
@@ -533,8 +401,7 @@ export default function StocksPage() {
               <Trash2 className="h-4 w-4 mr-2" /> Delete ({selected.size})
             </Button>
           )}
-        </div>
-      </div>
+      </PageHeader>
 
       {/* Summary cards */}
       <div className="grid gap-4 md:grid-cols-4">
@@ -680,7 +547,7 @@ export default function StocksPage() {
   >
                        <div>
   <p className="font-medium text-sm">
-  {r.symbol || r.pSymbolName}
+  {r.symbol || r.tradingSymbol}
 </p>
 
 <p className="text-xs text-muted-foreground">

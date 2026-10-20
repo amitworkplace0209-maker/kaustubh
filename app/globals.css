@@ -4,77 +4,131 @@
 
 @layer base {
   :root {
-    --background: 150 15% 97%;
-    --foreground: 160 30% 10%;
+    /* Typography scale — ONE Inter for UI, ONE JetBrains Mono for numeric /
+       diagnostic readouts. Every `font-sans` / `font-mono` utility in the app
+       resolves through these two variables (see tailwind.config.ts), so no
+       component can pull in a stray system face. */
+    --font-sans-fallback: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --font-mono-fallback: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+    --font-sans: var(--font-inter), var(--font-sans-fallback);
+    --font-mono-tech: var(--font-mono-jb), var(--font-mono-fallback);
+
+    /* Shell geometry (single source of truth — see PhaseShell/PhaseSidebar) */
+    --sidebar-width-expanded: 16rem; /* 256px default; the theme engine may override */
+    --sidebar-width-collapsed: 4rem; /* 64px mobile-width rail when collapsed */
+    /* Central z-index scale (GlobalTopBar/menu/topbar → -topbar; sidebar → -sidebar;
+       overlays/drawers/bottom-nav → -overlay/-bottom-nav).
+       The bottom bar sits BELOW the overlay scale on purpose: every Radix
+       sheet/dialog/popover uses Tailwind's z-50, so a modal opened from a
+       page can never be painted over by the fixed navigation bar. */
+    --z-sidebar: 30;
+    --z-topbar: 40;
+    --z-bottom-nav: 45;
+    --z-overlay: 50;
+    --z-toast: 60;
+    /* Height of the mobile bottom bar (64px) + the device safe-area inset, so
+       page content can reserve exactly the right amount of space. */
+    --bottom-nav-height: 4rem;
+
+    --background: 36 33% 97%;
+    --foreground: 20 14% 10%;
     --card: 0 0% 100%;
-    --card-foreground: 160 30% 10%;
+    --card-foreground: 20 14% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 160 30% 10%;
-    --primary: 160 84% 39%;
+    --popover-foreground: 20 14% 10%;
+    --primary: 28 88% 56%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 150 20% 90%;
-    --secondary-foreground: 160 30% 15%;
-    --muted: 150 15% 92%;
-    --muted-foreground: 160 15% 40%;
-    --accent: 35 95% 55%;
+    --secondary: 28 35% 94%;
+    --secondary-foreground: 24 20% 18%;
+    --muted: 30 20% 95%;
+    --muted-foreground: 24 8% 42%;
+    --accent: 28 88% 56%;
     --accent-foreground: 30 50% 15%;
-    --destructive: 0 80% 50%;
+    --destructive: 0 84% 55%;
     --destructive-foreground: 0 0% 100%;
-    --success: 142 72% 45%;
+    --success: 142 72% 40%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 95% 50%;
-    --warning-foreground: 30 50% 15%;
-    --info: 190 90% 45%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 30 50% 12%;
+    --info: 199 89% 48%;
     --info-foreground: 0 0% 100%;
-    --purple: 265 85% 60%;
+    --purple: 265 85% 58%;
     --purple-foreground: 0 0% 100%;
-    --teal: 175 70% 40%;
+    --teal: 168 75% 38%;
     --teal-foreground: 0 0% 100%;
-    --border: 150 15% 87%;
-    --input: 150 15% 87%;
-    --ring: 160 84% 39%;
-    --chart-1: 160 84% 39%;
-    --chart-2: 35 95% 55%;
-    --chart-3: 265 85% 60%;
-    --chart-4: 0 80% 50%;
-    --chart-5: 175 70% 40%;
+    --border: 24 12% 88%;
+    --input: 24 12% 88%;
+    --ring: 28 88% 56%;
+    --chart-1: 28 88% 56%;
+    --chart-2: 38 92% 55%;
+    --chart-3: 265 85% 58%;
+    --chart-4: 0 84% 55%;
+    --chart-5: 168 75% 38%;
     --radius: 0.75rem;
+    /* Theme engine role tokens (defaults; overridden at runtime) */
+    --sidebar-bg: hsl(36 33% 99%);
+    --sidebar-active-bg: hsla(28 88% 56% / 0.14);
+    --sidebar-hover-bg: hsl(30 30% 95%);
+    --sidebar-selected-text: hsl(28 88% 38%);
+    --topbar-bg: hsl(36 33% 99%);
+    --button-bg: hsl(28 88% 56%);
+    --button-hover-bg: hsl(28 88% 50%);
+    --button-text: hsl(0 0% 100%);
+    --input-bg: hsl(0 0% 100%);
+    --input-focus: hsl(28 88% 56%);
+    --modal-bg: hsl(0 0% 100%);
+    --theme-glow: hsla(28 88% 56% / 0.35);
+    --theme-shadow: 0 2px 8px -2px hsl(var(--foreground) / 0.08), 0 4px 16px -4px hsl(var(--foreground) / 0.06);
   }
   .dark {
-    --background: 160 35% 5%;
-    --foreground: 150 20% 90%;
-    --card: 160 30% 8%;
-    --card-foreground: 150 20% 90%;
-    --popover: 160 30% 8%;
-    --popover-foreground: 150 20% 90%;
-    --primary: 160 84% 45%;
-    --primary-foreground: 160 50% 5%;
-    --secondary: 160 25% 14%;
-    --secondary-foreground: 150 20% 90%;
-    --muted: 160 25% 14%;
-    --muted-foreground: 150 15% 55%;
-    --accent: 35 95% 55%;
-    --accent-foreground: 30 50% 10%;
-    --destructive: 0 72% 50%;
+    --background: 28 30% 6%;
+    --foreground: 30 25% 92%;
+    --card: 28 24% 9%;
+    --card-foreground: 30 25% 92%;
+    --popover: 28 24% 9%;
+    --popover-foreground: 30 25% 92%;
+    --primary: 28 88% 52%;
+    --primary-foreground: 30 40% 6%;
+    --secondary: 28 22% 15%;
+    --secondary-foreground: 30 25% 92%;
+    --muted: 28 22% 15%;
+    --muted-foreground: 30 15% 62%;
+    --accent: 28 88% 58%;
+    --accent-foreground: 30 40% 8%;
+    --destructive: 0 72% 52%;
     --destructive-foreground: 0 0% 100%;
-    --success: 142 72% 45%;
+    --success: 142 70% 45%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 95% 50%;
-    --warning-foreground: 30 50% 10%;
-    --info: 190 90% 50%;
-    --info-foreground: 160 50% 5%;
-    --purple: 265 85% 65%;
+    --warning: 38 92% 52%;
+    --warning-foreground: 30 50% 8%;
+    --info: 199 90% 52%;
+    --info-foreground: 0 0% 8%;
+    --purple: 265 85% 62%;
     --purple-foreground: 0 0% 100%;
-    --teal: 175 70% 45%;
+    --teal: 168 70% 45%;
     --teal-foreground: 0 0% 100%;
-    --border: 160 25% 16%;
-    --input: 160 25% 16%;
-    --ring: 160 84% 45%;
-    --chart-1: 160 84% 45%;
-    --chart-2: 35 95% 55%;
-    --chart-3: 265 85% 65%;
-    --chart-4: 0 72% 50%;
-    --chart-5: 175 70% 45%;
+    --border: 28 20% 16%;
+    --input: 28 20% 16%;
+    --ring: 28 88% 52%;
+    --chart-1: 28 88% 52%;
+    --chart-2: 38 92% 55%;
+    --chart-3: 265 85% 62%;
+    --chart-4: 0 72% 52%;
+    --chart-5: 168 70% 45%;
+    /* Theme engine role tokens (defaults; overridden at runtime) */
+    --sidebar-bg: hsl(28 30% 6%);
+    --sidebar-active-bg: hsla(28 88% 52% / 0.16);
+    --sidebar-hover-bg: hsl(28 22% 14%);
+    --sidebar-selected-text: hsl(28 88% 62%);
+    --topbar-bg: hsl(28 30% 7%);
+    --button-bg: hsl(28 88% 52%);
+    --button-hover-bg: hsl(28 88% 58%);
+    --button-text: hsl(30 40% 95%);
+    --input-bg: hsl(28 24% 9%);
+    --input-focus: hsl(28 88% 60%);
+    --modal-bg: hsl(28 24% 10%);
+    --theme-glow: hsla(28 88% 52% / 0.45);
+    --theme-shadow: 0 2px 8px -2px hsl(var(--foreground) / 0.2), 0 4px 16px -4px hsl(var(--foreground) / 0.16);
   }
 }
 
@@ -82,27 +136,77 @@
   * {
     @apply border-border;
   }
+  /* Lock the UI + numeric faces at the root so a missing `font-sans` utility
+     can never fall back to the browser's default serif face. */
+  html {
+    font-family: var(--font-sans);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
   body {
     @apply bg-background text-foreground;
+    font-family: inherit;
+    font-feature-settings: 'cv02' 1, 'cv03' 1, 'cv04' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Native pickers/selects/scrollbars follow the active palette. */
+    color-scheme: light;
+  }
+  .dark body,
+  body.dark { color-scheme: dark; }
+
+  /* Form controls inherit the app face — the UA default (system/Arial on
+     Android, Times on older iOS WebViews) was the other half of the "mixed
+     font" look inside inputs and selects. */
+  input,
+  select,
+  textarea,
+  button,
+  optgroup {
+    font-family: inherit;
+  }
+
+  /* Numeric readouts use the tech mono face; digits are always tabular so a
+     changing counter never shifts its own layout. */
+  .font-mono {
+    font-family: var(--font-mono-tech);
+    font-feature-settings: 'tnum' 1, 'zero' 1;
+    letter-spacing: -0.01em;
+  }
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Display headings get tight negative tracking for a sharper terminal feel. */
+  .tracking-display {
+    letter-spacing: -0.03em;
+  }
+  /* Placeholders never inherit an opaque colour in dense forms. */
+  input::placeholder,
+  textarea::placeholder {
+    color: hsl(var(--muted-foreground) / 0.6);
+    opacity: 1;
+  }
+  /* Native select arrow is invisible against the themed surface on Android. */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, hsl(var(--muted-foreground)) 50%),
+      linear-gradient(135deg, hsl(var(--muted-foreground)) 50%, transparent 50%);
+    background-position: calc(100% - 14px) 52%, calc(100% - 9px) 52%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 1.75rem;
   }
 }
 
 @layer utilities {
-  .text-success { color: hsl(var(--success)); }
-  .text-warning { color: hsl(var(--warning)); }
-  .text-info { color: hsl(var(--info)); }
-  .text-purple-accent { color: hsl(var(--purple)); }
-  .text-teal-accent { color: hsl(var(--teal)); }
-  .bg-success { background-color: hsl(var(--success)); }
-  .bg-warning { background-color: hsl(var(--warning)); }
-  .bg-info { background-color: hsl(var(--info)); }
-  .bg-purple-accent { background-color: hsl(var(--purple)); }
-  .bg-teal-accent { background-color: hsl(var(--teal)); }
-  .border-success { border-color: hsl(var(--success)); }
-  .border-warning { border-color: hsl(var(--warning)); }
-  .border-info { border-color: hsl(var(--info)); }
-  .border-purple-accent { border-color: hsl(var(--purple)); }
-  .border-teal-accent { border-color: hsl(var(--teal)); }
+  /* `text-success` / `bg-success` / `border-success` / `…-warning` / `…-info`
+     are generated by Tailwind straight from `theme.colors`, so they are NOT
+     redefined here — a hand-written duplicate can only drift.
+     `purple` / `teal` are real theme tokens and already support the `/10`
+     opacity modifier, so the old hand-rolled `-accent` aliases (which cannot
+     resolve `<alpha-value>` and silently rendered nothing at 10%) are gone.
+     Call sites use `purple` / `teal` directly. */
 
   .glass {
     background: hsl(var(--card) / 0.6);
@@ -122,12 +226,213 @@
   .card-accent-teal { border-top: 3px solid hsl(var(--teal)); }
   .card-accent-amber { border-top: 3px solid hsl(var(--warning)); }
 
+  /* Theme-engine shell chrome (independent page/topbar/sidebar/card controls) */
+  .theme-sidebar { background-color: var(--sidebar-bg); }
+  .theme-sidebar-active { background-color: var(--sidebar-active-bg); }
+  .theme-sidebar-hover:hover { background-color: var(--sidebar-hover-bg); }
+  .theme-sidebar-text { color: var(--sidebar-selected-text); }
+  .theme-topbar { background-color: var(--topbar-bg); }
+  .theme-page { background-color: var(--background); }
+  .theme-card { background-color: hsl(var(--card) / var(--card-alpha, 1)); border-color: hsl(var(--border)); }
+  .theme-button { background-color: var(--button-bg); color: var(--button-text); }
+  .theme-button:hover { background-color: var(--button-hover-bg); }
+  .theme-input { background-color: var(--input-bg); }
+  .theme-input:focus,
+  .theme-input:focus-visible { outline-color: var(--input-focus); }
+  .theme-modal { background-color: var(--modal-bg); }
+  .theme-glow { box-shadow: 0 0 24px -8px var(--theme-glow); }
+  .theme-shadow { box-shadow: var(--theme-shadow); }
+
+  /* Central z-index scale utilities */
+  .z-sidebar { z-index: var(--z-sidebar); }
+  .z-topbar { z-index: var(--z-topbar); }
+  .z-overlay { z-index: var(--z-overlay); }
+  .z-bottom-nav { z-index: var(--z-bottom-nav); }
+  .z-toast { z-index: var(--z-toast); }
+
   .shadow-soft {
     box-shadow: 0 2px 8px -2px hsl(var(--foreground) / 0.08), 0 4px 16px -4px hsl(var(--foreground) / 0.06);
   }
   .shadow-soft-lg {
     box-shadow: 0 4px 16px -4px hsl(var(--foreground) / 0.12), 0 8px 32px -8px hsl(var(--foreground) / 0.08);
   }
+
+  /* Premium topbar glass (solid fallback for browsers without color-mix) */
+  .topbar-glass { background-color: var(--topbar-bg); }
+  .topbar-glass-sub { background-color: var(--topbar-bg); }
+  @supports (background: color-mix(in srgb, white 50%, transparent)) {
+    .topbar-glass {
+      background-color: color-mix(in srgb, var(--topbar-bg) 92%, transparent);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+    }
+    .topbar-glass-sub {
+      background-color: color-mix(in srgb, var(--topbar-bg) 84%, transparent);
+      -webkit-backdrop-filter: blur(10px);
+      backdrop-filter: blur(10px);
+    }
+  }
+
+  .status-in {
+    animation: statusIn 0.35s ease-out both;
+  }
+
+  /* --- Connection Manager surface effects --- */
+
+  /* Slow conic sweep used behind the live hero; pure transform so it never
+     triggers layout. Paused under reduced-motion (see the block at the bottom). */
+  @keyframes cm-sweep {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  .cm-sweep::before {
+    content: '';
+    position: absolute;
+    inset: -60%;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0deg,
+      hsl(var(--primary) / 0.16) 60deg,
+      transparent 130deg,
+      hsl(var(--info) / 0.14) 220deg,
+      transparent 300deg
+    );
+    animation: cm-sweep 18s linear infinite;
+  }
+
+  /* Travelling dash for the topology link lines — reads as live traffic. */
+  @keyframes cm-dash {
+    to { stroke-dashoffset: -32; }
+  }
+  .cm-flow { animation: cm-dash 1.1s linear infinite; }
+
+  /* Ring pulse for a healthy, connected transport node. */
+  @keyframes cm-ping {
+    0% { transform: scale(0.85); opacity: 0.7; }
+    100% { transform: scale(2.1); opacity: 0; }
+  }
+  .cm-ping { animation: cm-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite; }
+
+  /* Staggered entrance for grids of tiles. */
+  @keyframes cm-rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+  }
+  .cm-rise { animation: cm-rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+  /* Sheen that crosses a tile on hover. */
+  @keyframes cm-sheen {
+    from { transform: translateX(-120%); }
+    to { transform: translateX(220%); }
+  }
+  .cm-sheen::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 45%;
+    background: linear-gradient(100deg, transparent, hsl(var(--foreground) / 0.07), transparent);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .group:hover .cm-sheen::after {
+    opacity: 1;
+    animation: cm-sheen 0.9s ease-out;
+  }
+
+  /* Skeleton shimmer for the loading hero. */
+  @keyframes cm-shimmer {
+    100% { transform: translateX(100%); }
+  }
+  .cm-shimmer { position: relative; overflow: hidden; }
+  .cm-shimmer::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background-image: linear-gradient(90deg, transparent, hsl(var(--foreground) / 0.07), transparent);
+    animation: cm-shimmer 1.6s infinite;
+  }
+
+  /* Hide scrollbar on the dense channel rails without losing scrollability. */
+  .cm-scroll { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; }
+  .cm-scroll::-webkit-scrollbar { height: 8px; width: 8px; }
+  .cm-scroll::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
+  .cm-scroll::-webkit-scrollbar-track { background: transparent; }
+
+  /* --- Data Saver dashboard: slow aurora field ---------------------------- */
+  /* Video-like ambient motion behind the page. Transform + opacity only, so it
+     never triggers layout, and it inherits --primary / --info / --purple so it
+     re-tints with the active theme instead of fighting it. */
+
+  @keyframes ds-drift-a {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    33%  { transform: translate3d(12%, 8%, 0) scale(1.12); }
+    66%  { transform: translate3d(-8%, 14%, 0) scale(0.94); }
+    100% { transform: translate3d(0, 0, 0) scale(1); }
+  }
+  @keyframes ds-drift-b {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    40%  { transform: translate3d(-14%, 10%, 0) scale(1.18); }
+    75%  { transform: translate3d(8%, -10%, 0) scale(0.9); }
+    100% { transform: translate3d(0, 0, 0) scale(1); }
+  }
+  @keyframes ds-drift-c {
+    0%   { transform: translate3d(0, 0, 0) scale(1); opacity: 0.5; }
+    50%  { transform: translate3d(10%, -12%, 0) scale(1.22); opacity: 0.75; }
+    100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.5; }
+  }
+  /* Slow breathing glow for anything that is genuinely live. */
+  @keyframes ds-breathe {
+    0%, 100% { opacity: 0.55; transform: scale(1); }
+    50%      { opacity: 0.9;  transform: scale(1.06); }
+  }
+  /* Soft cream sheen that sweeps a card on hover. */
+  @keyframes ds-sheen {
+    from { transform: translateX(-130%); }
+    to   { transform: translateX(230%); }
+  }
+
+  .ds-drift-a { animation: ds-drift-a 34s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+  .ds-drift-b { animation: ds-drift-b 44s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+  .ds-drift-c { animation: ds-drift-c 26s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+  .ds-breathe { animation: ds-breathe 4.5s ease-in-out infinite; }
+
+  .ds-card { position: relative; overflow: hidden; }
+  .ds-card::after {
+    content: '';
+    position: absolute;
+    top: 0; bottom: 0; left: 0;
+    width: 45%;
+    background: linear-gradient(100deg, transparent, hsl(var(--foreground) / 0.05), transparent);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 220ms ease;
+  }
+  .group:hover .ds-card::after,
+  .ds-card:hover::after { opacity: 1; animation: ds-sheen 1.1s ease-out; }
+
+  /* Fluid card lift — one shared easing so every surface moves the same way. */
+  .ds-lift {
+    transition:
+      transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 320ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 320ms cubic-bezier(0.22, 1, 0.36, 1),
+      background-color 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .ds-lift:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 2px 6px -2px hsl(var(--foreground) / 0.07),
+                0 18px 40px -20px hsl(var(--foreground) / 0.22);
+  }
+
+  /* Entrance for tiles, staggered by inline --ds-i. */
+  @keyframes ds-rise {
+    from { opacity: 0; transform: translateY(12px) scale(0.985); }
+    to   { opacity: 1; transform: none; }
+  }
+  .ds-rise { animation: ds-rise 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+             animation-delay: calc(var(--ds-i, 0) * 55ms); }
 
   .animate-fade-in {
     animation: fadeIn 0.3s ease-out;
@@ -137,6 +442,94 @@
   }
   .animate-pulse-soft {
     animation: pulseSoft 2s ease-in-out infinite;
+  }
+
+  /* --- System Indicators: observatory effects --------------------------- */
+  /* The indicators page is the one surface that has to read as "everything at
+     once", so it gets its own effect vocabulary instead of borrowing tiles.
+     Every animation below is transform/opacity/background-position only, so
+     the fleet stays at 60fps while polling, and all of them are switched off by
+     the reduced-motion block at the bottom of this file. */
+
+  /* Rotating conic ring drawn around a genuinely live indicator. Pure
+     transform — never touches layout. */
+  @keyframes si-orbit {
+    to { transform: rotate(360deg); }
+  }
+  /* Highlight travelling across a saturated meter so a bar that has stopped
+     moving still reads as "still being measured". */
+  @keyframes si-flow {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  /* Expanding halo behind a live node — the "this is connected" tell. */
+  @keyframes si-halo {
+    0%   { transform: scale(0.75); opacity: 0.6; }
+    70%  { opacity: 0; }
+    100% { transform: scale(2.6); opacity: 0; }
+  }
+  /* A meter that fills from zero every time a new sample lands, so a value
+     change is felt even when the number is off-screen. */
+  @keyframes si-grow {
+    from { transform: scaleX(0); }
+    to   { transform: scaleX(1); }
+  }
+  /* Slow vertical float for the ambient glyphs in the hero. */
+  @keyframes si-float {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-7px); }
+  }
+  /* Flash of colour on the frame a value changes on — used by the live tiles. */
+  @keyframes si-flash {
+    0%   { box-shadow: 0 0 0 0 hsl(var(--ring) / 0.5); }
+    100% { box-shadow: 0 0 0 14px hsl(var(--ring) / 0); }
+  }
+
+  .si-orbit { animation: si-orbit 9s linear infinite; }
+  .si-flow { background-size: 220% 100%; animation: si-flow 2.8s linear infinite; }
+  .si-halo { animation: si-halo 2.6s cubic-bezier(0, 0, 0.2, 1) infinite; }
+  .si-grow { transform-origin: left center; animation: si-grow 880ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .si-float { animation: si-float 6s ease-in-out infinite; }
+  .si-flash { animation: si-flash 900ms ease-out; }
+
+  /* Accent ring that orbits a headline gauge.
+     The radial mask punches the centre out, so the conic gradient reads as a
+     thin ring hugging the dial instead of a solid blob showing through it —
+     which is what an unmasked conic behind a donut looks like. */
+  .si-orbit-ring {
+    -webkit-mask-image: radial-gradient(circle, transparent 0 84%, #000 92% 100%);
+    mask-image: radial-gradient(circle, transparent 0 84%, #000 92% 100%);
+  }
+
+  /* Soft ambient sweep behind the hero. Feathered radially so it never draws a
+     hard-edged wedge across the middle of the content the way an unmasked
+     conic gradient does. */
+  .si-sweep { position: relative; }
+  .si-sweep::before {
+    content: '';
+    position: absolute;
+    inset: -45%;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0deg,
+      hsl(var(--primary) / 0.20) 62deg,
+      transparent 145deg,
+      hsl(var(--info) / 0.16) 232deg,
+      transparent 322deg
+    );
+    -webkit-mask-image: radial-gradient(ellipse at center, transparent 0%, #000 42%, #000 68%, transparent 94%);
+    mask-image: radial-gradient(ellipse at center, transparent 0%, #000 42%, #000 68%, transparent 94%);
+    animation: si-orbit 28s linear infinite;
+    pointer-events: none;
+  }
+
+  /* Faint measurement grid behind the fleet, so the page reads as an
+     instrument panel rather than a list of cards. */
+  .si-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--foreground) / 0.035) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--foreground) / 0.035) 1px, transparent 1px);
+    background-size: 30px 30px;
   }
 }
 
@@ -151,6 +544,56 @@
 @keyframes pulseSoft {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
+}
+@keyframes statusIn {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Respect reduced-motion: never animate status changes or pulses */
+@media (prefers-reduced-motion: reduce) {
+  .status-in,
+  .animate-pulse-soft,
+  .animate-fade-in,
+  .animate-slide-up,
+  .cm-sweep::before,
+  .cm-flow,
+  .cm-ping,
+  .cm-rise,
+  .cm-sheen::after,
+  .cm-shimmer::before {
+    animation: none !important;
+  }
+  .cm-sweep::before,
+  .cm-sheen::after,
+  .ds-card::after {
+    display: none;
+  }
+  .ds-drift-a,
+  .ds-drift-b,
+  .ds-drift-c,
+  .ds-breathe,
+  .ds-rise,
+  .ds-card::after {
+    animation: none !important;
+  }
+  .ds-drift-a,
+  .ds-drift-b,
+  .ds-drift-c { opacity: 0.45; }
+  .ds-lift:hover { transform: none; }
+
+  /* System Indicators: hold every decorative motion still, but keep the static
+     readouts (colours, meters, halos) so the page stays informative. */
+  .si-orbit,
+  .si-flow,
+  .si-halo,
+  .si-float,
+  .si-flash,
+  .si-sweep::before {
+    animation: none !important;
+  }
+  .si-halo { opacity: 0; }
+  .si-flow { background-position: 0% 0; }
 }
 
 /* AMOLED theme — true black background */
@@ -175,9 +618,89 @@ html, body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Global horizontal-overflow guard: no page may scroll sideways. `clip`
+   (not `hidden`) preserves position:sticky topbars. Tables/cards that need
+   lateral scroll opt in with their own overflow-x-auto container. */
+body {
+  overflow-x: clip;
+}
+
 /* Touch-friendly tap targets */
 @media (pointer: coarse) {
   button, a, [role="button"] {
     min-height: 44px;
+  }
+
+  /* Opt-out for genuinely dense terminal surfaces (the trade ticket, the
+     market rails). A 44px floor on EVERY control silently inflated every
+     segment, stepper and chip by 8–18px, which is what pushed the whole
+     order form off a phone screen. Controls inside a `.dense-ui` region keep
+     their own declared height instead. */
+  .dense-ui button,
+  .dense-ui a,
+  .dense-ui [role="button"] {
+    min-height: 0;
+  }
+}
+
+/* Reserve exactly the space the fixed bottom bar occupies (bar height + the
+   device safe-area inset + a small breathing gap). Any page that scrolls
+   under the bar uses this, so the last row can never end up hidden behind
+   the navigation.
+
+   This rule lives OUTSIDE `@layer utilities` on purpose: unlayered CSS beats
+   Tailwind's layered utilities, so `p-3` / `md:pb-6` can never win over it.
+   The desktop override is explicit for the same reason. */
+.pb-bottom-nav {
+  padding-bottom: calc(
+    var(--bottom-nav-height) + env(safe-area-inset-bottom) + 0.75rem
+  );
+}
+@media (min-width: 768px) {
+  .pb-bottom-nav {
+    padding-bottom: 1.5rem;
+  }
+}
+
+/* Position a floating element exactly ABOVE the fixed bottom navigation bar
+   (bar height + device safe-area inset + a gap). Below md the bottom bar
+   exists; from md up there is none, so the element sits in the normal
+   bottom margin instead. */
+.bottom-nav-offset {
+  bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom) + 0.75rem);
+}
+@media (min-width: 768px) {
+  .bottom-nav-offset {
+    bottom: 1rem;
+  }
+}
+
+/* Sidebar-specific transition tokens */
+.sidebar-transition {
+  transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              background-color 200ms ease,
+              border-color 200ms ease,
+              box-shadow 200ms ease;
+}
+
+/* Premium dropdown animation (Radix + tailwindcss-animate) */
+@keyframes dropdown-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes dropdown-out {
+  from {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
   }
 }

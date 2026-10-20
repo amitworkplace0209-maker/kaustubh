@@ -1,0 +1,54 @@
+========================================================================================================
+KOTAK WIPRO FIELD-SOURCE MATRIX (LIVE trial - all sources)
+========================================================================================================
+FIELD                      | WS L4   | WS L8   | WS L16  | QUOTE  | INSTR_MASTER | NOTES
+--------------------------------------------------------------------------------------------------------
+LTP                        | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Open                       | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+High                       | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Low                        | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Prev Close                 | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Avg Trade Price            | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Net Change                 | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Net Change %               | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Upper Circuit              | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Lower Circuit              | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Yearly High                | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Yearly Low                 | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Last Trade Qty             | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Last Trade Time            | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Last Update Time           | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Volume                     | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Total Traded Value         | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Total Buy Qty              | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Total Sell Qty             | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Open Interest              | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Market Lot                 | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Precision                  | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Multiplier                 | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Auction Flag               | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Instrument Token           | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Trading Symbol             | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Exchange Segment           | NOT_VERIFIED | NOT_VERIFIED | YES     | NO     | NO           | 
+Depth Bid Price L1         | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Depth Bid Qty L1           | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Depth Bid Orders L1        | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Depth Ask Price L1         | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Depth Ask Qty L1           | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Depth Ask Orders L1        | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+ISIN                       | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | YES          | 
+Company Name               | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | YES          | 
+Series                     | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Instrument Type            | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Symbol                     | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Tick Size                  | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Lot Size (master)          | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | 
+Wire Sequence no           | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)
+Wire Bitmask length        | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)
+Indicative Close (wire)    | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)
+Trading Status (wire)      | NOT_VERIFIED | NOT_VERIFIED | NO      | NO     | NO           | present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)
+
+YES = real live value captured from that source in this trial.
+NO  = not observed in that source during this trial.
+NOT_VERIFIED = that depth level delivered no tick at all (see depth report).
+

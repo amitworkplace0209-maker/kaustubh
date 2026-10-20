@@ -1,0 +1,126 @@
+================================================================================
+KOTAK NEO WEBSOCKET SDK AUDIT - kotakneoapi 3.0.6
+================================================================================
+Report timestamp (IST)  : 2026-09-15T14:55:32+05:30 (rendered 14:55) from live
+                           evidence captured 2026-09-15T14:51:06+05:30 (NSE open)
+Audit basis             : installed package source + cued LIVE network observations
+Author/source           : live verifier harness (_probe_kotak_wipro_depth.py)
+
+[1] PACKAGE IDENTITY
+    distribution : kotakneoapi 3.0.6
+    import       : neo_api_client
+    location     : C:\project\.venv\Lib\site-packages\neo_api_client
+    protocol     : aiohttp WebSocket client -> wss://sfeed.kotaksecurities.com/apifeed
+    python       : 3.12 venv at C:\project\.venv
+
+[2] FEED MODEL (neo_api_client.websocket.feed)
+    WsToken      : namedtuple(exchange_segment, instrument_token) - the only
+                   subscription identity (e.g. nse_cm|3787).
+    WsConnection : create/connect/close; on_raw hook receives EVERY raw frame
+                   (str for control/text frames, bytes for binary batches).
+    Async model  : the websocket is async-iterable; each __anext__() yields an
+                   SDK-interpreted message object (SFeedScrip / SFeedMarketStatus /
+                   SFeedMini / SFeedIndex / CAS change).
+    Subscribe API (one method per DEPTH LEVEL - the level is NOT a parameter):
+        subscribe_scrips()      -> wire event "subscribeScrips"      -> Level 4  (TOUCH_LINE)
+        subscribe_depth()       -> wire event "subscribeDepth"       -> Level 8  (DEPTH)
+        subscribe_full_depth()  -> wire event "subscribeFullDepth"   -> Level 16 (FULL_DEPTH)
+    Unsubscribe mirror: unsubscribe_scrips / unsubscribe_depth / unsubscribe_full_depth.
+    Broadcaster: subscribe_exchange() / unsubscribe_exchange() for market status.
+    Reconnect  : create_websocket(max_reconnect_attempts, max_connect_retries)
+                 controls reconnection/join backoff; probe used (0,0) to keep a
+                 single, isolated capture connection per level.
+
+[3] WIRE PROTOCOL (neo_api_client.websocket.feed.protocol)
+    Packet framing : each datagram is a batch of length-prefixed packets;
+                     size = u16 little-endian at offset 0 (includes the 2-byte
+                     length prefix itself). A batch frame may pack several
+                     SFeed packets (observed frame size 176 bytes for L16).
+    Header (9 bytes, <HHbBBBB), offsets 0..8:
+        message_length u16 | message_code u16 | exchange_id i8 | level u8 |
+        auction_flag u8 | seq_no u8 | bitmask_length u8
+    Market-picture body (135 bytes, <IqqqqqIIIIIqIIIIhiIdiIIIIIBI) at offset 9:
+        token u32, total_buy_qty q, total_sell_qty q, volume_traded_today q,
+        last_trade_time q, last_update_time q, open_price I, close_price I,
+        high_price I, low_price I, last_traded_price I, last_trade_qty I,
+        avg_trade_price q, indicative_close I, buy_depth_count h (count for
+        level<=1 ? 0 : value), sell_depth_count i (count), trading_status d,
+        net_chg_percent i, open_interest I, total_traded_value I (double on
+        wire), net_chg i, upper_circuit I, lower_circuit I, yearly_high I,
+        yearly_low I, market_lot I, precision B, multiplier I.
+    Mini line body (26 bytes, <IqIqIiiIBI): nse/bsfx_scrips mini touch.
+    Market status (7 bytes, <H5s): status_code u16 + ascii label.
+    CAS change (20 bytes, <IIqq): stk_exch_token, ref_price, imbalance qty x2.
+    Depth rows: fixed body ends at byte 144; each row is <qii (16 bytes):
+        quantity q / price i / orders i. Row count is controlled by
+        buy_depth_count + sell_depth_count EXCEPT level 4 which forces 1+1.
+    Dividers (observed at connect): exchange 1->100, 2->100, 3->10000000,
+        4->100, 5->100, 6->100, 7->10000000, 8->100, 9->100, 10->100.
+        All integer prices/totals are divided by the per-exchange divider
+        (nse_cm = 100) to reach rupee values.
+
+[4] SDK-DISCARDED / SYNTHESIZED DATA  (verified against raw wire decode)
+    On the wire but NOT exposed on the model:
+        - header.seq_no
+        - header.bitmask_length
+        - body._indicative_close  (unpacked, unused)
+        - body._trading_status    (unpacked, unused)
+    Transformed on the model:
+        - exchange_id (i8)   -> exchange_segment string ("nse_cm")
+        - instrument token   -> instrument_token (str)
+        - auction_flag       -> auction (bool)
+        - last_update_time < 0 -> 0
+        - all "I" price/total fields -> divider / 100
+        - net_chg_percent    -> / 100
+    Synthesized (NOT on wire):
+        - message.type = "scrip" literal
+        - trading_symbol enriched from the subscribe-ack trading_symbols map.
+
+[5] SUBSCRIBE ACKNOWLEDGEMENT (observed)
+    Server replies with a text JSON frame, message_code 1109, containing a
+    trading_symbols map of the form {"nse_cm|3787": "WIPRO-EQ"} - used by the
+    SDK to enrich trading_symbol. Probe captured ack 1109 for ALL THREE levels.
+    Outbound subscribe payloads captured on the wire (exact events):
+        L4 : {"event":"subscribeScrips","inputtoken":"nse_cm|3787","ack_symbol":true}
+        L8 : {"event":"subscribeDepth","inputtoken":"nse_cm|3787","ack_symbol":true}
+        L16: {"event":"subscribeFullDepth","inputtoken":"nse_cm|3787","ack_symbol":true}
+
+[6] LIVE OBSERVED BEHAVIOUR OF EACH LEVEL (NSE cash session, WIPRO token 3787)
+    L4  subscribe_scrips    : ack ok; ~17 scrip msgs/15s; 1+1 book rows; real
+                              evolving LTP (169.79 -> 169.74), volume>0.
+    L8  subscribe_depth     : ack ok; ~17 scrip msgs/15s; 5+5 book rows with real
+                              prices/qty/orders matching the Quote API depth.
+    L16 subscribe_full_depth: ack ok BUT ONLY a static reference snapshot:
+                              0+0 book rows, volume=0, total buy/sell=0,
+                              last_trade_time=0, prev-session OHLC, packet padded
+                              with 32 zero bytes after the 144-byte fixed body.
+                              Observed in two independent capture windows.
+    => For this account + kotakneoapi 3.0.6, full depth (10+10) is NOT
+       delivered as a live book; the level tag is 16 but the payload is a
+       truncated static picture. Treat L16 as "ack accepted, data unavailable".
+
+[7] QUOTE + SCRIP MASTER (REST side of the same SDK)
+    async_quote(...)      : GET script-details/1.0/quotes/neosymbol/{keys}/all
+                            -> list of 1 item; 51 flattened fields INCLUDING a
+                            5-level buy/sell book snapshot, year high/low,
+                            price ranges, change %, lstup time. Real values.
+    scrip_master(exchange_segment="nse_cm") : returns the daily transformed CSV
+                            URL (https://lapi.kotaksecurities.com/wso2-scripmaster/
+                            v1/prod/<date>/transformed-v1/nse_cm-v1.csv); 9868
+                            rows; exactly 1 WIPRO row (token via pSymbol=3787,
+                            trading symbol pTrdSymbol=WIPRO-EQ, ISIN pISIN).
+    Note               : quote "all" carries a depth snapshot; combine with a
+                         live WS L8 stream for continuous depth.
+
+[8] RATE LIMIT / EXCEPTIONS / SAFETY
+    REST calls throttled by broker; quote completed in ~0.39s, scrip master CSV
+    ~few s. Exceptions module throws typed ApiException on non-2xx. This audit
+    stored NO credentials: control frames redacted, binary frames raw market data.
+
+[9] VERDICTS (this audit + live trial)
+    Level 4  : VERIFIED LIVE (touch line reported correctly).
+    Level 8  : VERIFIED LIVE (5-level book streaming viable for apps).
+    Level 16 : ACK ONLY - static reference snapshot, NO live full-book depth.
+    Quote API: WORKING (intraday book snapshot + OHLC + ranges).
+    Scrip Master: WORKING (daily CSV, correct WIPRO metadata).
+================================================================================

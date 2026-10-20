@@ -11,6 +11,19 @@ from database.connection import get_db
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
 
+async def _track_canonical(symbol: str, token: str, exchange: str, source: str = "watchlist") -> None:
+    """Phase 3: merge into the Session Manager canonical store (best effort)."""
+    try:
+        from services.session.session_manager import session_manager
+        await session_manager.upsert_instrument({
+            "exchange_segment": exchange or "nse_cm",
+            "instrument_token": str(token),
+            "symbol": symbol,
+        }, source=source)
+    except Exception:
+        pass
+
+
 class AddWatchlistRequest(BaseModel):
     symbol: str
     token: str
@@ -42,6 +55,7 @@ async def add_to_watchlist(req: AddWatchlistRequest):
     await db.watchlist.update_one({"symbol": symbol}, {"$set": doc}, upsert=True)
     saved = await db.watchlist.find_one({"symbol": symbol})
     saved["_id"] = str(saved["_id"])
+    await _track_canonical(symbol, req.token, req.exchange)
     return {"data": saved}
 
 
@@ -63,4 +77,3 @@ async def toggle_favorite(symbol: str):
     new_fav = not item.get("favorite", False)
     await db.watchlist.update_one({"symbol": symbol.upper()}, {"$set": {"favorite": new_fav}})
     return {"data": {"symbol": symbol.upper(), "favorite": new_fav}}
-

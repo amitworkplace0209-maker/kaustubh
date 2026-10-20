@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { getDownloadUrl, getStocks } from '@/lib/api';
+import { PageHeader } from '@/components/design-system';
 import { useToast } from '@/hooks/use-toast';
 
 type Stock = { symbol: string; active: boolean };
@@ -234,12 +235,10 @@ const clearAllFields = () => {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Download Center</h1>
-        <p className="text-sm text-muted-foreground">
-          Export tick data from MongoDB — supports CSV, JSON, JSONL, NDJSON, TXT, Excel, Parquet, and ZIP
-        </p>
-      </div>
+      <PageHeader
+        title="Download Center"
+        subtitle="Export tick data from MongoDB — supports CSV, JSON, JSONL, NDJSON, TXT, Excel, Parquet, and ZIP"
+      />
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Stock Selection */}

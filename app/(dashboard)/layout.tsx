@@ -1,21 +1,17 @@
-import { Sidebar, TopBar } from '@/components/sidebar';
-import { Toaster } from '@/components/ui/toaster';
+import { Shell } from '@/components/layout/shell';
 
+/**
+ * Legacy `(dashboard)` compatibility shell — the top-level legacy URLs
+ * (/dashboard, /stocks, /live-ticks, /downloads, /positions, ...) are reskinned
+ * through the SAME canonical AppShell frame as every other phase instead of
+ * their old duplicated Sidebar/TopBar. Nothing is deleted and nothing is
+ * redirected: existing URLs keep resolving, bookmarks/links/API-nav keep
+ * working, and there is exactly ONE shell implementation in the app.
+ */
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return (
-    <div className="flex h-screen flex-col">
-      <TopBar />
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 overflow-auto p-4 pb-20 md:p-6 md:pb-6">
-          {children}
-        </main>
-      </div>
-      <Toaster />
-    </div>
-  );
+  return <Shell workspace="trading">{children}</Shell>;
 }

@@ -12,7 +12,7 @@ If any instruction conflicts with these rules, stop and report the conflict befo
 
 Before doing ANY task:
 
-- Read rules.md completely.
+- Read PROJECT_IMPLEMENTATION_RULE.md completely.
 - Follow every rule.
 - Never skip this file.
 

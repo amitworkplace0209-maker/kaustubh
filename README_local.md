@@ -42,7 +42,7 @@ Two local services run side by side on the Oracle VM:
 │  FastAPI · neo_api_client SDK                        │
 │  • TOTP login + MPIN validation                     │
 │  • WebSocket subscribe / unsubscribe                 │
-│  • Scheduler (09:00 login / 15:35 logout IST)       │
+│  • Scheduler (09:00 login / 16:00 logout IST)       │
 │  • Forwards every tick to Node                      │
 └──────────────────────┬──────────────────────────────┘
                        │  POST /api/ticks/ingest (JSON)
@@ -54,7 +54,7 @@ Two local services run side by side on the Oracle VM:
 │  • Tick buffer → MongoDB bulk writes                 │
 │  • Download APIs (CSV / JSON)                        │
 │  • Statistics, Logs, System monitoring              │
-│  • Node-side scheduler nudges Python at 09:00/15:35 │
+│  • No Node-side scheduler — Python owns the full window│
 └──────────────────────┬──────────────────────────────┘
                        │
                        ▼
@@ -70,7 +70,7 @@ Two local services run side by side on the Oracle VM:
 | Concern | Owner |
 |---|---|
 | Kotak Neo SDK (login, TOTP, session, WebSocket) | **Python** |
-| Scheduler (09:00 login, 15:35 logout IST) | **Python** (primary), Node nudges as backup |
+| Scheduler (09:00 login, 16:00 logout IST) | **Python** (sole owner) |
 | Tick persistence to MongoDB | **Node.js** |
 | Stock list management | **Node.js** |
 | Download APIs (CSV/JSON) | **Node.js** |
@@ -490,7 +490,7 @@ Query param `?active=true` to return only active stocks.
 Add or update a stock. Automatically subscribes on the Python service if active.
 ```json
 // Request
-{ "symbol":"RELIANCE", "instrumentToken":"2885", "exchangeSegment":"nse_cm", "isIndex":false, "isDepth":false }
+{ "symbol":"RELIANCE", "instrumentToken":"2885", "exchangeSegment":"nse_cm", "isIndex":false, "isDepth":true }
 // Response 201
 { "stock": { "symbol":"RELIANCE", "instrumentToken":"2885", ... } }
 ```
@@ -605,12 +605,12 @@ Kotak WS ──► Python on_message ──► Node forwarder queue ──► No
                                                     MongoDB bulk insert
 ```
 
-### Daily Logout Sequence (15:35 IST, weekdays)
+### Daily Logout Sequence (16:00 IST, weekdays)
 
 ```
 Scheduler   WebSocket Mgr   Python Auth   Node Forwarder   Kotak Neo
    │              │              │              │               │
-   │ 15:35 trigger│              │              │               │
+   │ 16:00 trigger│              │              │               │
    ├─────────────►│              │              │               │
    │              │ un_subscribe(all)          │               │
    │              ├────────────────────────────────────────────►│
@@ -633,8 +633,8 @@ Both services run schedulers, but **Python is the primary**:
 
 | Time (IST) | Action | Primary | Backup |
 |---|---|---|---|
-| 09:00, Mon-Fri | Login + subscribe | Python scheduler | Node scheduler nudges `POST /login` |
-| 15:35, Mon-Fri | Unsubscribe + logout | Python scheduler | Node scheduler nudges `POST /logout` |
+| 09:00, Mon-Fri | Login + subscribe | Python scheduler | — |
+| 16:00, Mon-Fri | Unsubscribe + logout | Python scheduler | — |
 
 The Python scheduler computes the next run time using IST wall-clock (independent of host timezone) and reschedules itself after each run. Weekends are skipped.
 

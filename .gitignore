@@ -28,6 +28,9 @@ yarn-error.log*
 .env
 .env*.local
 
+# Auth secrets (hashed PIN storage)
+.auth/
+
 # vercel
 .vercel
 
@@ -93,3 +96,6 @@ __pycache__/
 # Local service/debug files
 python-service/services/status/
 *.backup2
+
+# Runtime single-instance bookkeeping (pid/state files are advisory, process-local)
+python-service/runtime/

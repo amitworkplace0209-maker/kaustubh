@@ -9,6 +9,33 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      // Single font system for the whole app. Both stacks are resolved from the
+      // CSS variables declared in globals.css (which point at the next/font
+      // `--font-inter` / `--font-mono-jb` families). Hard-coding a stack in a
+      // component is what used to make the UI read as mixed fonts — every
+      // `font-sans` / `font-mono` utility now resolves to the same two faces.
+      fontFamily: {
+        sans: [
+          'var(--font-inter)',
+          'var(--font-sans-fallback)',
+          'ui-sans-serif',
+          'system-ui',
+          '-apple-system',
+          'Segoe UI',
+          'Roboto',
+          'sans-serif',
+        ],
+        mono: [
+          'var(--font-mono-jb)',
+          'var(--font-mono-fallback)',
+          'ui-monospace',
+          'SFMono-Regular',
+          'Cascadia Mono',
+          'Menlo',
+          'Consolas',
+          'monospace',
+        ],
+      },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
         'gradient-conic':

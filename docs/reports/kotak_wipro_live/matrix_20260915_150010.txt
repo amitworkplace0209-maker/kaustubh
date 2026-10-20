@@ -1,0 +1,62 @@
+================================================================================================================
+KOTAK WIPRO FIELD-SOURCE MATRIX (LIVE trial - all sources)
+================================================================================================================
+FIELD                      | WS L4   | WS L8   | WS L16  | QUOTE  | INSTR   | META  | NOTES
+----------------------------------------------------------------------------------------------------------------
+LTP                        | YES     | YES     | NO      | YES    | NO      | NO    | 
+Open                       | YES     | YES     | NO      | YES    | NO      | NO    | 
+High                       | YES     | YES     | NO      | YES    | NO      | NO    | 
+Low                        | YES     | YES     | NO      | YES    | NO      | NO    | 
+Prev Close                 | YES     | YES     | NO      | YES    | NO      | NO    | 
+Avg Trade Price            | YES     | YES     | NO      | YES    | NO      | NO    | 
+Net Change                 | YES     | YES     | NO      | YES    | NO      | NO    | 
+Net Change %               | YES     | YES     | NO      | YES    | NO      | NO    | 
+Upper Circuit              | YES     | YES     | NO      | YES    | YES     | NO    | 
+Lower Circuit              | YES     | YES     | NO      | YES    | YES     | NO    | 
+Yearly High                | YES     | YES     | NO      | YES    | NO      | NO    | 
+Yearly Low                 | YES     | YES     | NO      | YES    | NO      | NO    | 
+Last Trade Qty             | YES     | YES     | NO      | YES    | NO      | NO    | 
+Last Trade Time            | YES     | YES     | NO      | YES    | NO      | NO    | 
+Last Update Time           | YES     | YES     | NO      | YES    | NO      | NO    | 
+Volume                     | YES     | YES     | NO      | YES    | NO      | NO    | 
+Total Traded Value         | YES     | YES     | NO      | NO     | NO      | NO    | 
+Total Buy Qty              | YES     | YES     | NO      | YES    | NO      | NO    | 
+Total Sell Qty             | YES     | YES     | NO      | YES    | NO      | NO    | 
+Open Interest              | YES     | YES     | NO      | YES    | YES     | NO    | 
+Market Lot                 | YES     | YES     | NO      | NO     | NO      | NO    | 
+Precision                  | YES     | YES     | NO      | NO     | YES     | NO    | 
+Multiplier                 | YES     | YES     | NO      | NO     | YES     | NO    | 
+Auction Flag               | YES     | YES     | NO      | NO     | NO      | NO    | 
+Instrument Token           | YES     | YES     | NO      | YES    | YES     | NO    | quote exchange_token=3787; master pSymbol=3787 (token in master) 
+Trading Symbol             | YES     | YES     | NO      | YES    | YES     | YES   | 
+Exchange Segment           | YES     | YES     | NO      | YES    | YES     | YES   | 
+Depth Bid Price L1         | YES     | YES     | NO      | YES    | NO      | NO    | 
+Depth Bid Qty L1           | YES     | YES     | NO      | YES    | NO      | NO    | 
+Depth Bid Orders L1        | YES     | YES     | NO      | YES    | NO      | NO    | 
+Depth Ask Price L1         | YES     | YES     | NO      | YES    | NO      | NO    | 
+Depth Ask Qty L1           | YES     | YES     | NO      | YES    | NO      | NO    | 
+Depth Ask Orders L1        | YES     | YES     | NO      | YES    | NO      | NO    | 
+ISIN                       | NO      | NO      | NO      | NO     | YES     | YES   | 
+Company Name               | NO      | NO      | NO      | NO     | YES     | YES   | 
+Series                     | NO      | NO      | NO      | NO     | NO      | YES   | meta series=EQ; quote 'all' exposes exchange_token/display_symbol only
+Instrument Type            | NO      | NO      | NO      | NO     | NO      | YES   | 
+Symbol                     | NO      | NO      | NO      | YES    | YES     | YES   | 
+Tick Size                  | NO      | NO      | NO      | NO     | YES     | YES   | 
+Lot Size (master)          | NO      | NO      | NO      | NO     | YES     | YES   | 
+Wire Sequence no           | NO      | NO      | NO      | NO     | NO      | NO    | present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)
+Wire Bitmask length        | NO      | NO      | NO      | NO     | NO      | NO    | present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)
+Indicative Close (wire)    | NO      | NO      | NO      | NO     | NO      | NO    | present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)
+Trading Status (wire)      | NO      | NO      | NO      | NO     | NO      | NO    | present on RAW wire; DISCARDED by SDK (never on L4/L8/L16 model)
+
+YES = real live value captured from that source in this trial.
+NO  = not observed in that source during this trial.
+NOT_VERIFIED = that depth level delivered no tick at all (see depth report).
+
+INSTR = WIPRO row from the daily Kotak Scrip Master CSV (nse_cm-v1).
+META  = resolved instrument master metadata (instrument_master.json from the same CSV).
+
+NOTE: L16 (subscribe_full_depth) was ACK-accepted but delivered only a STATIC
+reference snapshot (prev-session OHLC, volume=0, total buy/sell=0, EMPTY book).
+A plain NO on the L16 column for a field present on the wire means the value
+was static reference data, not a live tick.
+

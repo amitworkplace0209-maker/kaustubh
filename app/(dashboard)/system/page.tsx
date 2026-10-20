@@ -12,7 +12,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { getSystemStatus } from '@/lib/api';
+import { getSystemStatus, getNotificationSummary } from '@/lib/api';
+import { PageHeader } from '@/components/design-system';
 
 type IndicatorState = 'online' | 'offline' | 'connecting' | 'disconnected' | 'error';
 
@@ -82,6 +83,7 @@ function HealthCard({ icon: Icon, title, state, lastOnline, lastOffline, extra }
 
 export default function SystemPage() {
   const [data, setData] = useState<any>(null);
+  const [notifSummary, setNotifSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [search, setSearch] = useState('');
@@ -93,6 +95,10 @@ export default function SystemPage() {
       const d = await getSystemStatus();
       setData(d);
     } catch { /* ignore */ }
+    try {
+      const s = await getNotificationSummary();
+      setNotifSummary(s);
+    } catch { setNotifSummary(null); }
     finally { setLoading(false); }
   }, []);
 
@@ -118,12 +124,16 @@ export default function SystemPage() {
       { icon: Cpu, title: 'CPU', state: 'online', extra: [{ label: 'Load', value: `${(data.node?.cpuLoad1m ?? 0).toFixed(2)}` }, { label: 'Usage', value: `${data.node?.cpuPercent ?? 0}%` }] },
       { icon: Database, title: 'Data Saver', state: getState(data.buffer?.totalWritten > 0), extra: [{ label: 'Written', value: safeNum(data.buffer?.totalWritten) }, { label: 'Buffer', value: safeNum(data.buffer?.bufferLength) }] },
       { icon: ShoppingCart, title: 'Trading Engine', state: getState(data.pythonStatus?.logged_in), extra: [{ label: 'Orders', value: safeNum(data.totalOrders) }, { label: 'Positions', value: safeNum(data.totalPositions) }] },
-      { icon: Bell, title: 'Notification Service', state: 'online', extra: [{ label: 'Status', value: 'Active' }] },
+      { icon: Bell, title: 'Notification Service', state: notifSummary ? (notifSummary.live === false ? 'offline' : 'online') : 'connecting', extra: [
+        { label: 'Status', value: notifSummary ? (notifSummary.live === false ? 'Unavailable (cached)' : 'Live') : 'Unknown' },
+        { label: 'Unread', value: safeNum(notifSummary?.unread) },
+        { label: 'Total', value: safeNum(notifSummary?.total) },
+      ] },
       { icon: Download, title: 'Download Service', state: 'online', extra: [{ label: 'Today', value: safeNum(data.todayDownloads) }] },
       { icon: Zap, title: 'API Health', state: getState(data.python?.status === 'ok'), extra: [{ label: 'Status', value: '200 OK' }] },
     ];
     return cards;
-  }, [data]);
+  }, [data, notifSummary]);
 
   const filteredCards = useMemo(() => {
     let list = allCards;
@@ -142,20 +152,12 @@ export default function SystemPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Project Health Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            {onlineCount} online · {offlineCount} offline · {allCards.length} total components
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant={autoRefresh ? 'default' : 'outline'} onClick={() => setAutoRefresh(!autoRefresh)}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh ? 'animate-spin' : ''}`} /> Auto
-          </Button>
-          <Button size="sm" variant="ghost" onClick={fetch}><RefreshCw className="h-4 w-4" /></Button>
-        </div>
-      </div>
+      <PageHeader title="Project Health Dashboard" subtitle={<>{onlineCount} online · {offlineCount} offline · {allCards.length} total components</>}>
+        <Button size="sm" variant={autoRefresh ? 'default' : 'outline'} onClick={() => setAutoRefresh(!autoRefresh)}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh ? 'animate-spin' : ''}`} /> Auto
+        </Button>
+        <Button size="sm" variant="ghost" onClick={fetch}><RefreshCw className="h-4 w-4" /></Button>
+      </PageHeader>
 
       {/* System Health Summary */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

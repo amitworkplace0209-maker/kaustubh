@@ -2,27 +2,49 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#F28C28" />
   <title>Offline — KAUSTUBH</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root { color-scheme: dark; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0a0f0d;
+      background: #060a08;
       color: #e2e8f0;
       display: flex;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
+      min-height: 100dvh;
       text-align: center;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     }
-    .container { max-width: 400px; padding: 2rem; }
-    .icon { width: 64px; height: 64px; margin: 0 auto 1.5rem; border-radius: 16px; background: linear-gradient(135deg, #0f7a52, #0d9488); display: flex; align-items: center; justify-content: center; }
+    .container { max-width: 420px; padding: 2rem; }
+    .icon {
+      width: 64px; height: 64px; margin: 0 auto 1.5rem; border-radius: 16px;
+      background: linear-gradient(135deg, #0f7a52, #0d9488);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 12px 32px -12px rgba(15, 122, 82, 0.6);
+    }
     .icon svg { width: 32px; height: 32px; color: white; }
-    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
-    p { color: #94a3b8; line-height: 1.6; margin-bottom: 1.5rem; }
-    button { background: #0f7a52; color: white; border: none; padding: 0.75rem 2rem; border-radius: 8px; font-size: 0.875rem; font-weight: 600; cursor: pointer; }
-    button:hover { background: #0d6845; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; letter-spacing: -0.02em; }
+    p { color: #94a3b8; line-height: 1.6; margin-bottom: 1.5rem; font-size: 0.9rem; }
+    .status {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      margin-bottom: 1.75rem; padding: 0.375rem 0.75rem; border-radius: 999px;
+      background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .dot { width: 6px; height: 6px; border-radius: 999px; background: #ef4444; }
+    button {
+      background: #F28C28; color: #160c04; border: none; padding: 0.85rem 2rem;
+      border-radius: 12px; font-size: 0.9rem; font-weight: 700; cursor: pointer;
+      font-family: inherit; min-height: 44px;
+    }
+    button:hover { background: #ff9d3f; }
+    button:active { transform: scale(0.98); }
+    .hint { margin-top: 1.25rem; font-size: 0.75rem; color: #64748b; }
   </style>
 </head>
 <body>
@@ -30,9 +52,19 @@
     <div class="icon">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
     </div>
+    <div class="status"><span class="dot"></span> No connection</div>
     <h1>You're Offline</h1>
-    <p>The KAUSTUBH Trading Platform requires an internet connection to load live market data and trading features. Please check your connection and try again.</p>
+    <p>
+      KAUSTUBH needs a connection to reach live market data, the broker and the
+      notification service. Pages you have already opened keep working from
+      the on-device cache — everything else waits for the network to come back.
+    </p>
     <button onclick="window.location.reload()">Retry Connection</button>
+    <p class="hint">The app retries automatically as soon as you are back online.</p>
   </div>
+  <script>
+    // Come back the moment the network returns — no manual retry needed.
+    window.addEventListener('online', function () { window.location.reload(); });
+  </script>
 </body>
 </html>

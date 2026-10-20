@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Activity, Pause, Play, Search, Wifi, WifiOff } from 'lucide-react';
 import { getTickStreamUrl, getRecentTicks } from '@/lib/api';
+import { PageHeader } from '@/components/design-system';
 
 type Tick = {
   symbol: string;
@@ -33,7 +34,7 @@ function safeTime(iso: string): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return '—';
-  return d.toLocaleTimeString('en-US', { hour12: false });
+  return d.toLocaleTimeString('en-US', { hour12: false, timeZone: 'Asia/Kolkata' });
 }
 
 export default function LiveTickTablePage() {
@@ -110,11 +111,7 @@ export default function LiveTickTablePage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Live Tick Table</h1>
-          <p className="text-sm text-muted-foreground">Real-time WebSocket tick data — no dummy rows</p>
-        </div>
+      <PageHeader title="Live Tick Table" subtitle="Real-time WebSocket tick data — no dummy rows">
         <div className="flex items-center gap-3">
           <Badge variant={connected ? 'default' : 'destructive'} className={connected ? 'bg-success text-success-foreground' : ''}>
             {connected ? <Wifi className="h-3 w-3 mr-1" /> : <WifiOff className="h-3 w-3 mr-1" />}
@@ -126,7 +123,7 @@ export default function LiveTickTablePage() {
             {paused ? 'Resume' : 'Pause'}
           </Button>
         </div>
-      </div>
+      </PageHeader>
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
