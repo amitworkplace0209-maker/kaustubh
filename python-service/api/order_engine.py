@@ -20,6 +20,7 @@ Three things it adds on top of the raw terminal endpoints:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -403,3 +404,261 @@ async def order_engine_history(terminal: str = "", limit: int = 200) -> dict[str
         "isPaper": mode == "dummy", "connected": True,
         "orders": [canonical_order(r, mode) for r in rows],
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-broker engine pages — one detail endpoint per broker engine
+# ---------------------------------------------------------------------------
+#: How an order physically reaches the broker, per terminal — factual code
+#: paths (the page shows the actual wiring, not marketing copy).
+_ENGINE_PATH = {
+    "dummy": "/api/trade/demo/order or /api/order-engine/place → order_engine.place → DummyAdapter.place_order → paper engine (LTP-matched)",
+    "kotak": "/api/terminal/order → order_engine.place → KotakAdapter.place_order → neo_api_client place_order → response back to the page",
+    "shoonya": "/api/terminal/order → order_engine.place → ShoonyaAdapter.place_order → NorenRestApiPy place_order → response back to the page",
+}
+_SDK_INFO = {
+    "kotak": {"sdk": "Kotak Neo (neo_api_client)", "module": "auth/kotak_client.py + brokers/kotak_adapter.py"},
+    "shoonya": {"sdk": "Shoonya Noren (NorenRestApiPy)", "module": "brokers/shoonya_adapter.py"},
+    "dummy": {"sdk": "Internal paper engine (api/demo.py — app_settings/demo_orders)", "module": "api/demo.py + brokers/dummy.py"},
+}
+
+
+def _count_by(rows: list[dict], key: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for r in rows:
+        k = str(r.get(key) or "?").upper() or "?"
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+async def _paper_flow_block() -> dict[str, Any]:
+    """REAL paper-engine verification, computed from the stored order book.
+
+    Every dummy surface (terminal trade page → ``/api/trade/demo/order``,
+    order page → ``/api/order-engine/place``, suggestions, baskets) writes the
+    SAME ``app_settings/demo_orders`` document through the Order Engine — these
+    counts prove the flow with real rows, per source, per status.
+    """
+    from api import demo as paper
+
+    orders = [o for o in await paper.get_dummy_orders() if isinstance(o, dict)]
+    now = datetime.now(timezone.utc)
+    window = now - timedelta(hours=24)
+    placed24 = filled24 = resting_now = 0
+    fill_sources: dict[str, int] = {}
+    last_fill: dict | None = None
+    last_resting: dict | None = None
+    EXEC_SET = {"COMPLETE", "COMPLETED", "FILLED", "EXECUTED", "TRADED"}
+    REST_SET = {"PENDING", "OPEN", "TRIGGER_PENDING", "PARTIALLY_FILLED", "SUBMITTED"}
+    for o in orders:
+        status = str(o.get("status") or "UNKNOWN").upper()
+        placed_t = _parse_ts(o.get("orderDate")) or _parse_ts(o.get("placedAt"))
+        if placed_t and placed_t >= window:
+            placed24 += 1
+        if status in EXEC_SET:
+            fs = str(o.get("fillSource") or "unknown").lower()
+            fill_sources[fs] = fill_sources.get(fs, 0) + 1
+            t = _parse_ts(o.get("filledAt"))
+            if t and t >= window:
+                filled24 += 1
+            if last_fill is None or (_parse_ts(last_fill.get("filledAt")) or datetime.min.replace(tzinfo=timezone.utc)) < (t or datetime.min.replace(tzinfo=timezone.utc)):
+                last_fill = o
+        elif status in REST_SET:
+            resting_now += 1
+            if last_resting is None:
+                last_resting = o
+    try:
+        account = await paper.get_dummy_account()
+    except Exception as exc:  # noqa: BLE001
+        account = {"error": str(exc)[:200]}
+    try:
+        from services import dummy_extras
+
+        prefs = await dummy_extras.get_prefs()
+    except Exception as exc:  # noqa: BLE001
+        prefs = {"error": str(exc)[:200]}
+    try:
+        from services.paper_market_feed import paper_market_feed
+
+        feed = paper_market_feed.status()
+    except Exception as exc:  # noqa: BLE001
+        feed = {"running": False, "error": str(exc)[:200]}
+    return {
+        "store": "app_settings/demo_orders (single authoritative paper order book)",
+        "producers": _count_by(orders, "source"),
+        "byStatus": _count_by(orders, "status"),
+        "totalDistinct": len(orders),
+        "placedLast24h": placed24,
+        "filledLast24h": filled24,
+        "restingNow": resting_now,
+        "fillSources": fill_sources,
+        "lastFill": last_fill,
+        "lastResting": last_resting,
+        "account": account,
+        "prefs": prefs,
+        "feed": feed,
+    }
+
+
+@router.get("/engine/{terminal}")
+async def order_engine_terminal_detail(terminal: str, summary: bool = False) -> dict[str, Any]:
+    """One broker engine's full page data — Dummy, Kotak or Shoonya, separated.
+
+    * dummy   → the PAPER engine: connected state, LTP fill model (exact
+                counts of what filled vs what is resting and WHY), the
+                producers that fed the engine (trade page / order page /
+                suggestions / baskets), paper feed + account.
+    * kotak   → real session + the Kotak WS#2 order feed that keeps order
+                status updating in real time, plus the live order book.
+    * shoonya → real session + OAuth availability, plus the live order book.
+
+    Everything here is read-only and comes from the live adapters — a
+    disconnected broker reports exactly what is unavailable instead of
+    silently returning zeros.
+    """
+    mode = terminal if terminal in ("kotak", "shoonya", "dummy") else ""
+    if not mode:
+        raise HTTPException(400, "terminal must be kotak, shoonya or dummy")
+    try:
+        adapter = get_adapter(mode)
+        connected = bool(adapter.is_logged_in)
+        capabilities = adapter.capabilities
+        broker_name = adapter.broker_name
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("terminal detail adapter probe failed (%s): %s", mode, exc)
+        adapter, connected, capabilities, broker_name = None, False, {}, mode
+
+    detail: dict[str, Any] = {
+        "ok": True,
+        "terminal": mode,
+        "broker": _BROKER_LABEL.get(mode, mode),
+        "brokerName": broker_name or _BROKER_LABEL.get(mode, mode),
+        "isPaper": mode == "dummy",
+        "engineKind": "paper" if mode == "dummy" else "sdk",
+        "enginePath": _ENGINE_PATH.get(mode, ""),
+        "sdk": _SDK_INFO.get(mode, {}),
+        "connected": connected,
+        "capabilities": capabilities or {},
+        "marketData": await _market_data_status(),
+        "orders": [],
+        "counts": {},
+        "total": 0,
+        "message": "" if connected else f"{broker_name or mode} not connected — order book unavailable",
+    }
+
+    if adapter is not None and connected:
+        try:
+            raw = await adapter.orders()
+            rows = _extract_rows(raw)
+            canonical = [canonical_order(r, mode) for r in rows]
+            detail["total"] = len(canonical)
+            counts: dict[str, int] = {}
+            for o in canonical:
+                counts[o["status"]] = counts.get(o["status"], 0) + 1
+            counts["TOTAL"] = len(canonical)
+            counts["WORKING"] = sum(1 for o in canonical if o["working"])
+            detail["counts"] = counts
+            if summary:
+                canonical.sort(key=lambda o: str(o.get("placedAt") or ""), reverse=True)
+                detail["orders"] = canonical[:12]
+            else:
+                detail["orders"] = canonical
+        except Exception as exc:  # noqa: BLE001
+            detail["message"] = f"order book unavailable: {exc}"[:300]
+
+    if mode == "dummy":
+        try:
+            detail["paper"] = await _paper_flow_block()
+        except Exception as exc:  # noqa: BLE001
+            detail["paper"] = {"error": str(exc)[:300]}
+    elif mode == "kotak":
+        try:
+            from ws_socket.order_feed_manager import order_feed_manager
+
+            detail["orderFeed"] = order_feed_manager.status()
+        except Exception as exc:  # noqa: BLE001
+            detail["orderFeed"] = {"error": str(exc)[:300]}
+    elif mode == "shoonya":
+        try:
+            oauth_url = get_adapter("shoonya").oauth_url()
+            detail["oauth"] = {"available": bool(oauth_url), "url": oauth_url or None}
+        except Exception as exc:  # noqa: BLE001
+            detail["oauth"] = {"available": False, "error": str(exc)[:300]}
+    return detail
+
+
+# ---------------------------------------------------------------------------
+# Settings — one aggregated page surface for the Order Engine service
+# ---------------------------------------------------------------------------
+@router.get("/settings")
+async def order_engine_settings() -> dict[str, Any]:
+    """Paper-engine prefs + engine runtime + mode-lock — read-only aggregate.
+
+    Sources: ``services.dummy_extras`` (paper simulation prefs), the Order
+    Engine facade status (registry metrics: broker / logged-in / managed), and
+    ``services.mode_lock`` (terminal switching gate). Nothing is fabricated;
+    a missing service degrades its own block with an error string.
+    """
+    from services import dummy_extras
+
+    try:
+        prefs = await dummy_extras.get_prefs()
+    except Exception as exc:  # noqa: BLE001
+        prefs = {"error": str(exc)[:200]}
+    try:
+        from services.mode_lock import mode_lock_status
+
+        lock = await mode_lock_status()
+    except Exception as exc:  # noqa: BLE001
+        lock = {"error": str(exc)[:200]}
+    runtime: dict[str, Any] = {}
+    try:
+        from services.legacy_engine_facades import order_facade
+
+        runtime = order_facade.status_snapshot()
+    except Exception as exc:  # noqa: BLE001
+        runtime = {"error": str(exc)[:200]}
+    try:
+        from api import demo as paper
+
+        model = {
+            "mktSlippage": paper.MKT_SLIPPAGE,
+            "lmtTolerance": paper.LMT_TOLERANCE,
+            "charges": paper.CHARGE_RATES,
+        }
+    except Exception as exc:  # noqa: BLE001
+        model = {"error": str(exc)[:200]}
+    from services.json_safe import sanitize_for_json
+
+    return {
+        "ok": True,
+        "prefs": sanitize_for_json(prefs),
+        "modeLock": sanitize_for_json(lock),
+        "engineRuntime": sanitize_for_json(runtime),
+        "paperModel": model,
+    }
+
+
+class EngineSettingsUpdate(BaseModel):
+    prefs: dict[str, Any] = {}
+
+
+@router.post("/settings")
+async def order_engine_settings_update(body: EngineSettingsUpdate) -> dict[str, Any]:
+    """Apply paper-engine prefs. Unknown keys are dropped by the service."""
+    from services import dummy_extras
+
+    try:
+        updated = await dummy_extras.update_prefs(body.prefs)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"prefs update failed: {exc}") from exc
+    from services.json_safe import sanitize_for_json
+
+    return {"ok": bool(updated), "prefs": sanitize_for_json(updated)}

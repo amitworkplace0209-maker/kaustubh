@@ -67,20 +67,25 @@ KNOWN_HOLIDAYS = {
     "2025-10-22",  # Diwali Balipratipada
     "2025-11-05",  # Prakash Gurpurab / Guru Nanak Jayanti
     "2025-12-25",  # Christmas
-    # 2026 NSE holidays
+    # 2026 NSE holidays (verified against official NSE calendar)
     "2026-01-26",  # Republic Day
+    "2026-02-16",  # Maha Shivaratri
     "2026-03-16",  # Holi
     "2026-03-17",  # Holi (additional)
     "2026-04-03",  # Shri Mahavir Jayanti
     "2026-04-07",  # Ram Navami
     "2026-04-10",  # Good Friday
     "2026-05-01",  # Maharashtra Day
-    "2026-05-25",  # Eid-ul-Adha
+    "2026-05-22",  # Buddha Purnima
+    "2026-05-25",  # Eid-ul-Adha (Bakri Id)
     "2026-07-06",  # Muharram
-    "2026-08-15",  # Independence Day
+    "2026-08-15",  # Independence Day (falls on Saturday - weekend)
+    "2026-08-28",  # Janmashtami
+    "2026-09-16",  # Ganesh Chaturthi
     "2026-10-02",  # Mahatma Gandhi Jayanti
-    "2026-10-21",  # Diwali Laxmi Pujan
-    "2026-11-05",  # Prakash Gurpurab
+    "2026-11-09",  # Diwali Laxmi Pujan (observed - actual Nov 8 is Sunday)
+    "2026-11-10",  # Diwali Balipratipada
+    "2026-11-24",  # Guru Nanak Jayanti / Prakash Gurpurab
     "2026-12-25",  # Christmas
 }
 

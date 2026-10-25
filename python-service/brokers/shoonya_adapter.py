@@ -59,6 +59,11 @@ class ShoonyaAdapter(BrokerAdapter):
         # When a background (scheduler-driven) feed is open, callbacks write to
         # the terminal-scoped record instead of the central view/ws state.
         self._feed_scope: str | None = None
+        # The OAuth handshake yields (access_token, user_id, refresh_token,
+        # account_id) plus the broker's susertoken. It is persisted ENCRYPTED so
+        # the terminal can auto-login after a restart without a browser
+        # (see services/terminal_credentials.py).
+        self._session_material: dict[str, Any] = {}
 
     # ---- capability / availability ----------------------------------------
 
@@ -97,6 +102,89 @@ class ShoonyaAdapter(BrokerAdapter):
         self._pending_auth_code = str(auth_code).strip()
         _log.info("SHOONYA_OAUTH_CODE_ACCEPTED (short-lived code held in memory only)")
 
+    # ---- auto-login (session restore) -------------------------------------
+
+    def has_stored_session(self) -> bool:
+        """True when an encrypted OAuth session is on disk for this terminal."""
+        try:
+            from services.terminal_credentials import has_session_material
+
+            return has_session_material(self.terminal_id)
+        except Exception:
+            return False
+
+    async def restore_session(self, register_central: bool = True, ws_scope: str | None = None) -> bool:
+        """Restore the broker session from the STORED OAuth material.
+
+        The Noren OAuth SDK has NO password/TOTP login — the handshake is a
+        browser redirect. What it does have is a Bearer token, and
+        ``set_session(userid, password, usertoken, accesstoken)`` restores a
+        session from that material alone. So the FIRST login is an interactive
+        handshake and every later start is automatic: the token is stored
+        encrypted and re-injected here.
+
+        Returns False (without raising) when there is nothing to restore or the
+        broker rejects the stored token — the caller then needs a fresh
+        handshake.
+        """
+        if not self.enabled:
+            raise BrokerError(
+                "UNSUPPORTED",
+                "Shoonya terminal is not enabled — install NorenRestApiOAuth and set the "
+                "SHOONYA_* secrets in the backend environment",
+            )
+        try:
+            from services.terminal_credentials import load_session_material
+        except Exception as exc:  # pragma: no cover
+            _log.warning("Shoonya session restore unavailable: %s", exc)
+            return False
+
+        material = load_session_material(self.terminal_id)
+        if not material:
+            _log.info("SHOONYA_RESTORE_NO_MATERIAL (an OAuth handshake is required)")
+            return False
+
+        access_token = str(material.get("access_token") or "")
+        susertoken = str(material.get("susertoken") or "")
+        user_id = str(material.get("user_id") or settings.shoonya_user_id)
+        account_id = str(material.get("account_id") or settings.shoonya_account_id)
+        if not access_token:
+            return False
+
+        try:
+            self._ensure_client()
+            # The password argument is unused by the OAuth flow (the
+            # Authorization header is the Bearer token) — the SDK's signature
+            # requires it, so an empty string is passed.
+            self._client.set_session(user_id, "", susertoken, access_token)
+            self._client.injectOAuthHeader(access_token, user_id, account_id)
+            self._client.set_credentials(access_token, user_id, account_id)
+            self._session_material = dict(material)
+            self._access_token_set = True
+            self._logged_in = True
+            if register_central:
+                session_manager.set_mode("shoonya", broker=self.broker_name, user_id=user_id)
+                session_manager.mark_login_success(
+                    mode="shoonya", broker=self.broker_name, user_id=user_id,
+                    session_ref="shoonya-oauth-session", login_source="AUTO",
+                )
+            else:
+                session_manager.register_terminal_login(
+                    "shoonya", broker=self.broker_name, user_id=user_id,
+                    session_ref="shoonya-oauth-session", login_source="AUTO",
+                    state_message="restored Shoonya OAuth session",
+                )
+            _log.info("SHOONYA_RESTORE_SUCCESS register_central=%s", register_central)
+            await self._start_feed(ws_scope=ws_scope)
+            return True
+        except Exception as exc:
+            self._logged_in = False
+            self._access_token_set = False
+            _log.warning("SHOONYA_RESTORE_FAILED %s (a fresh OAuth handshake is required)", exc)
+            if register_central:
+                session_manager.mark_login_failure(str(exc))
+            return False
+
     # ---- session lifecycle -------------------------------------------------
 
     def _ensure_client(self) -> None:
@@ -133,6 +221,14 @@ class ShoonyaAdapter(BrokerAdapter):
             self._client.set_credentials(token, settings.shoonya_user_id, settings.shoonya_account_id)
             self._access_token_set = True
             self._logged_in = True
+            # Persist the session material ENCRYPTED so a restart can restore the
+            # session without a browser (the auto-login path).
+            try:
+                from services.terminal_credentials import save_session_material
+
+                save_session_material(self.terminal_id, self._session_material)
+            except Exception as exc:  # pragma: no cover - persistence is best effort
+                _log.warning("Shoonya session material could not be persisted: %s", exc)
             if register_central:
                 session_manager.set_mode("shoonya", broker=self.broker_name, user_id=settings.shoonya_user_id)
                 session_manager.mark_login_success(
@@ -165,12 +261,43 @@ class ShoonyaAdapter(BrokerAdapter):
             raise BrokerError("AUTH_FAILED", f"Shoonya OAuth exchange failed: {exc}")
 
     async def _exchange_auth_code(self, code: str) -> str:
-        # Runs in a thread: the SDK issues a blocking HTTP exchange.
+        """Exchange the OAuth code for the access token.
+
+        The Noren SDK's ``getAccessToken`` returns a 4-tuple
+        ``(access_token, user_id, refresh_token, account_id)`` — NOT a plain
+        string. It also stores the broker's ``susertoken`` on the client
+        instance. Treating the tuple as the token (as this adapter used to)
+        produced a session whose Authorization header was a tuple: every
+        broker call then failed with an auth error.
+        """
         import asyncio
-        return await asyncio.to_thread(
+
+        result = await asyncio.to_thread(
             self._client.getAccessToken,
             code, settings.shoonya_secret_key, settings.shoonya_api_key, settings.shoonya_user_id,
         )
+        if result is None:
+            raise BrokerError("AUTH_FAILED", "Shoonya rejected the OAuth code")
+        if isinstance(result, (tuple, list)):
+            access_token = str(result[0] or "")
+            user_id = str(result[1] or settings.shoonya_user_id)
+            refresh_token = str(result[2] or "")
+            account_id = str(result[3] or settings.shoonya_account_id)
+        else:  # a future SDK that returns only the token
+            access_token = str(result or "")
+            user_id = settings.shoonya_user_id
+            refresh_token = ""
+            account_id = settings.shoonya_account_id
+        if not access_token:
+            raise BrokerError("AUTH_FAILED", "Shoonya returned an empty access token")
+        self._session_material = {
+            "access_token": access_token,
+            "susertoken": str(getattr(self._client, "_NorenApi__susertoken", "") or ""),
+            "user_id": user_id,
+            "account_id": account_id,
+            "refresh_token": refresh_token,
+        }
+        return access_token
 
     async def logout(self, reason: str | None = None, register_central: bool = True) -> bool:
         if self._ws_started:

@@ -4,11 +4,11 @@ import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import {
   getSettings,
   getSettingsRuntime,
-  getSystemStreamUrl,
   resetAllSettings as apiResetAll,
   resetSetting as apiResetSetting,
   updateSetting as apiUpdateSetting,
 } from '@/lib/api';
+import { subscribeSystemFrames } from '@/lib/system-sse';
 import { FIELD_INDEX, LIVE_KEYS, SCHEMA_KEYS } from './schema';
 import type { SettingsState } from './types';
 
@@ -44,7 +44,7 @@ const INITIAL: SettingsState = {
 let state: SettingsState = INITIAL;
 const listeners = new Set<() => void>();
 let hydratePromise: Promise<boolean> | null = null;
-let sseSource: EventSource | null = null;
+let sseOff: (() => void) | null = null;
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
 function emit() {
@@ -348,37 +348,28 @@ export async function importSettingsBundle(json: string): Promise<{
 }
 
 // ---------------------------------------------------------------------------
-// Real-time cross-tab sync (system SSE stream; one connection while mounted)
+// Real-time cross-tab sync (the SHARED system SSE stream — one connection for
+// the whole app; the settings store only listens to its entity's frames)
 // ---------------------------------------------------------------------------
 function ensureSse() {
-  if (sseSource || typeof EventSource === 'undefined') return;
-  try {
-    const es = new EventSource(getSystemStreamUrl());
-    sseSource = es;
-    es.onmessage = (event) => {
-      try {
-        const frame = JSON.parse(event.data);
-        if (frame?.type === 'state_changed' && frame?.entity === 'settings') {
-          patch({ syncedAt: Date.now() });
-          refreshSettings();
-        }
-      } catch {
-        /* not a JSON frame */
+  if (sseOff || typeof EventSource === 'undefined') return;
+  sseOff = subscribeSystemFrames((raw) => {
+    try {
+      const frame = JSON.parse(raw);
+      if (frame?.type === 'state_changed' && frame?.entity === 'settings') {
+        patch({ syncedAt: Date.now() });
+        refreshSettings();
       }
-    };
-    es.onerror = () => {
-      // EventSource reconnects automatically; just mark stale.
-      patch({ status: state.status === 'ready' ? 'ready' : 'error' });
-    };
-  } catch {
-    sseSource = null;
-  }
+    } catch {
+      /* not a JSON frame */
+    }
+  });
 }
 
 export function disconnectSse() {
-  if (sseSource) {
-    sseSource.close();
-    sseSource = null;
+  if (sseOff) {
+    sseOff();
+    sseOff = null;
   }
   if (refreshTimer) {
     clearInterval(refreshTimer);

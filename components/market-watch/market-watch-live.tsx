@@ -24,10 +24,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity, ArrowDownRight, ArrowUpRight, Gauge, Layers, Pin, PinOff, Plus,
-  Radio, RefreshCw, ScanLine, Search, Trash2, TrendingDown, TrendingUp,
+  Activity, ArrowDownRight, ArrowUpRight, CalendarClock, Gauge, Layers, Lock, Pin, PinOff,
+  Plus, Radio, RefreshCw, ScanLine, Search, Trash2, TrendingDown, TrendingUp,
   Wifi, WifiOff,
 } from 'lucide-react';
+import { LocalAiAnalysisPanel } from '@/components/ai/local-ai-analysis';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -37,15 +38,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useFrontendRealtime } from '@/components/frontend-realtime-provider';
 import { getMarketWatchTickSnapshot } from '@/lib/api';
 import { RealtimeChannelSpec } from '@/lib/realtime-ws';
+import { buildMarketWatchContext } from '@/lib/ai-context';
 import { takePendingSymbol } from '@/lib/pending-symbol';
 import { cn } from '@/lib/utils';
 import {
   MWRow,
   RECONCILE_INTERVAL_MS,
   fetchJson,
+  fetchWeekly,
   lifecycleLabel,
   overlayRows,
   useEngineProgress,
+  type MwWeeklyResponse,
 } from '@/app/_pages/market-watch/mw-shared';
 
 const CHANNEL = 'market_watch';
@@ -156,18 +160,23 @@ export default function MarketWatchLivePage() {
   const [priceCap, setPriceCap] = useState<number | null>(null);
   const [priceCappedCount, setPriceCappedCount] = useState<number | null>(null);
   const [watchableCount, setWatchableCount] = useState<number | null>(null);
+  // Weekly lock + Friday-scan context. This is read-only here; membership is
+  // changed only on Services → Market Watch (doc §32/§33).
+  const [weekly, setWeekly] = useState<MwWeeklyResponse | null>(null);
 
   /* ----- REST load (primary path — works with socket down) ----- */
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
     try {
-      const [sec, brd, pin, rank, list] = await Promise.all([
+      const [sec, brd, pin, rank, list, week] = await Promise.all([
         fetchJson<any>('/api/market-watch/sections').catch(() => null),
         fetchJson<any>('/api/market-watch/boards').catch(() => null),
         fetchJson<any>('/api/market-watch/pins').catch(() => null),
         fetchJson<any>('/api/market-watch/ranking').catch(() => null),
         fetchJson<any>('/api/market-watch/rank?offset=0&limit=200&sortBy=changePercent&sortDir=desc').catch(() => null),
+        fetchWeekly().catch(() => null),
       ]);
+      if (week?.ok) setWeekly(week);
       if (sec?.ok) {
         setSections(sec.sections ?? {});
         setFeedState(sec.feedState ?? null);
@@ -205,9 +214,37 @@ export default function MarketWatchLivePage() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => void load(true), RECONCILE_INTERVAL_MS);
+    // Reconcile ONLY while the socket cannot deliver the engine state: the
+    // timing/`pins`/`status` frames below are the primary update path.
+    const socketDown = () => !connected;
+    const id = setInterval(() => {
+      if (socketDown() && !document.hidden) void load(true);
+    }, RECONCILE_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, connected]);
+
+  // The Friday scan can change the locked universe while this terminal is
+  // open. Poll only while it is running, then reload the board once when the
+  // backend reports the new lock — no client-side guessing.
+  const fridayWasRunning = useRef(false);
+  useEffect(() => {
+    const running = Boolean(weekly?.fridayScan?.running);
+    if (fridayWasRunning.current && !running) void load();
+    fridayWasRunning.current = running;
+  }, [weekly?.fridayScan?.running, load]);
+
+  useEffect(() => {
+    if (!weekly?.fridayScan?.running) return;
+    let alive = true;
+    const id = window.setInterval(async () => {
+      const next = await fetchWeekly().catch(() => null);
+      if (alive && next?.ok) setWeekly(next);
+    }, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [weekly?.fridayScan?.running]);
 
   /* ----- realtime state frames patch the same REST state ----- */
   useEffect(() => {
@@ -491,88 +528,137 @@ export default function MarketWatchLivePage() {
   const hasAny = adv + dec + liveMovers.length + liveStocks.length + live > 0 || Object.keys(sections).length > 0;
   const socketLive = connected;
   const feedLive = String(feedState ?? '').toUpperCase() === 'CONNECTED' || engineConnected;
+  const activeLock = weekly?.locked ?? null;
+  const targetWeek = weekly?.targetWeekId ?? weekly?.weekId ?? null;
+  const targetLocked = weekly?.targetWeekLocked ?? false;
+  const fridayScan = weekly?.fridayScan ?? null;
+  const scanRunning = Boolean(fridayScan?.running);
+  const lastScan = fridayScan?.lastScan ?? null;
+  const universeLabel = activeLock
+    ? `${activeLock.weekId} v${activeLock.version} · ${activeLock.symbolCount} names`
+    : 'No locked universe';
+  const scanLabel = scanRunning
+    ? 'Scanning now'
+    : lastScan?.reason
+      ? `${lastScan.reason}`
+      : lastScan
+        ? `${lastScan.symbols ?? 0} selected`
+        : 'Not run yet';
 
   return (
     <div className="space-y-4">
-      {/* terminal header */}
-      <div className="overflow-hidden rounded-xl border border-border/60 bg-gradient-to-br from-card via-card to-muted/20">
-        <div className="flex flex-wrap items-center justify-between gap-3 p-4">
-          <div className="flex items-center gap-3">
-            <span className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-500">
-              <Layers className="h-5 w-5" />
-              {feedLive && (
-                <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                </span>
-              )}
-            </span>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">Market Watch</h1>
-              <p className="text-[11px] text-muted-foreground">
-                {lifecycleState !== 'UNKNOWN' ? lifecycleLabel(lifecycleState) : 'Engine state resolving…'}
-                {indexVersion != null ? ` · v${indexVersion}` : ''}
-                {lastUpdated ? ` · ${lastUpdated} IST` : ''} · {clock} IST
-              </p>
+      {/* Command deck */}
+      <section className="relative overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-950 text-slate-100 shadow-[0_24px_70px_-38px_rgba(0,0,0,0.9)]">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_320px_at_8%_-20%,rgba(249,115,22,0.2),transparent_62%),radial-gradient(720px_280px_at_96%_-5%,rgba(16,185,129,0.16),transparent_60%)]"
+        />
+        <div className="relative p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-orange-500/15 text-orange-300 ring-1 ring-inset ring-orange-400/30">
+                <Layers className="h-5 w-5" />
+                {feedLive && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                  </span>
+                )}
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-xl font-bold tracking-tight sm:text-2xl">Market Watch</h1>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Command deck
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {lifecycleState !== 'UNKNOWN' ? lifecycleLabel(lifecycleState) : 'Engine state resolving…'}
+                  <span className="mx-1.5 text-slate-600">·</span>
+                  {universeLabel}
+                  {lastUpdated ? <><span className="mx-1.5 text-slate-600">·</span>synced {lastUpdated}</> : null}
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <DeckPill tone={socketLive ? 'emerald' : 'amber'} icon={socketLive ? Wifi : WifiOff}>
+                    {socketLive ? 'WS live' : 'WS offline · REST'}
+                  </DeckPill>
+                  <DeckPill tone={feedLive ? 'emerald' : 'slate'} icon={Radio}>
+                    FEED {feedState ?? (feedLive ? 'CONNECTED' : '—')}
+                  </DeckPill>
+                  <DeckPill tone={targetLocked ? 'emerald' : 'amber'} icon={Lock}>
+                    Target {targetWeek ?? '—'} · {targetLocked ? 'locked' : 'open'}
+                  </DeckPill>
+                  <DeckPill tone={scanRunning ? 'amber' : 'slate'} icon={CalendarClock}>
+                    Friday scan {fridayScan?.scanHhmm ?? '15:25'} · {scanLabel}
+                  </DeckPill>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="hidden text-right sm:block">
+                <p className="font-mono text-sm tabular-nums text-slate-200">{clock}</p>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">IST</p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => load()}
+                disabled={refreshing}
+                className="border-white/15 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white"
+              >
+                <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} />
+                <span className="ml-1.5 hidden sm:inline">Refresh</span>
+              </Button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge
-              variant="outline"
-              className={cn(socketLive ? 'border-emerald-500/50 text-emerald-500' : 'border-amber-500/50 text-amber-500')}
-            >
-              {socketLive ? <Wifi className="mr-1 h-3 w-3" /> : <WifiOff className="mr-1 h-3 w-3" />}
-              {socketLive ? 'WS live' : 'WS offline · REST'}
-            </Badge>
-            <Badge
-              variant="outline"
-              className={cn(feedLive ? 'border-emerald-500/50 text-emerald-500' : 'border-slate-500/50 text-muted-foreground')}
-            >
-              <Radio className="mr-1 h-3 w-3" />
-              {feedState ?? (feedLive ? 'CONNECTED' : '—')}
-            </Badge>
-            <Button size="sm" variant="outline" onClick={() => load()} disabled={refreshing}>
-              <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} />
-              <span className="ml-1.5 hidden sm:inline">Refresh</span>
-            </Button>
-          </div>
-        </div>
 
-        {/* breadth strip */}
-        <div className="grid grid-cols-2 gap-2 border-t border-border/50 p-3 sm:grid-cols-3 lg:grid-cols-6">
-          <Strip label="Live / Watch" value={universeSize != null ? `${live}/${watchableCount ?? universeSize}` : '—'} tone="text-sky-500" />
-          <Strip label="Advancing" value={String(adv)} tone="text-emerald-500" icon={<ArrowUpRight className="h-3 w-3" />} />
-          <Strip label="Declining" value={String(dec)} tone="text-red-500" icon={<ArrowDownRight className="h-3 w-3" />} />
-          <Strip label="Movers (1% board)" value={String(liveMovers.length)} tone="text-violet-500" />
-          <Strip label="Pins G/L" value={`${pins.gainers.length}/${pins.losers.length}`} tone="text-amber-500" />
-          <Strip label="Price cap" value={priceCap ? `₹${priceCap}${priceCappedCount ? ` · ${priceCappedCount} above` : ''}` : '—'} tone="text-muted-foreground" />
-        </div>
-
-        {/* search */}
-        <div className="border-t border-border/50 p-3">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && query.trim()) void openSymbol(query.trim());
-              }}
-              placeholder="Search full universe — symbol, name, token… (Enter opens detail)"
-              className="pl-9"
-            />
+          <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+            <DeckStat icon={Layers} label="Monitored" value={activeLock?.symbolCount ?? universeSize ?? '—'} hint={activeLock ? `v${activeLock.version} locked` : 'locked list'} />
+            <DeckStat icon={Activity} label="Live now" value={live} hint={`${watchableCount ?? universeSize ?? '—'} watchable`} tone="emerald" />
+            <DeckStat icon={ArrowUpRight} label="Advancing" value={adv} hint="engine breadth" tone="emerald" />
+            <DeckStat icon={ArrowDownRight} label="Declining" value={dec} hint="engine breadth" tone="rose" />
+            <DeckStat icon={Gauge} label="Movers" value={liveMovers.length} hint="1% board" tone="violet" />
+            <DeckStat icon={Pin} label="Pins" value={`${pins.gainers.length}/${pins.losers.length}`} hint="gainers / losers" tone="amber" />
           </div>
-          {searching && <p className="mt-1.5 text-[11px] text-muted-foreground">Searching…</p>}
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && query.trim()) void openSymbol(query.trim());
+                }}
+                placeholder="Search the full NSE universe — symbol, name or token…"
+                className="h-9 border-white/10 bg-white/[0.06] pl-9 text-slate-100 placeholder:text-slate-500 focus-visible:ring-orange-400/60"
+              />
+            </div>
+            {priceCap != null && (
+              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-slate-400">
+                <span className="text-slate-500">Price cap</span>{' '}
+                <span className="font-mono text-slate-200">₹{priceCap}</span>
+                {priceCappedCount ? <span className="text-amber-300/80"> · {priceCappedCount} above</span> : null}
+              </span>
+            )}
+            {indexVersion != null && (
+              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-slate-400">
+                Index <span className="font-mono text-slate-200">v{indexVersion}</span>
+              </span>
+            )}
+          </div>
+
+          {searching && <p className="mt-1.5 text-[11px] text-slate-500">Searching…</p>}
           {results.length > 0 && (
-            <div className="mt-2 max-h-56 overflow-auto rounded-lg border border-border/60">
+            <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-white/10 bg-slate-900/95 shadow-2xl">
               {results.slice(0, 20).map((r: any, i: number) => (
                 <button
                   key={`${rowToken(r)}-${i}`}
                   onClick={() => void openSymbol(rowSymbol(r), rowToken(r) || undefined)}
-                  className="flex w-full items-center justify-between gap-2 border-b border-border/40 px-3 py-2 text-left text-sm last:border-0 hover:bg-accent/60"
+                  className="flex w-full items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-2 text-left text-sm last:border-0 hover:bg-white/[0.06]"
                 >
-                  <span className="font-medium">{rowSymbol(r)}</span>
-                  <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-medium text-slate-100">{rowSymbol(r)}</span>
+                  <span className="flex items-center gap-2 text-xs text-slate-400">
                     <span className="font-mono tabular-nums">{fmtNum(r.ltp)}</span>
                     <span className={cn('tabular-nums', toneForClassification(r.classification))}>
                       {fmtPct(r.changePercent ?? r.change_5m_pct)}
@@ -583,7 +669,7 @@ export default function MarketWatchLivePage() {
             </div>
           )}
         </div>
-      </div>
+      </section>
 
       {error && (
         <Card className="border-destructive/40">
@@ -620,29 +706,46 @@ export default function MarketWatchLivePage() {
         </Card>
       ) : (
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="flex flex-wrap">
-            <TabsTrigger value="stocks" className="gap-1.5 text-xs">
-              <Layers className="h-3.5 w-3.5" /> Stocks ({liveStocks.length})
-            </TabsTrigger>
-            <TabsTrigger value="movers" className="gap-1.5 text-xs">
-              <Gauge className="h-3.5 w-3.5" /> Movers
-            </TabsTrigger>
-            <TabsTrigger value="scan" className="gap-1.5 text-xs">
-              <ScanLine className="h-3.5 w-3.5" /> Scan all
-            </TabsTrigger>
-            <TabsTrigger value="gainers" className="gap-1.5 text-xs">
-              <TrendingUp className="h-3.5 w-3.5" /> Gainers ({adv})
-            </TabsTrigger>
-            <TabsTrigger value="losers" className="gap-1.5 text-xs">
-              <TrendingDown className="h-3.5 w-3.5" /> Losers ({dec})
-            </TabsTrigger>
-            <TabsTrigger value="pins" className="gap-1.5 text-xs">
-              <Pin className="h-3.5 w-3.5" /> Pins ({pins.gainers.length + pins.losers.length})
-            </TabsTrigger>
-            <TabsTrigger value="detail" className="gap-1.5 text-xs">
-              <Search className="h-3.5 w-3.5" /> Detail{selected ? ` · ${selected}` : ''}
-            </TabsTrigger>
-          </TabsList>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/60 bg-card p-1.5 shadow-sm">
+            <TabsList className="h-auto flex-wrap justify-start gap-0.5 bg-transparent p-0">
+              <TabsTrigger value="stocks" className="gap-1.5 rounded-lg px-2.5 py-1.5 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
+                <Layers className="h-3.5 w-3.5" /> Board <span className="tabular-nums opacity-70">{liveStocks.length}</span>
+              </TabsTrigger>
+              <TabsTrigger value="movers" className="gap-1.5 rounded-lg px-2.5 py-1.5 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
+                <Gauge className="h-3.5 w-3.5" /> Movers <span className="tabular-nums opacity-70">{liveMovers.length}</span>
+              </TabsTrigger>
+              <TabsTrigger value="scan" className="gap-1.5 rounded-lg px-2.5 py-1.5 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
+                <ScanLine className="h-3.5 w-3.5" /> Audit
+              </TabsTrigger>
+              <TabsTrigger value="gainers" className="gap-1.5 rounded-lg px-2.5 py-1.5 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
+                <TrendingUp className="h-3.5 w-3.5" /> Gainers <span className="tabular-nums opacity-70">{adv}</span>
+              </TabsTrigger>
+              <TabsTrigger value="losers" className="gap-1.5 rounded-lg px-2.5 py-1.5 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
+                <TrendingDown className="h-3.5 w-3.5" /> Losers <span className="tabular-nums opacity-70">{dec}</span>
+              </TabsTrigger>
+              <TabsTrigger value="pins" className="gap-1.5 rounded-lg px-2.5 py-1.5 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
+                <Pin className="h-3.5 w-3.5" /> Pins <span className="tabular-nums opacity-70">{pins.gainers.length + pins.losers.length}</span>
+              </TabsTrigger>
+              <TabsTrigger value="detail" className="gap-1.5 rounded-lg px-2.5 py-1.5 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
+                <Search className="h-3.5 w-3.5" /> Detail{selected ? ` · ${selected}` : ''}
+              </TabsTrigger>
+            </TabsList>
+            <div className="flex flex-wrap items-center gap-1.5 px-1 text-[10px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/30 px-2 py-1">
+                <Lock className="h-3 w-3" /> {universeLabel}
+              </span>
+              {targetWeek && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-border/60 px-2 py-1">
+                  <CalendarClock className="h-3 w-3" /> target {targetWeek}
+                </span>
+              )}
+              {scanRunning && (
+                <span className="inline-flex animate-pulse items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-600 dark:text-amber-300">
+                  <ScanLine className="h-3 w-3" /> scan running
+                </span>
+              )}
+            </div>
+          </div>
 
           <TabsContent value="stocks" className="mt-3">
             <StocksTable
@@ -788,20 +891,36 @@ function StocksTable({ rows, empty, onSelect, pinned, onTogglePin }: {
   onTogglePin?: (symbol: string, token: string | undefined, isPinned: boolean) => void;
 }) {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm">Watch list</CardTitle>
-        <Badge variant="outline" className="tabular-nums">{rows.length}</Badge>
+    <Card className="overflow-hidden border-border/60 shadow-sm">
+      <CardHeader className="flex flex-row items-start justify-between space-y-0 border-b border-border/50 bg-muted/20 px-4 py-3">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Layers className="h-4 w-4 text-primary" /> Live board
+          </CardTitle>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Locked universe · WebSocket ticks overlaid on the REST snapshot
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="tabular-nums">{rows.length} rows</Badge>
+          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> LIVE
+          </span>
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         {rows.length === 0 ? (
-          <p className="p-6 text-center text-sm text-muted-foreground">{empty}</p>
+          <div className="flex flex-col items-center gap-2 px-6 py-12 text-center">
+            <Layers className="h-8 w-8 text-muted-foreground/40" />
+            <p className="text-sm font-medium">Board is empty</p>
+            <p className="max-w-md text-xs text-muted-foreground">{empty}</p>
+          </div>
         ) : (
           <div className="max-h-[560px] overflow-auto">
             <Table>
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <TableRow>
-                  <TableHead>Symbol</TableHead>
+                  <TableHead className="min-w-[180px]">Symbol</TableHead>
                   <TableHead className="text-right">LTP</TableHead>
                   <TableHead className="text-right">Chg%</TableHead>
                   {STOCK_TF_COLUMNS.map((tf) => (
@@ -821,14 +940,23 @@ function StocksTable({ rows, empty, onSelect, pinned, onTogglePin }: {
                   const isPinned = !!tok && !!pinned?.has(tok);
                   const upper = typeof r.upperCircuit === 'number' ? r.upperCircuit : null;
                   const lower = typeof r.lowerCircuit === 'number' ? r.lowerCircuit : null;
+                  const liveRow = String(r.status ?? '').toUpperCase() === 'LIVE';
                   return (
                     <TableRow
                       key={`${tok || sym}-${i}`}
-                      className="cursor-pointer hover:bg-accent/50"
+                      className="group cursor-pointer border-border/40 transition-colors hover:bg-primary/[0.04]"
                       onClick={() => onSelect(sym, tok)}
                     >
-                      <TableCell className="font-medium">{sym}</TableCell>
-                      <TableCell className="text-right font-mono tabular-nums">{fmtNum(r.ltp)}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2.5">
+                          <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', liveRow ? 'bg-emerald-500' : 'bg-muted-foreground/40')} />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold">{sym}</p>
+                            <p className="max-w-[190px] truncate text-[10px] text-muted-foreground">{r.name ?? r.token ?? '—'}</p>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-sm tabular-nums">{fmtNum(r.ltp)}</TableCell>
                       <TableCell className={cn('text-right font-semibold tabular-nums', tone)}>
                         {fmtPct(r.changePercent)}
                       </TableCell>
@@ -838,7 +966,7 @@ function StocksTable({ rows, empty, onSelect, pinned, onTogglePin }: {
                           <TableCell
                             key={tf}
                             className={cn(
-                              'text-right tabular-nums',
+                              'text-right text-[11px] tabular-nums',
                               typeof pct === 'number'
                                 ? pct > 0
                                   ? 'text-emerald-600 dark:text-emerald-400'
@@ -852,19 +980,21 @@ function StocksTable({ rows, empty, onSelect, pinned, onTogglePin }: {
                           </TableCell>
                         );
                       })}
-                      <TableCell className="text-right tabular-nums text-muted-foreground">{fmtVol(r.volume)}</TableCell>
-                      <TableCell className="text-[11px] font-mono tabular-nums text-muted-foreground">
+                      <TableCell className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">{fmtVol(r.volume)}</TableCell>
+                      <TableCell className="font-mono text-[11px] tabular-nums text-muted-foreground">
                         {lower != null && upper != null ? `${fmtNum(lower)}–${fmtNum(upper)}` : '—'}
                       </TableCell>
-                      <TableCell className={cn('text-[11px] uppercase', tone)}>
-                        {r.classification ?? '—'}
+                      <TableCell>
+                        <span className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium uppercase', tone)}>
+                          {r.classification ?? '—'}
+                        </span>
                       </TableCell>
                       {onTogglePin && (
                         <TableCell>
                           <Button
                             size="icon"
                             variant="ghost"
-                            className="h-7 w-7"
+                            className={cn('h-7 w-7 transition-opacity', !isPinned && 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100')}
                             aria-label={isPinned ? `Unpin ${sym}` : `Pin ${sym}`}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -889,6 +1019,56 @@ function StocksTable({ rows, empty, onSelect, pinned, onTogglePin }: {
   );
 }
 
+const DECK_TONES = {
+  emerald: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200',
+  amber: 'border-amber-400/30 bg-amber-400/10 text-amber-200',
+  rose: 'border-rose-400/30 bg-rose-400/10 text-rose-200',
+  violet: 'border-violet-400/30 bg-violet-400/10 text-violet-200',
+  slate: 'border-white/10 bg-white/[0.04] text-slate-300',
+} as const;
+
+function DeckPill({
+  tone = 'slate',
+  icon: Icon,
+  children,
+}: {
+  tone?: keyof typeof DECK_TONES;
+  icon?: React.ElementType;
+  children: React.ReactNode;
+}) {
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-medium', DECK_TONES[tone])}>
+      {Icon ? <Icon className="h-3 w-3" aria-hidden /> : null}
+      {children}
+    </span>
+  );
+}
+
+function DeckStat({
+  icon: Icon,
+  label,
+  value,
+  hint,
+  tone = 'slate',
+}: {
+  icon: React.ElementType;
+  label: string;
+  value: React.ReactNode;
+  hint: string;
+  tone?: keyof typeof DECK_TONES;
+}) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.045] px-3 py-2.5 transition-colors hover:border-white/20 hover:bg-white/[0.07]">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</p>
+        <Icon className={cn('h-3.5 w-3.5', DECK_TONES[tone].split(' ').find((c) => c.startsWith('text-')))} aria-hidden />
+      </div>
+      <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{value}</p>
+      <p className="text-[10px] text-slate-500">{hint}</p>
+    </div>
+  );
+}
+
 function Strip({ label, value, tone, icon }: { label: string; value: string; tone?: string; icon?: React.ReactNode }) {
   return (
     <div className="rounded-lg border border-border/50 bg-background/60 px-3 py-2">
@@ -910,20 +1090,20 @@ function QuoteTable({ title, rows, empty, onSelect, pinned, onTogglePin }: {
   onTogglePin?: (symbol: string, token: string | undefined, isPinned: boolean) => void;
 }) {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+    <Card className="overflow-hidden border-border/60 shadow-sm">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-border/50 bg-muted/20 px-4 py-3">
         <CardTitle className="text-sm">{title}</CardTitle>
         <Badge variant="outline" className="tabular-nums">{rows.length}</Badge>
       </CardHeader>
       <CardContent className="p-0">
         {rows.length === 0 ? (
-          <p className="p-6 text-center text-sm text-muted-foreground">{empty}</p>
+          <p className="px-6 py-10 text-center text-sm text-muted-foreground">{empty}</p>
         ) : (
           <div className="max-h-[460px] overflow-auto">
             <Table>
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <TableRow>
-                  <TableHead>Symbol</TableHead>
+                  <TableHead className="min-w-[150px]">Symbol</TableHead>
                   <TableHead className="text-right">LTP</TableHead>
                   <TableHead className="text-right">Chg%</TableHead>
                   <TableHead className="text-right">Vol</TableHead>
@@ -940,24 +1120,29 @@ function QuoteTable({ title, rows, empty, onSelect, pinned, onTogglePin }: {
                   return (
                     <TableRow
                       key={`${tok || sym}-${i}`}
-                      className="cursor-pointer hover:bg-accent/50"
+                      className="group cursor-pointer border-border/40 transition-colors hover:bg-primary/[0.04]"
                       onClick={() => onSelect(sym, tok)}
                     >
-                      <TableCell className="font-medium">{sym}</TableCell>
-                      <TableCell className="text-right font-mono tabular-nums">{fmtNum(r.ltp)}</TableCell>
+                      <TableCell>
+                        <p className="text-sm font-semibold">{sym}</p>
+                        {r.name && <p className="max-w-[170px] truncate text-[10px] text-muted-foreground">{r.name}</p>}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-sm tabular-nums">{fmtNum(r.ltp)}</TableCell>
                       <TableCell className={cn('text-right font-semibold tabular-nums', tone)}>
                         {fmtPct(r.changePercent ?? r.change_5m_pct)}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">{fmtVol(r.volume)}</TableCell>
-                      <TableCell className={cn('text-[11px] uppercase', tone)}>
-                        {r.classification ?? '—'}
+                      <TableCell className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">{fmtVol(r.volume)}</TableCell>
+                      <TableCell>
+                        <span className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium uppercase', tone)}>
+                          {r.classification ?? '—'}
+                        </span>
                       </TableCell>
                       {onTogglePin && (
                         <TableCell>
                           <Button
                             size="icon"
                             variant="ghost"
-                            className="h-7 w-7"
+                            className={cn('h-7 w-7 transition-opacity', !isPinned && 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100')}
                             aria-label={isPinned ? `Unpin ${sym}` : `Pin ${sym}`}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1081,7 +1266,27 @@ function SymbolDetail({ symbol, detail, loading }: { symbol: string | null; deta
           </div>
         </CardContent>
       </Card>
+      <div className="lg:col-span-2">
+        <SymbolAiRead detail={detail} symbol={detail.symbol ?? symbol} />
+      </div>
     </div>
+  );
+}
+
+/**
+ * The AI panel receives a compact context built only from engine-owned fields.
+ * It is manual (button), local (device bridge) and advisory (never an order).
+ * Hooks live in this child so SymbolDetail's early returns stay hook-free.
+ */
+function SymbolAiRead({ detail, symbol }: { detail: any; symbol: string }) {
+  const context = useMemo(() => buildMarketWatchContext(detail), [detail]);
+  return (
+    <LocalAiAnalysisPanel
+      kind="market_watch_symbol"
+      title={`AI read — ${symbol}`}
+      context={context}
+      question="Explain what this engine state shows and what should be verified before acting."
+    />
   );
 }
 

@@ -5,7 +5,8 @@ import { Search, X, ArrowUp, ArrowDown, CornerDownLeft, Loader2, AlertCircle, Za
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { getQuote, getTickStreamUrl } from '@/lib/api';
+import { getQuote } from '@/lib/api';
+import { subscribeTicks } from '@/lib/shared-sse';
 import { useInstrumentSearch } from '@/hooks/use-instrument-search';
 import { SEARCH_MIN_CHARS, shouldSearch, type CanonicalInstrument } from '@/lib/instrument-search';
 import { cn } from '@/lib/utils';
@@ -212,55 +213,41 @@ export default function StockSearch({ onSelect, disabled }: Props) {
     if (!open || results.length === 0) return;
     const byToken = new Map(results.map((r) => [String(r.token), r]));
     const byTrd = new Map(results.map((r) => [(r.tradingSymbol || r.symbol || '').toUpperCase(), r]));
-    let es: EventSource | null = null;
-    let reconnect: NodeJS.Timeout | null = null;
-    const connect = () => {
+    // The dropdown rows follow the SHARED browser tick stream (one SSE session
+    // for the whole app) — never its own EventSource.
+    return subscribeTicks((t) => {
       try {
-        es = new EventSource(getTickStreamUrl());
-        es.onmessage = (event) => {
-          try {
-            const t = JSON.parse(event.data);
-            const ltp = num(t.ltp);
-            if (ltp == null || ltp <= 0) return;
-            const tok = t.instrumentToken != null ? String(t.instrumentToken) : '';
-            const trd = String(t.tradingSymbol ?? t.symbol ?? '').toUpperCase();
-            const hit = (tok && byToken.get(tok)) || (trd && byTrd.get(trd));
-            if (!hit) return;
-            setQuotes(prev => {
-              const cur = prev.get(String(hit.token));
-              const prevClose = cur?.prevClose ?? null;
-              const change = prevClose != null && prevClose > 0 ? ltp - prevClose : (cur?.change ?? null);
-              const changePct = prevClose != null && prevClose > 0
-                ? (change as number) / prevClose * 100
-                : (cur?.changePct ?? null);
-              const nextMap = new Map(prev);
-              nextMap.set(String(hit.token), {
-                ltp,
-                prevClose,
-                change,
-                changePct,
-                open: cur?.open ?? null,
-                high: cur?.high != null && ltp > cur.high ? ltp : (cur?.high ?? null),
-                low: cur?.low != null && ltp < cur.low ? ltp : (cur?.low ?? null),
-                close: cur?.close ?? null,
-                volume: cur?.volume ?? null,
-                upperCircuit: cur?.upperCircuit ?? null,
-                lowerCircuit: cur?.lowerCircuit ?? null,
-              });
-              return nextMap;
-            });
-          } catch { /* ignore */ }
-        };
-        es.onerror = () => {
-          es?.close(); es = null;
-          reconnect = setTimeout(connect, 3000);
-        };
-      } catch {
-        reconnect = setTimeout(connect, 3000);
-      }
-    };
-    connect();
-    return () => { es?.close(); if (reconnect) clearTimeout(reconnect); };
+        const ltp = num(t.ltp);
+        if (ltp == null || ltp <= 0) return;
+        const tok = t.instrumentToken != null ? String(t.instrumentToken) : '';
+        const trd = String(t.tradingSymbol ?? t.symbol ?? '').toUpperCase();
+        const hit = (tok && byToken.get(tok)) || (trd && byTrd.get(trd));
+        if (!hit) return;
+        setQuotes(prev => {
+          const cur = prev.get(String(hit.token));
+          const prevClose = cur?.prevClose ?? null;
+          const change = prevClose != null && prevClose > 0 ? ltp - prevClose : (cur?.change ?? null);
+          const changePct = prevClose != null && prevClose > 0
+            ? (change as number) / prevClose * 100
+            : (cur?.changePct ?? null);
+          const nextMap = new Map(prev);
+          nextMap.set(String(hit.token), {
+            ltp,
+            prevClose,
+            change,
+            changePct,
+            open: cur?.open ?? null,
+            high: cur?.high != null && ltp > cur.high ? ltp : (cur?.high ?? null),
+            low: cur?.low != null && ltp < cur.low ? ltp : (cur?.low ?? null),
+            close: cur?.close ?? null,
+            volume: cur?.volume ?? null,
+            upperCircuit: cur?.upperCircuit ?? null,
+            lowerCircuit: cur?.lowerCircuit ?? null,
+          });
+          return nextMap;
+        });
+      } catch { /* ignore */ }
+    });
   }, [open, results]);
 
   const handleExplicitSearch = useCallback(() => {

@@ -94,6 +94,14 @@ _total_duplicate_skips = 0
 #: Documents an idempotent collection could not store because they carried no
 #: ``_id``. Unlike duplicate skips these are a REAL loss and must be visible.
 _total_unidentifiable_drops = 0
+#: Rate limit for the "buffer cap reached" warning. A database write outage
+#: keeps the buffer pinned at its cap, so logging one line per dropped tick
+#: produced hundreds of lines per second (98 MB of stderr in this workspace)
+#: and made the event loop contend with synchronous log I/O. The loss is still
+#: reported, coalesced at most once per interval.
+_CAP_WARN_INTERVAL_S = 30.0
+_last_cap_warn: dict[str, float] = {}
+_cap_drops_since_warn: dict[str, int] = {}
 _last_flush_at: Optional[float] = None
 _last_write_at: Optional[float] = None
 _last_error: Optional[str] = None
@@ -264,9 +272,20 @@ def add(collection: str, docs: Any) -> int:
         _counts[collection] += accepted
         _total_received += accepted
     if dropped:
-        logger.warning(
-            "[MW-DOCS] %s buffer cap reached, dropped %d oldest documents", collection, dropped,
-        )
+        with _lock:
+            _cap_drops_since_warn[collection] = (
+                _cap_drops_since_warn.get(collection, 0) + dropped
+            )
+            now = time.monotonic()
+            last = _last_cap_warn.get(collection, 0.0)
+            if now - last >= _CAP_WARN_INTERVAL_S:
+                total = _cap_drops_since_warn.pop(collection, 0)
+                _last_cap_warn[collection] = now
+                logger.warning(
+                    "[MW-DOCS] %s buffer cap reached, dropped %d oldest documents "
+                    "(coalesced warning; next report in %.0fs)",
+                    collection, total, _CAP_WARN_INTERVAL_S,
+                )
     return accepted
 
 

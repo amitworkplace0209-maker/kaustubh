@@ -1,36 +1,33 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useMemo, useState } from 'react';
 import { History, RefreshCw, Download } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { getOrderHistory } from '@/lib/api';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 
 export default function OrderHistoryPage() {
-  const [orders, setOrders] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
   const [dateFilter, setDateFilter] = useState('all');
 
-  const fetch = useCallback(async () => {
-    try {
-      const data = await getOrderHistory('orders', '');
-      const list = Array.isArray(data?.data) ? data.data : data?.data ? [data.data] : [];
-      setOrders(list);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // The order book travels over the WebSocket — the same document the
+  // `/api/trading/order/history` route serves, re-pushed whenever it changes.
+  const ordersChannel = useRealtimeChannel<Record<string, any>>('orders', {
+    fallback: async () => ((await getOrderHistory('orders', '')) ?? {}) as Record<string, any>,
+    fallbackKey: 'orders:history',
+    fallbackMs: 10000,
+  });
 
-  useEffect(() => {
-    fetch();
-    const interval = setInterval(fetch, 10000);
-    return () => clearInterval(interval);
-  }, [fetch]);
+  const orders = useMemo<any[]>(() => {
+    const book = ordersChannel.data?.orders;
+    const list: any = Array.isArray(book?.data) ? book.data : (Array.isArray(book) ? book : []);
+    return Array.isArray(list) ? list : [];
+  }, [ordersChannel.data]);
+
+  const loading = ordersChannel.loading;
 
   const filtered = orders.filter((o) => {
     if (statusFilter !== 'all' && o?.status !== statusFilter) return false;
@@ -74,7 +71,7 @@ export default function OrderHistoryPage() {
           <Button size="sm" variant="outline" onClick={handleDownload}>
             <Download className="h-4 w-4 mr-2" /> Download
           </Button>
-          <Button size="sm" variant="ghost" onClick={fetch}>
+          <Button size="sm" variant="ghost" onClick={ordersChannel.refresh}>
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>

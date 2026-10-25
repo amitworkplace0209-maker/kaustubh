@@ -1412,33 +1412,57 @@ Contract: lib/kaustubh-types.ts
 ## 36. Khumbha AI App (F35)
 
 ### Kya hai?
-Trading backend se **bilkul alag** ek chhota FastAPI service. Sirf numpy + psutil.
-Deliberately independent — trading backend crash hone par bhi AI chalta rahe.
+Trading backend se **bilkul alag** ek chhota FastAPI service. Sirf numpy + psutil +
+standard-library HTTP. Deliberately independent — trading backend crash hone par
+bhi AI chalta rahe. Ab isme **device-local model bridge** bhi hai: Ollama,
+LM Studio, llama.cpp ya koi bhi OpenAI-compatible server.
 
 ```
-Frontend:
+Frontend (VM se served, inference device par):
+  lib/ai-endpoint.ts
+    DEFAULT_AI_ENDPOINT = NEXT_PUBLIC_AI_API_BASE || http://127.0.0.1:8001
+    localStorage: khumbha.ai.endpoint · khumbha.ai.token
+  lib/local-ai.ts
+    health · status · providers(probe/no-probe) · probe · saveProvider
+    saveDefaults · models · chat · analyze
+  lib/ai-context.ts
+    buildMarketWatchContext · buildMarketWatchBoardContext
+    buildSuggestionSeriesContext · contextFields
   lib/ai-api.ts
-    AI_BASE :6 = NEXT_PUBLIC_AI_API_BASE || http://127.0.0.1:8001
-    aiHealth :21 · aiDashboard :23 · aiHardware :26
-    aiModels :29 · aiDatasets :32 · aiJobs :35 · aiAgents :38 · aiLogs :41
-    aiModelStart/Stop :43/:44 · aiAgentStart/Stop :46/:47
-    aiTrain :49 · aiInfer :52 · aiSuggest :55
+    deterministic numpy runtime client; endpoint/token aware
+  components/ai/local-ai-analysis.tsx
+    manual "Analyze with local AI" panel (no auto-run, no orders)
   ↓
-Backend: khumbha-ai/main.py (416 lines, 34 se start)
-  _fit() numpy lstsq :49  · _predict() :63
-  /health :212 · /api/hardware :217 · /api/dashboard :222
-  /api/models :247 · /api/models/{id}/start :266 · /stop :275
-  /api/datasets :284 · /api/training/start :289
-  /api/jobs :328 · /api/inference/run :333
-  /api/suggestions :361 · /api/agents :380
-  /api/agents/{id}/start :385 · /stop :395 · /api/logs :404
+Backend: khumbha-ai/main.py
+  numpy runtime: _fit/_predict · /api/models · /api/training/start
+                 /api/inference/run · /api/suggestions · /api/agents · /api/logs
+  local bridge:  /api/ai/status · /api/providers[/{id}/probe|/{id}]
+                 /api/ai/defaults · /api/ai/models · /api/ai/chat
+                 /api/ai/analyze
+  security:      AI_BRIDGE_TOKEN (X-Khumbha-AI-Token) · AI_CORS_ORIGINS
+                 Private Network Access header · 127.0.0.1 default bind
   deps: fastapi, uvicorn, numpy, psutil  (run: khumbha-ai/run_ai.cmd)
+  config: khumbha-ai/local-ai.json (gitignored, device-only)
+  ↓
+Providers (device-local):
+  ollama    http://127.0.0.1:11434      native /api/tags + /api/chat
+  lmstudio  http://127.0.0.1:1234/v1    OpenAI-compatible
+  llamacpp  http://127.0.0.1:8080/v1    OpenAI-compatible
+  custom    any OpenAI-compatible URL
   ↓
 UI: /ai/* (14 pages)
-  dashboard · models · datasets · training · inference · agents · suggestions
-  infrastructure · jobs · logs · settings · theme
+  dashboard (provider summary) · models (provider models + default)
+  suggestions (series stats + Market Watch symbol tabs)
+  settings (bridge endpoint/token, provider cards, defaults)
+  datasets · training · inference · agents · infrastructure · jobs · logs · theme
   Shell: KHUMBHA_AI_SHELL (lib/nav.ts:609) — Main / Runtime / Infrastructure
+  Market Watch: components/market-watch/market-watch-live.tsx → SymbolAiRead
 ```
+
+Analysis contract: context sirf engine-owned whitelisted fields se banta hai;
+missing/non-finite values `null` hain; bridge 12,000 chars se bada context reject
+karta hai; model sirf explain karta hai — buy/sell/target/prediction nahi, order
+nahi. Design: `docs/architecture/36_LOCAL_AI_BRIDGE_ARCHITECTURE.md`.
 
 ---
 

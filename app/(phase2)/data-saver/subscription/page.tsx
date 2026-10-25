@@ -106,6 +106,9 @@ interface StockStats {
 
 const notAvail = 'Not available';
 
+/** Slow REST reconcile for the subscription list while the tick stream is live (ms). */
+const LIST_RECONCILE_MS = 60_000;
+
 function numOf(v: unknown): number | null {
   if (v == null || v === '') return null;
   const n = Number(v);
@@ -286,6 +289,9 @@ export default function Phase2SubscriptionPage() {
 
   // ---- Real-time ----
   const [streamConnected, setStreamConnected] = useState(false);
+  /** Read inside the interval callback without re-installing the timer. */
+  const streamConnectedRef = useRef(false);
+  streamConnectedRef.current = streamConnected;
   const [flash, setFlash] = useState<Record<string, 'up' | 'down'>>({});
   const [ticksSeen, setTicksSeen] = useState(0);
   const [now, setNow] = useState(() => Date.now());
@@ -462,9 +468,28 @@ export default function Phase2SubscriptionPage() {
   }, []);
 
   useEffect(() => {
+    let lastReconcile = Date.now();
     fetchData();
-    const timer = setInterval(fetchData, 5000);
-    return () => clearInterval(timer);
+    // The live LTP arrives over the shared tick stream, and the subscription
+    // list itself only changes when THIS page subscribes/unsubscribes, so the
+    // REST poll is a fallback: 5 s only while the stream is down, a 60 s
+    // reconcile while it is live.
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (streamConnectedRef.current && Date.now() - lastReconcile < LIST_RECONCILE_MS) return;
+      lastReconcile = Date.now();
+      fetchData();
+    }, 5000);
+    const onFocus = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      lastReconcile = Date.now();
+      fetchData();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [fetchData]);
 
   const handleSubscribe = async () => {

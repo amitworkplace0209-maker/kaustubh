@@ -201,7 +201,8 @@ class BrokerTerminalEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(dummy["realizedPnl"], 1200.50)
         self.assertAlmostEqual(dummy["unrealizedPnl"], -400.25)
         self.assertAlmostEqual(dummy["totalPnl"], 800.25)
-        self.assertEqual(dummy["positionCount"], 3)
+        # FLAT position (netQuantity=0) is filtered out by get_dummy_positions as a ghost
+        self.assertEqual(dummy["positionCount"], 2)
         self.assertEqual(dummy["orders"]["total"], 3)
         self.assertEqual(dummy["orders"]["completed"], 1)
 

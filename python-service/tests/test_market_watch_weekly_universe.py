@@ -385,6 +385,27 @@ class LockedUniverseBuildTest(unittest.TestCase):
         self.assertEqual(set(engine._universe), {"1"})
         self.assertEqual(engine._universe_unresolved, ["TYPO"])
 
+    def test_duplicate_symbol_prefers_the_nse_eq_instrument(self):
+        """A locked EQ must not be dropped because F&O shares its symbol.
+
+        The instrument master can contain the same symbol in several segments.
+        The old first-record-wins map could pick the non-EQ contract, mark the
+        locked EQ unresolved, and silently omit a real survivor from the daily
+        subscription intent.
+        """
+        engine = self._engine()
+        instruments = [
+            {"symbol": "ELECTCAST", "token": "999", "companyName": "ELECTCAST FUT",
+             "exchangeSegment": "nse_fo", "instrumentType": "FUT",
+             "tradingStatus": "ACTIVE"},
+            {"symbol": "ELECTCAST", "token": "928", "companyName": "ELECTCAST EQ",
+             "exchangeSegment": "nse_cm", "instrumentType": "EQ",
+             "tradingStatus": "ACTIVE"},
+        ]
+        engine._build_locked_universe(instruments, frozenset({"ELECTCAST"}))
+        self.assertEqual(set(engine._universe), {"928"})
+        self.assertEqual(engine._universe_unresolved, [])
+
     def test_empty_lock_yields_empty_universe(self):
         engine = self._engine()
         engine._build_locked_universe(self._instruments(), frozenset())

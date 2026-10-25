@@ -28,23 +28,55 @@ import { getDummyNotifications } from '@/lib/dummy';
  * Dummy-phase unread badge. Reads ONLY /api/dummy/notifications so the Dummy
  * sidebar never shows Data Saver / Services alert counts.
  */
-function useDummyUnread(): number {
+function useDummyUnread(enabled = true): number {
   const [unread, setUnread] = useState(0);
   useEffect(() => {
+    if (!enabled) {
+      setUnread(0);
+      return;
+    }
     let alive = true;
-    const load = () =>
-      getDummyNotifications('', 100)
-        .then((res) => {
-          if (alive && typeof res?.unread === 'number') setUnread(res.unread);
-        })
-        .catch(() => {});
-    load();
-    const id = setInterval(load, 10000);
+    let inFlight = false;
+    let id: ReturnType<typeof setInterval> | null = null;
+    const load = async () => {
+      // Never overlap polls, never poll a hidden tab, and never let a late
+      // response from an unmounted shell update state.
+      if (!alive || inFlight || document.hidden) return;
+      inFlight = true;
+      try {
+        // Only the badge count is needed; limit=1 keeps the response tiny.
+        const res = await getDummyNotifications('', 1);
+        if (alive && typeof res?.unread === 'number') setUnread(res.unread);
+      } catch {
+        // Keep the last honest count; the next poll retries.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const start = () => {
+      if (id != null) clearInterval(id);
+      id = setInterval(() => void load(), 15000);
+    };
+    void load();
+    start();
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (id != null) {
+          clearInterval(id);
+          id = null;
+        }
+        return;
+      }
+      void load();
+      start();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       alive = false;
-      clearInterval(id);
+      if (id != null) clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, []);
+  }, [enabled]);
   return unread;
 }
 
@@ -350,7 +382,7 @@ export function NavContent({
   const isDummyShell = config.id === 'trading-dummy';
   const activeAlertCount = useActiveAlertCount();
   const unreadNotifCount = useUnreadCount();
-  const dummyUnread = useDummyUnread();
+  const dummyUnread = useDummyUnread(isDummyShell);
   const badgeFor = (item: NavItem): { count: number; accent: boolean } => {
     if (item.statusKey === 'alert' || (item.id === 'alerts' && activeAlertCount > 0)) {
       if (isDummyShell) return { count: 0, accent: false };

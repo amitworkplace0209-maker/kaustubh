@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   History, Download, RefreshCw, Search, Trash2, ChevronDown, ChevronUp,
   Package, Filter, X, Calendar,
@@ -20,6 +20,10 @@ import { TradingService } from '@/lib/trading-service';
 import { normalizeExecution } from '@/lib/charge-engine';
 import { getChargeSnapshotStore } from '@/lib/charge-snapshot-store';
 import { useToast } from '@/hooks/use-toast';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
+import {
+  getRealtimeConnectionState, subscribeRealtime,
+} from '@/lib/realtime-store';
 
 type HistoryTab = 'trade' | 'basket';
 
@@ -145,12 +149,38 @@ export default function HistoryView({ initialTab = 'trade' }: Props) {
     else fetchBasketHistory();
   }, [activeTab, fetchTradeHistory, fetchBasketHistory]);
 
-  // Auto-refresh trade history
+  // ── Socket-aware refresh ────────────────────────────────────────
+  // The `orders` WS document is re-pushed ONLY when the book actually changes
+  // (signature-fingerprinted), so its revisions are the change signal: a fill
+  // or a status flip refreshes the dated history with no timer involved. The
+  // socket connection state drives the poll — fast 15 s cadence ONLY while the
+  // socket is down (then REST is the only carrier).
+  const { updatedAt: ordersDocAt } = useRealtimeChannel<Record<string, unknown>>('orders', {});
+  const [socketUp, setSocketUp] = useState(() =>
+    typeof window === 'undefined' ? false : getRealtimeConnectionState() === 'CONNECTED',
+  );
+  useEffect(() => (
+    subscribeRealtime(() => setSocketUp(getRealtimeConnectionState() === 'CONNECTED'))
+  ), []);
+
+  const docAtRef = useRef<number | null>(null);
   useEffect(() => {
-    if (activeTab !== 'trade') return;
-    const interval = setInterval(() => fetchTradeHistory(), 15000);
+    if (activeTab !== 'trade' || ordersDocAt == null) return;
+    const first = docAtRef.current == null;
+    const changed = docAtRef.current != null && docAtRef.current !== ordersDocAt;
+    docAtRef.current = ordersDocAt;
+    if (!first && changed) fetchTradeHistory();
+  }, [ordersDocAt, activeTab, fetchTradeHistory]);
+
+  // Auto-refresh trade history — fallback only.
+  useEffect(() => {
+    if (activeTab !== 'trade' || socketUp) return;
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      fetchTradeHistory();
+    }, 15000);
     return () => clearInterval(interval);
-  }, [activeTab, fetchTradeHistory]);
+  }, [activeTab, socketUp, fetchTradeHistory]);
 
   // Filtered orders
   const filteredOrders = useMemo(() => {

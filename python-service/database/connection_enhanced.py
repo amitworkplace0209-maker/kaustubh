@@ -368,7 +368,10 @@ async def get_detailed_connection_info() -> DatabaseConnectionInfo:
         pool_stats=dict(_pool_stats),
         config_version=_config_version,
     )
-    
+
+    if _db is None:
+        _adopt_base_connection()
+
     if _client is not None and _db is not None:
         try:
             # Get server status for detailed metrics
@@ -462,6 +465,10 @@ async def ping_mongo(timeout_s: float = 3.0) -> dict:
         "database": database,
         "serverVersion": (_server_info or {}).get("version"),
     }
+    if _db is None:
+        _adopt_base_connection()
+        result["source"] = _active_source
+        result["serverVersion"] = (_server_info or {}).get("version")
     
     if _db is None:
         result["error"] = _last_error or "not connected"
@@ -486,7 +493,38 @@ async def ping_mongo(timeout_s: float = 3.0) -> dict:
     return result
 
 
+def _adopt_base_connection() -> bool:
+    """Adopt the process's ONE shared connection (``database.connection``).
+
+    The application boot connects through the base module (app.py lifespan);
+    a second parallel pool here would mean two clients for the same process
+    and a monitoring plane that never sees the database (which is exactly the
+    bug that kept every ``/api/database/*`` endpoint reporting "Database not
+    connected" forever). When this module has no client of its own, borrow the
+    base module's live one — never open a second connection.
+    """
+    global _client, _db, _active_source, _last_error, _connected_at, _server_info
+    if _db is not None:
+        return True
+    try:
+        from database import connection as base
+    except Exception:
+        return False
+    if not base.is_mongo_connected():
+        return False
+    _client = base._client
+    _db = base.get_db()
+    _active_source = base._active_source or "unknown"
+    _last_error = base._last_error
+    _connected_at = base._connected_at
+    _server_info = base._server_info
+    logger.info("MongoDB monitoring plane adopted the shared database.connection client")
+    return True
+
+
 def get_db() -> AsyncIOMotorDatabase:
+    if _db is None and _adopt_base_connection():
+        pass
     if _db is None:
         raise RuntimeError(
             "MongoDB is not connected — call connect_mongo() first "
@@ -496,6 +534,8 @@ def get_db() -> AsyncIOMotorDatabase:
 
 
 def is_mongo_connected() -> bool:
+    if _db is None and not _adopt_base_connection():
+        return False
     if _client is None:
         return False
     try:
@@ -521,6 +561,8 @@ def get_mongo_info() -> dict:
 
 async def get_atlas_cluster_info() -> dict:
     """Get Atlas-specific cluster information if connected to Atlas."""
+    if _db is None:
+        _adopt_base_connection()
     if _active_source != "atlas" or _db is None:
         return {"available": False, "reason": "Not connected to Atlas"}
     

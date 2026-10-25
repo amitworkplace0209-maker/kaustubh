@@ -7,8 +7,10 @@ duplicate engine logic.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from fastapi import APIRouter, Body, Path
+import time
+from fastapi import APIRouter, Body, Path, Response
 
 from services.json_safe import sanitize_for_json
 from services.engine_registry import get_engine_registry
@@ -37,8 +39,164 @@ async def engine_summary():
 
 @router.get("")
 async def all_engines():
-    """Status of all registered engines."""
-    return _ok(get_engine_registry().get_all_statuses())
+    """Status of all registered engines.
+
+    Same pre-encoded cache shape as /overview: the full status list is ~4.6MB
+    and FastAPI's per-request dict re-encoding dominated the poll latency
+    (~3s under live-feed load).
+    """
+    now = time.monotonic()
+    if _ALL_ENGINES_JSON is None:
+        try:
+            body = await _build_all_engines_json()
+        except Exception as exc:
+            return _bad(str(exc))
+        _store_all_engines_json(body)
+        return Response(content=body, media_type="application/json")
+    if now - _ALL_ENGINES_JSON_AT < _ENGINE_OVERVIEW_TTL_S:
+        return Response(content=_ALL_ENGINES_JSON, media_type="application/json")
+    _schedule_all_engines_rebuild()
+    return Response(content=_ALL_ENGINES_JSON, media_type="application/json")
+
+
+_ALL_ENGINES_JSON: str | None = None
+_ALL_ENGINES_JSON_AT = 0.0
+_ALL_ENGINES_REBUILD_TASK: asyncio.Task | None = None
+
+
+def _encode_all_engines_json() -> str:
+    import json as _json
+
+    return _json.dumps(_ok(get_engine_registry().get_all_statuses()), default=str)
+
+
+async def _build_all_engines_json() -> str:
+    return await asyncio.to_thread(_encode_all_engines_json)
+
+
+def _store_all_engines_json(body: str) -> None:
+    global _ALL_ENGINES_JSON, _ALL_ENGINES_JSON_AT
+    _ALL_ENGINES_JSON = body
+    _ALL_ENGINES_JSON_AT = time.monotonic()
+
+
+def _schedule_all_engines_rebuild() -> None:
+    """Refresh the all-engines list in the background (single-flight)."""
+    global _ALL_ENGINES_REBUILD_TASK
+    task = _ALL_ENGINES_REBUILD_TASK
+    if task is not None and not task.done():
+        return
+    try:
+        _ALL_ENGINES_REBUILD_TASK = asyncio.ensure_future(_rebuild_all_engines_bg())
+    except RuntimeError:
+        pass
+
+
+async def _rebuild_all_engines_bg() -> None:
+    try:
+        body = await _build_all_engines_json()
+    except Exception as exc:
+        logger.warning("background all-engines rebuild failed: %s", exc)
+        return
+    _store_all_engines_json(body)
+
+
+@router.get("/overview")
+async def engine_overview():
+    """The WHOLE control plane in ONE response.
+
+    Engines + summary + broker registry — the same three sections the
+    ``engines`` WebSocket channel carries. The Service Control Center uses this
+    as its REST fallback (and as the one-shot load), so the page never needs
+    four separate polls.
+
+    The build walks every engine's full status snapshot (~4.6MB serialized) and
+    cost ~2.5-3s wall under live-feed load. Both the build AND FastAPI's
+    per-request re-encoding of a dict that large are expensive, so the encoded
+    JSON body itself is cached and returned as a pre-encoded Response.
+    """
+    body = _engine_overview_body()
+    if body is not None:
+        return Response(content=body, media_type="application/json")
+    try:
+        body = await _build_engine_overview_json()
+        _engine_overview_store(body)
+        return Response(content=body, media_type="application/json")
+    except Exception as exc:
+        return _bad(str(exc))
+
+
+_ENGINE_OVERVIEW_TTL_S = 2.0
+_ENGINE_OVERVIEW_JSON: str | None = None
+_ENGINE_OVERVIEW_AT = 0.0
+_ENGINE_OVERVIEW_REBUILD_TASK: asyncio.Task | None = None
+
+
+def _encode_engine_overview_json() -> str:
+    # sanitize_for_json walked every value already (_ok); json.dumps with
+    # default=str is then safe and produces the exact body every request ships.
+    import json as _json
+
+    from brokers.broker_registry import get_broker_registry
+
+    registry = get_engine_registry()
+    broker_registry = get_broker_registry()
+    return _json.dumps(_ok({
+        "engines": registry.get_all_statuses(),
+        "summary": registry.summary(),
+        "brokers": {
+            "trading": broker_registry.get_trading_status(),
+            "marketData": broker_registry.get_market_data_status(),
+            "list": broker_registry.get_all_brokers(),
+        },
+    }), default=str)
+
+
+async def _build_engine_overview_json() -> str:
+    import asyncio as _aio
+
+    # The engine walk is CPU-heavy; slide it off the event loop so it cannot
+    # starve concurrent request handlers while it runs.
+    return await _aio.to_thread(_encode_engine_overview_json)
+
+
+def _engine_overview_body() -> str | None:
+    now = time.monotonic()
+    if _ENGINE_OVERVIEW_JSON is None:
+        return None
+    if now - _ENGINE_OVERVIEW_AT < _ENGINE_OVERVIEW_TTL_S:
+        return _ENGINE_OVERVIEW_JSON
+    # Stale: serve the last-known body immediately and refresh in the
+    # background — the polls are a status view, at most a couple of seconds old.
+    _schedule_engine_overview_rebuild()
+    return _ENGINE_OVERVIEW_JSON
+
+
+def _engine_overview_store(body: str) -> None:
+    global _ENGINE_OVERVIEW_JSON, _ENGINE_OVERVIEW_AT
+    _ENGINE_OVERVIEW_JSON = body
+    _ENGINE_OVERVIEW_AT = time.monotonic()
+
+
+def _schedule_engine_overview_rebuild() -> None:
+    """Refresh the engines overview in the background (single-flight)."""
+    global _ENGINE_OVERVIEW_REBUILD_TASK
+    task = _ENGINE_OVERVIEW_REBUILD_TASK
+    if task is not None and not task.done():
+        return
+    try:
+        _ENGINE_OVERVIEW_REBUILD_TASK = asyncio.ensure_future(_rebuild_engine_overview_bg())
+    except RuntimeError:
+        pass
+
+
+async def _rebuild_engine_overview_bg() -> None:
+    try:
+        body = await _build_engine_overview_json()
+    except Exception as exc:
+        logger.warning("background engines overview rebuild failed: %s", exc)
+        return
+    _engine_overview_store(body)
 
 
 @router.get("/dependency-graph")
@@ -337,6 +495,24 @@ async def update_db_writer_tick_persistence(body: dict = Body(...)):
     except TickPersistenceUnavailable as exc:
         return _bad(str(exc))
     return _ok(result)
+
+
+# ------------------------------------------------------------------
+# DB Writer — storage report (day-wise + all-time, separate read plane)
+# ------------------------------------------------------------------
+@router.get("/db_writer_engine/storage")
+async def db_writer_storage(days: int = 30, date: str = ""):
+    """DB Writer storage view: all-time collection collStats, the IST daily
+    ledger (``daily_summaries`` rows) and an optional single-day drill-down
+    (``date=YYYY-MM-DD``) that counts real ``ticks`` documents by their
+    ``receivedAt`` UTC timestamps.
+
+    This is the storage page's OWN connection — deliberately separate from the
+    tick-persistence authority read above, so the two pages poll different
+    endpoints and neither doubles the other's DB load.
+    """
+    from services.db_writer_engine import db_writer_engine
+    return _ok(await db_writer_engine.storage_report(days=days, date=date))
 
 
 # ------------------------------------------------------------------

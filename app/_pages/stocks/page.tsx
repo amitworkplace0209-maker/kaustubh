@@ -17,8 +17,8 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   getStocks, addStock, deleteStock, toggleStock, bulkDeleteStocks,
-  getTickStreamUrl,
 } from '@/lib/api';
+import { subscribeSseState, subscribeTicks } from '@/lib/shared-sse';
 import { searchInstruments } from '@/lib/instrument-search-client';
 import {
   SEARCH_SUGGESTION_LIMIT, shouldSearch, type CanonicalInstrument,
@@ -116,8 +116,6 @@ export default function StocksPage() {
   const [wsConnected, setWsConnected] = useState(false);
   const [expandedStock, setExpandedStock] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<Stock | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const reconnectRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
   const { toast } = useToast();
 
@@ -154,62 +152,45 @@ export default function StocksPage() {
     }
   }, [search, toast]);
 
+  // The instruments list only changes through this page's CRUD, so reload on
+  // mount and on re-focus; per-row LTP rides the shared tick stream below.
   useEffect(() => {
     fetchStocks();
-    const interval = setInterval(fetchStocks, 10000);
-    return () => clearInterval(interval);
+    const onFocus = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      fetchStocks();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
   }, [fetchStocks]);
 
+  // Shared SSE tick stream — one browser-wide session via `subscribeTicks`
   useEffect(() => {
-    let es: EventSource | null = null;
+    const offState = subscribeSseState((s) => setWsConnected(Boolean(s.connected)));
 
-    function connect() {
-      if (!mountedRef.current) return;
+    const offTicks = subscribeTicks((raw) => {
       try {
-        es = new EventSource(getTickStreamUrl());
-        eventSourceRef.current = es;
-
-        es.onopen = () => {
-          if (mountedRef.current) setWsConnected(true);
-        };
-
-        es.onmessage = (event) => {
-          try {
-            const tick: Tick = JSON.parse(event.data);
-            if (tick.ltp == null || tick.ltp === 0) return;
-
-            if (mountedRef.current) {
-              setTickMap((prev) => {
-                const next = new Map(prev);
-                if (tick.instrumentToken) next.set(tick.instrumentToken, tick);
-                if (tick.symbol) next.set(tick.symbol, tick);
-                if (tick.tradingSymbol) next.set(tick.tradingSymbol, tick);
-                return next;
-              });
-            }
-          } catch { /* ignore */ }
-        };
-
-        es.onerror = () => {
-          if (mountedRef.current) setWsConnected(false);
-          es?.close();
-          eventSourceRef.current = null;
-          if (mountedRef.current) {
-            reconnectRef.current = setTimeout(connect, 3000);
-          }
-        };
-      } catch {
+        const tick: Tick = raw as Tick;
+        if (tick.ltp == null || tick.ltp === 0) return;
         if (mountedRef.current) {
-          reconnectRef.current = setTimeout(connect, 3000);
+          setTickMap((prev) => {
+            const next = new Map(prev);
+            if (tick.instrumentToken) next.set(tick.instrumentToken, tick);
+            if (tick.symbol) next.set(tick.symbol, tick);
+            if (tick.tradingSymbol) next.set(tick.tradingSymbol, tick);
+            return next;
+          });
         }
-      }
-    }
+      } catch { /* ignore */ }
+    });
 
-    connect();
     return () => {
-      es?.close();
-      eventSourceRef.current = null;
-      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      offState();
+      offTicks();
     };
   }, []);
 

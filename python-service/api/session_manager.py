@@ -31,6 +31,64 @@ def _bad(message: str) -> dict:
     return {"ok": False, "error": message}
 
 
+# ------------------------------------------------------------------
+# Scope: show the Market Watch LIST stocks only, never the whole master
+# ------------------------------------------------------------------
+# The Session Manager registry holds the full instrument master (~2.7k rows).
+# `?scope=market_watch` collapses every registry view to the stocks that are
+# actually on the Market Watch engine's working list — the rows tagged with the
+# daily-universe source — so the control plane surfaces the watched stocks only.
+MARKET_WATCH_SOURCE = "market_watch_daily_universe"
+
+
+def _norm_scope(scope: Optional[str]) -> Optional[str]:
+    s = str(scope or "").strip().lower().replace("-", "_")
+    if s in {"market_watch", "marketwatch", "mw", "market_watch_list", "market_watch_list_only"}:
+        return "market_watch"
+    return s or None
+
+
+def _is_market_watch_row(row: dict) -> bool:
+    srcs = [str(s).lower() for s in (row.get("sources") or [])]
+    if MARKET_WATCH_SOURCE in srcs:
+        return True
+    return str(row.get("source") or "").lower() == MARKET_WATCH_SOURCE
+
+
+def _scoped_rows(rows, scope: Optional[str]) -> list[dict]:
+    if scope != "market_watch":
+        return list(rows)
+    return [r for r in rows if _is_market_watch_row(r)]
+
+
+def _rescope_overview(data: dict, scope: Optional[str]) -> dict:
+    """Recompute overview aggregates from the scoped rows only (never guessed)."""
+    if scope != "market_watch":
+        return data
+    rows = _scoped_rows(data.get("instruments") or [], scope)
+    total_all = (data.get("counts") or {}).get("total")
+    status_counts: dict[str, int] = {}
+    level_counts: dict[str, int] = {}
+    for row in rows:
+        status = row.get("status") or "UNKNOWN"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        level = f"L{row.get('feed_level')}" if row.get("feed_level") else (row.get("market_data") or "UNSET")
+        level_counts[level] = level_counts.get(level, 0) + 1
+    counts = dict(data.get("counts") or {})
+    counts["total"] = len(rows)
+    counts["desired"] = sum(1 for r in rows if r.get("desired"))
+    counts["subscribed"] = sum(1 for r in rows if r.get("subscribed"))
+    counts["pinned"] = sum(1 for r in rows if r.get("pin") is not None)
+    data["counts"] = counts
+    data["statusCounts"] = status_counts
+    data["feedLevelCounts"] = level_counts
+    data["scope"] = {"mode": "market_watch", "marketWatch": len(rows), "all": total_all}
+    # The overview page renders aggregates, not the canonical rows; dropping the
+    # raw array keeps the payload small and the page fast. /instruments serves it.
+    data.pop("instruments", None)
+    return data
+
+
 def _iid_split(iid: str) -> dict:
     """Split ``broker|segment|token`` (or ``segment|token``) into a row."""
     parts = str(iid or "").split("|")
@@ -99,15 +157,21 @@ async def _audit(event: str, message: str = "", status: str = "info",
 # Overview / health
 # ------------------------------------------------------------------
 @router.get("/overview")
-async def overview():
-    """Full Session Manager Engine status (Control Center payload)."""
-    return _ok(session_manager.phase3_snapshot())
+async def overview(scope: Optional[str] = None):
+    """Full Session Manager Engine status (Control Center payload).
+
+    ``?scope=market_watch`` narrows every registry aggregate (counts,
+    statusCounts, feedLevelCounts) to the Market Watch working-list stocks
+    (source ``market_watch_daily_universe``) instead of the full instrument
+    master. Always a real recompute from scoped rows — never a guessed number.
+    """
+    return _ok(_rescope_overview(session_manager.phase3_snapshot(), _norm_scope(scope)))
 
 
 @router.get("/status")
-async def status():
+async def status(scope: Optional[str] = None):
     """Alias of /overview."""
-    return _ok(session_manager.phase3_snapshot())
+    return _ok(_rescope_overview(session_manager.phase3_snapshot(), _norm_scope(scope)))
 
 
 @router.get("/health")
@@ -122,10 +186,59 @@ async def revision():
 
 @router.get("/connections")
 async def connections():
-    return _ok({
+    """Feed-link rollup + two advanced, fully real blocks:
+
+    - ``history``: restart-safe connection timeline from the DB event ledger
+      (``system_events``) merged with live ring events — websocket up/down,
+      revision bumps, login/state transitions. When Mongo is down only the
+      in-memory rows are returned (honest, never fabricated).
+    - ``owner``: the owner session's real lifecycle + websocket state (feed
+      links depend on it), verbatim from the session snapshot.
+    """
+    payload: dict[str, Any] = {
         "connections": session_manager.connections_snapshot(),
         "revision": session_manager.revision_status(),
-    })
+    }
+    try:
+        from services.event_history import mongo_events, recent_events
+
+        merged: list[dict] = []
+        for row in await mongo_events(limit=120, source="session"):
+            row["persisted"] = True  # real flag: row came from the DB ledger
+            merged.append(row)
+        for row in recent_events(limit=60, source="session"):
+            row.setdefault("persisted", False)  # fresh ring row (may flush later)
+            merged.append(row)
+
+        interesting = []
+        for row in merged:
+            ev = str(row.get("event") or "").upper()
+            if ev.startswith(("WEBSOCKET_", "SUBSCRIPTIONS_", "LOGIN_", "STATE:", "MODE_")):
+                interesting.append(row)
+        seen: set[tuple] = set()
+        history: list[dict] = []
+        for row in sorted(interesting, key=lambda r: str(r.get("ts") or ""), reverse=True):
+            key = (str(row.get("ts")), str(row.get("event")), str(row.get("message")))
+            if key in seen:
+                continue
+            seen.add(key)
+            history.append(row)
+        payload["history"] = history[:80]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("connection history load failed: %s", exc)
+        payload["history"] = []
+
+    snap = session_manager.snapshot()
+    payload["owner"] = {
+        "state": snap.get("state"),
+        "stateMessage": snap.get("stateMessage"),
+        "stateSince": snap.get("stateSince"),
+        "lifecycleState": snap.get("lifecycleState"),
+        "websocket": snap.get("websocket"),
+        "broker": snap.get("broker"),
+        "mode": snap.get("mode"),
+    }
+    return _ok(payload)
 
 
 @router.get("/subscriptions")
@@ -141,7 +254,30 @@ async def subscriptions_daily_intent():
 
 @router.get("/sources")
 async def sources():
-    return _ok(session_manager.sources_view())
+    """Source rollup + the Market Watch engine's own live registry facts.
+
+    The Market Watch engine owns the authoritative eligible universe (regis-
+    try, eligibility, subscription, feed state) — those verbatim engine facts
+    ride along in ``marketWatch`` so the page shows the engine's real state
+    instead of a guessed proxy. When the engine is unavailable the block is
+    None (honest), never a fabricated number.
+    """
+    view = session_manager.sources_view()
+    try:
+        from services.market_watch_engine import market_watch_engine
+
+        registry = market_watch_engine.registry() or []
+        view["marketWatch"] = {
+            "universeSize": int(market_watch_engine.universe_size() or 0),
+            "eligibleCount": sum(1 for r in registry if r.get("intradayEligible")),
+            "subscribedTokenCount": int(market_watch_engine.subscribed_token_count() or 0),
+            "feedState": market_watch_engine.feed_state(),
+            "statusCounts": dict(market_watch_engine.status_counts() or {}),
+        }
+    except Exception as exc:  # noqa: BLE001 - engine optional; stay honest
+        logger.debug("market watch facts unavailable on /sources: %s", exc)
+        view["marketWatch"] = None
+    return _ok(view)
 
 
 @router.get("/pins")
@@ -150,8 +286,20 @@ async def pins():
 
 
 @router.get("/expiry")
-async def expiry():
-    return _ok(session_manager.expiry_view())
+async def expiry(scope: Optional[str] = None):
+    """Expiry classification — ``?scope=market_watch`` keeps only the Market
+    Watch list stocks in every bucket (counts recomputed from real rows)."""
+    view = session_manager.expiry_view()
+    s = _norm_scope(scope)
+    if s == "market_watch":
+        buckets = view.get("rows") or {}
+        scoped = {k: _scoped_rows(list(v or []), s) for k, v in buckets.items()}
+        view = dict(view)
+        for key in ("today", "nday", "custom", "expiring", "expired", "no_expiry"):
+            view[key] = len(scoped.get(key) or [])
+        view["rows"] = scoped
+        view["scope"] = s
+    return _ok(view)
 
 
 @router.get("/events")
@@ -174,6 +322,175 @@ async def events(limit: int = 100, instrument_id: Optional[str] = None,
 
 
 # ------------------------------------------------------------------
+# Unified history (session + instrument ledgers merged server-side)
+# ------------------------------------------------------------------
+def _history_category(ev: str, row: dict | None = None) -> str:
+    """Real category of a history row — derived from the event name and the
+    row's own status/severity, never from anything outside the row."""
+    e = str(ev or "").upper()
+    st = str((row or {}).get("status") or (row or {}).get("severity") or "").upper()
+    if "REVISION" in e or "SUBSCRIPTIONS" in e or "RECONCILE" in e:
+        return "revision"
+    if "UNSUBSCR" in e:
+        return "unsubscribe"
+    if "SUBSCR" in e:
+        return "subscribe"
+    if "WEBSOCKET" in e or e.startswith("WS_"):
+        return "websocket"
+    if "PIN" in e:
+        return "pin"
+    if "EXPIR" in e:
+        return "expire"
+    if "UPSERT" in e or e.startswith("STOCK_"):
+        return "instrument"
+    if e.startswith("LOGIN") or "LOGOUT" in e or e.startswith("STATE") or "SESSION" in e or e.startswith("MODE"):
+        return "session"
+    if "ERROR" in e or "FAIL" in e or "FAILED" in st or "ERROR" in st:
+        return "error"
+    return "other"
+
+
+@router.get("/history")
+async def history(limit: int = 500, category: Optional[str] = None,
+                  source: Optional[str] = None, q: Optional[str] = None):
+    """Unified, restart-safe history across BOTH real ledgers, merged
+    server-side into one normalized schema (newest-first, deduped):
+
+    - session ledger: ``system_events`` (source=session) + live rings —
+      login / state / websocket / revision rows; ``persisted`` says DB vs live.
+    - instrument ledger: the sm ``sm_events`` collection — per-instrument
+      audit rows (subscribe/unsubscribe/upsert/pin/expire) with symbol.
+
+    ``?category=`` filters on the row's real category, ``?source=`` selects
+    "session"/"instrument"/both, ``?q=`` is a substring search over
+    event/instrument/symbol/message. ``stats`` is computed from the full
+    merged set (before filters) so chips and KPIs are always genuine counts.
+    """
+    limit = max(1, min(int(limit), 1000))
+    want = (source or "all").lower()
+    raw: list[tuple[str, dict]] = []
+
+    if want in ("all", "session"):
+        try:
+            from services.event_history import mongo_events, recent_events
+            for r in await mongo_events(limit=limit, source="session"):
+                r["persisted"] = True  # real DB marker
+                raw.append(("session", r))
+            for r in recent_events(limit=min(limit, 120), source="session"):
+                r.setdefault("persisted", False)
+                raw.append(("session", r))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("session ledger load failed: %s", exc)
+        for e in reversed(session_manager.snapshot().get("events") or []):
+            raw.append(("session", {
+                "source": "session", "event": e.get("event"), "message": e.get("message"),
+                "ts": e.get("at"), "meta": e.get("meta"), "persisted": False,
+            }))
+
+    if want in ("all", "instrument"):
+        try:
+            from services.session import instrument_store
+            from database.connection import get_db
+            for r in await instrument_store.load_events(db=get_db(), limit=limit):
+                r["persisted"] = True
+                r.setdefault("ledger", "instrument")
+                raw.append(("instrument", r))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("instrument ledger load failed: %s", exc)
+
+    def _message_of(r: dict) -> str:
+        details = str(r.get("details") or "")
+        msg = str(r.get("message") or "")
+        meta_msg = str((r.get("meta") or {}).get("message") or "") if isinstance(r.get("meta"), dict) else ""
+        return details or msg or meta_msg
+
+    def _instrument_of(r: dict) -> str | None:
+        if r.get("instrument_id"):
+            return str(r["instrument_id"])
+        if r.get("instrument_token"):
+            return f"{str(r.get('exchange_segment') or '')}|{r.get('instrument_token')}"
+        return None
+
+    norm: list[dict] = []
+    for ledger, r in raw:
+        ev = str(r.get("event") or r.get("event_type") or "EVENT")
+        ts = r.get("ts")
+        norm.append({
+            "ts": ts,
+            "day": str(ts)[:10] if ts else "unknown",
+            "event": ev,
+            "category": _history_category(ev, r),
+            "ledger": ledger,
+            "status": r.get("status") or r.get("state"),
+            "severity": r.get("severity"),
+            "message": _message_of(r) or None,
+            "instrument": _instrument_of(r),
+            "symbol": r.get("symbol"),
+            "revision": r.get("revision"),
+            "persisted": bool(r.get("persisted", True)),
+            "meta": r.get("meta") if isinstance(r.get("meta"), dict) else None,
+        })
+
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for row in norm:
+        # seconds-level key: the DB rounds sub-seconds (608901 → 608000) while
+        # the in-memory ring keeps microseconds, which would keep both copies.
+        key = (str(row["ts"] or "")[:19], row["event"], str(row["message"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    deduped.sort(key=lambda r: str(r["ts"] or ""), reverse=True)
+    # category chip counts stay pre-filter (global ledger mix), everything else
+    # describes exactly the rows served below — no scope confusion.
+    category_totals: list[dict] = []
+    cat_counts: dict[str, int] = {}
+    for r in deduped:
+        cat_counts[r["category"]] = cat_counts.get(r["category"], 0) + 1
+    category_totals = [{"category": k, "count": v} for k, v in sorted(cat_counts.items(), key=lambda kv: -kv[1])]
+
+    cat = (category or "all").lower()
+    if cat and cat != "all":
+        deduped = [r for r in deduped if r["category"] == cat]
+    if q:
+        qq = str(q).strip().lower()
+        if qq:
+            deduped = [r for r in deduped if qq in str(r["event"]).lower()
+                       or qq in str(r["message"] or "").lower()
+                       or qq in str(r["instrument"] or "").lower()
+                       or qq in str(r["symbol"] or "").lower()]
+    served = deduped[:limit]
+
+    # stats FROM THE SERVED ROWS so KPIs match what the page actually shows,
+    # plus real aggregations: events per IST day and the most-touched symbols.
+    by_day: dict[str, int] = {}
+    symbol_counts: dict[str, int] = {}
+    for r in served:
+        if r["day"] != "unknown":
+            by_day[r["day"]] = by_day.get(r["day"], 0) + 1
+        sym = r.get("symbol")
+        if sym:
+            symbol_counts[str(sym)] = symbol_counts.get(str(sym), 0) + 1
+    stats: dict[str, Any] = {
+        "total": len(served),
+        "errors": sum(1 for r in served if r["category"] == "error" or str(r.get("severity") or "").upper() == "ERROR"),
+        "instruments": len({r["instrument"] for r in served if r["instrument"]}),
+        "symbols": len({str(r["symbol"]) for r in served if r["symbol"]}),
+        "persisted": sum(1 for r in served if r["persisted"]),
+        "live": sum(1 for r in served if not r["persisted"]),
+        "session_rows": sum(1 for r in served if r["ledger"] == "session"),
+        "instrument_rows": sum(1 for r in served if r["ledger"] == "instrument"),
+        "first_ts": served[-1]["ts"] if served else None,
+        "last_ts": served[0]["ts"] if served else None,
+        "categories": category_totals,
+        "days": sorted(({"day": d, "count": c} for d, c in by_day.items()), key=lambda x: x["day"], reverse=True),
+        "top_symbols": sorted(({"symbol": k, "count": v} for k, v in symbol_counts.items()), key=lambda x: -x["count"])[:10],
+    }
+    return _ok({"rows": served, "stats": stats})
+
+
+# ------------------------------------------------------------------
 # Instruments
 # ------------------------------------------------------------------
 @router.get("/instruments")
@@ -181,9 +498,13 @@ async def instruments(broker: Optional[str] = None, source: Optional[str] = None
                       desired: Optional[bool] = None, active: Optional[bool] = None,
                       pinned: Optional[bool] = None, status: Optional[str] = None,
                       search: Optional[str] = None, expires_before: Optional[str] = None,
-                      limit: int = 500):
-    """Canonical instrument list with real filters (never guessed counts)."""
-    rows = session_manager.subscription_snapshot()["instruments"]
+                      scope: Optional[str] = None, limit: int = 500):
+    """Canonical instrument list with real filters (never guessed counts).
+
+    ``?scope=market_watch`` returns only the Market Watch working-list stocks —
+    the daily-universe source — instead of every instrument on the master.
+    """
+    rows = _scoped_rows(session_manager.subscription_snapshot()["instruments"], _norm_scope(scope))
     if broker:
         rows = [r for r in rows if (r.get("broker") or "kotak").lower() == broker.lower()]
     if source:
@@ -481,8 +802,12 @@ async def session_history(limit: int = 100):
     merged: list[dict] = []
     try:
         from services.event_history import mongo_events, recent_events
-        merged.extend(await mongo_events(limit=limit, source="session"))
-        merged.extend(recent_events(limit=limit, source="session"))
+        for row in await mongo_events(limit=limit, source="session"):
+            row["persisted"] = True  # real flag for the UI: this row came from the DB ledger
+            merged.append(row)
+        for row in recent_events(limit=limit, source="session"):
+            row.setdefault("persisted", False)  # fresh ring-buffer row (may flush to DB later)
+            merged.append(row)
     except Exception as exc:  # noqa: BLE001
         logger.warning("session history load failed: %s", exc)
     for e in reversed(session_manager.snapshot().get("events") or []):

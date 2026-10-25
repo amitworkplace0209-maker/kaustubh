@@ -15,9 +15,10 @@ import {
 import { SectionCard } from '@/components/design-system';
 import { cn } from '@/lib/utils';
 import {
-  engineConfigPath, saveEngineConfig, usePoll,
+  engineConfigPath, saveEngineConfig,
   type EngineConfig, type EngineConfigField,
 } from '@/lib/system-engines';
+import { useOneShot } from '@/lib/engine-realtime';
 
 /**
  * Generic engine settings form.
@@ -71,7 +72,12 @@ export function EngineSettingsPanel({
   engineName?: string;
   compact?: boolean;
 }) {
-  const { data, error, refresh } = usePoll<EngineConfig>(engineConfigPath(engineId), 15000);
+  // Engine settings are a declarative schema, not a live feed — load once on
+  // mount and reload on demand (after a save or an explicit refresh).
+  const { data, error, refresh } = useOneShot<EngineConfig>(
+    engineConfigPath(engineId),
+    true,
+  );
   const [draft, setDraft] = useState<Draft>({});
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);

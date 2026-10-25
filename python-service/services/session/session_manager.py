@@ -379,12 +379,31 @@ class CentralSessionManager:
         self._subs_revision: int = 0
         self._subs_last_updated: Optional[float] = None
         self._subs_last_refresh: float = 0.0
+        # Current-day Market Watch daily-universe intent summary. The
+        # authoritative records live in ``_subs``; this is the last applied
+        # intent's metadata. Empty until the first apply, so the read endpoint
+        # is valid before the first Friday/daily intent of the process.
+        self._daily_intent: dict[str, Any] = {}
         # Memoised token -> record snapshot for :meth:`active_registry`. It is
         # rebuilt ONLY when ``_subs_revision`` changes, so hot-path consumers
         # (the DB Writer consults the registry once per tick batch) never pay
         # the full ~2.7k-record rebuild repeatedly while nothing has changed.
         self._active_registry_cache: Optional[dict[str, dict[str, Any]]] = None
         self._active_registry_cache_rev: int = -1
+        # Same pattern for :meth:`subscription_snapshot` (the status/telemetry
+        # projection). It is polled every ~2s by several independent loops
+        # (engine registry status, connection-engine broadcasts, REST health
+        # probes) and each rebuild walks the whole registry building ISO
+        # timestamps under the registry lock. At ~2.7k rows that rebuild alone
+        # was the #1 self-frame (~1/3 of process CPU, profiled) and starved the
+        # HTTP loop (dashboard REST timeouts). Cached on revision + a short
+        # TTL: a registry mutation invalidates immediately, and while nothing
+        # mutates the snapshot is rebuilt at most once per TTL — every consumer
+        # already treats the payload as a polling-time status view.
+        self._SUBS_SNAPSHOT_TTL_S = 1.0
+        self._subs_snapshot_cache: Optional[dict[str, Any]] = None
+        self._subs_snapshot_cache_rev: int = -1
+        self._subs_snapshot_at: float = 0.0
 
         # ---- Phase 3 canonical store support ----
         # Per-connection runtime records + the highest revision each connection
@@ -1820,10 +1839,12 @@ class CentralSessionManager:
 
         now = time.time()
         changed = False
+        changed_keys: set[tuple[str, str]] = set()
         with self._lock:
             prev_desired = {k for k, r in self._subs.items() if r.get("desired")}
             for key, seed in incoming.items():
                 rec = self._subs_record(key, dict(seed))
+                changed_keys.add(key)
                 if not rec.get("desired") or rec.get("active") is False:
                     changed = True
                 rec["desired"] = True
@@ -1870,11 +1891,13 @@ class CentralSessionManager:
                 if not rec.get("pin"):
                     rec["desired"] = False
                     rec["active"] = False
-            for rec in self._subs.values():
+                changed_keys.add(key)
+            for key, rec in self._subs.items():
                 state = self._recompute_sub_state(rec, now)
                 if rec.get("state") != state:
                     changed = True
                     rec["state"] = state
+                    changed_keys.add(key)
                 rec["updated_at"] = now
             new_desired = {k for k, r in self._subs.items() if r.get("desired")}
             if prev_desired != new_desired:
@@ -1888,10 +1911,10 @@ class CentralSessionManager:
             }
         if changed:
             self._bump_subs(f"daily universe intent applied (date={today or '?'})")
-            # Persist the daily universe facet on every apply so the canonical
-            # store survives a restart mid-day (reconnect restores the full
-            # current-day set, never the old db.stocks-only handful).
-            await self._persist_many(list(incoming.values()))
+            # Persist every record this apply changed, not just the new rows.
+            # Revoked rows must reach the store with desired=False or the next
+            # restart restores the previous (larger) universe.
+            await self._persist_many([self._subs[k] for k in changed_keys])
             self._publish_engine_event(
                 "SUBSCRIPTION_UPDATED",
                 {
@@ -1907,9 +1930,9 @@ class CentralSessionManager:
         """Live read of the current-day Market Watch daily-universe intent."""
         with self._lock:
             intent = dict(self._daily_intent or {})
-            rows_applied = int(intent.get("rows_applied") or 0)
             desired_by_source: dict[str, int] = {}
             universe_desired: set[tuple[str, str]] = set()
+            universe_dates: set[str] = set()
             for key, rec in list(self._subs.items()):
                 if not rec.get("desired"):
                     continue
@@ -1917,10 +1940,22 @@ class CentralSessionManager:
                 desired_by_source[src] = desired_by_source.get(src, 0) + 1
                 if SOURCE_DAILY_UNIVERSE in (rec.get("sources") or []):
                     universe_desired.add(key)
+                    market_date = str(rec.get("market_date") or "")
+                    if market_date:
+                        universe_dates.add(market_date)
             counts = self.subscription_counts()
+            rows_applied = int(intent.get("rows_applied") or 0)
+            if not rows_applied and universe_desired:
+                # After a restart the in-memory summary is empty, but the
+                # canonical daily-universe records were restored from the
+                # store. Report that restored set instead of a misleading 0.
+                rows_applied = len(universe_desired)
+            market_date = intent.get("market_date")
+            if not market_date and len(universe_dates) == 1:
+                market_date = next(iter(universe_dates))
         return {
             "ok": True,
-            "market_date": intent.get("market_date"),
+            "market_date": market_date,
             "session_id": intent.get("session_id"),
             "revision": counts.get("revision"),
             "rows_applied": rows_applied,
@@ -3011,6 +3046,33 @@ class CentralSessionManager:
                     "last_applied_revision": applied,
                     "last_heartbeat": _iso(rec.get("last_heartbeat")),
                 })
+            applied_default = int(self._subs_applied_revisions.get(DEFAULT_CONNECTION, 0))
+        if out:
+            return out
+        # Boot-fallback: the ws engine mirror only registers feed links on its
+        # routing sync (market window / owner up). Before that the registry is
+        # empty — surface the REAL owner feed link derived from the live
+        # session snapshot instead, so the page always shows concrete state.
+        # Every field below is genuine live state; nothing is fabricated.
+        try:
+            snap = self.snapshot()
+            ws = snap.get("websocket") or {}
+            live = str(ws.get("state") or "").upper() == "CONNECTED"
+            reason = None if live else (str(ws.get("disconnectReason") or "").strip() or snap.get("stateMessage") or None)
+            return [{
+                "connection_id": DEFAULT_CONNECTION,
+                "broker": snap.get("broker"),
+                "state": "CONNECTED" if live else "DISCONNECTED",
+                "connected_at": ws.get("connectedAt") if live else None,
+                "disconnected_at": None if live else ws.get("disconnectedAt"),
+                "reason": reason,
+                "reconnect_count": int(ws.get("reconnectCount") or 0),
+                "feed_level": None,
+                "last_applied_revision": applied_default,
+                "last_heartbeat": ws.get("lastMessageAt") or ws.get("disconnectedAt") or None,
+                "derived_from": "session_snapshot",
+            }]
+        except Exception:  # noqa: BLE001 - never fail the read side
             return out
 
     def phase3_health(self) -> dict[str, Any]:
@@ -3181,6 +3243,14 @@ class CentralSessionManager:
 
     def subscription_snapshot(self) -> dict[str, Any]:
         """Canonical, safe subscription-state snapshot (never credentials)."""
+        now = time.time()
+        cached = self._subs_snapshot_cache
+        if (
+            cached is not None
+            and self._subs_snapshot_cache_rev == self._subs_revision
+            and now - self._subs_snapshot_at < self._SUBS_SNAPSHOT_TTL_S
+        ):
+            return cached
         instruments: list[dict[str, Any]] = []
         with self._lock:
             now = time.time()
@@ -3234,13 +3304,17 @@ class CentralSessionManager:
                     "last_update_at": _iso(rec.get("last_update_at")),
                     "last_tick_at": _iso(rec.get("last_tick_at")) if rec.get("last_tick_at") else None,
                 })
-        return {
+        payload = {
             "revision": revision,
             "last_updated_at": _iso(last_updated),
             "routing": {"state": routing, "owner": routing_owner},
             "counts": self.subscription_counts(),
             "instruments": instruments,
         }
+        self._subs_snapshot_cache = payload
+        self._subs_snapshot_cache_rev = revision
+        self._subs_snapshot_at = now
+        return payload
 
     def active_registry(self) -> dict[str, dict[str, Any]]:
         """Token -> canonical subscription record for internal consumers.
@@ -3305,22 +3379,66 @@ class CentralSessionManager:
         return out
 
     def sources_view(self) -> dict[str, Any]:
-        """Source-type rollup: which source added how many instruments."""
+        """Source-type rollup — honest counting + real per-source facts.
+
+        Two real views of every canonical row:
+        - ``sources``: every origin tag a row carries. A row can carry more
+          than one tag, so these counts are NOT additive to ``total``.
+        - ``primary``: every row counted EXACTLY ONCE by its primary origin
+          (``row.source``) — these share buckets sum to 100% of the registry.
+
+        Each bucket also carries real lifecycle stats (desired / subscribed /
+        pinned / expired, index rows) and freshness (latest registry touch) so
+        the page never has to guess anything.
+        """
+
+        def _new_bucket() -> dict[str, Any]:
+            return {
+                "count": 0, "desired": 0, "subscribed": 0, "pinned": 0,
+                "expired": 0, "indexes": 0, "symbols": [], "last_update_at": None,
+            }
+
+        def _bump(b: dict[str, Any], row: dict[str, Any]) -> None:
+            b["count"] += 1
+            if row.get("desired"):
+                b["desired"] += 1
+            if row.get("subscribed"):
+                b["subscribed"] += 1
+            if row.get("pin"):
+                b["pinned"] += 1
+            if str(row.get("status") or "").upper() == "EXPIRED":
+                b["expired"] += 1
+            if row.get("is_index"):
+                b["indexes"] += 1
+            sym = row.get("symbol")
+            if sym and len(b["symbols"]) < 50:
+                b["symbols"].append(sym)
+            lu = row.get("last_update_at")
+            if lu and (b["last_update_at"] is None or str(lu) > str(b["last_update_at"])):
+                b["last_update_at"] = lu
+
         snap = self.subscription_snapshot()
+        rows = snap["instruments"]
         per_source: dict[str, dict[str, Any]] = {}
-        for row in snap["instruments"]:
-            source = row.get("source") or "unknown"
-            sources = set(row.get("sources") or [])
-            if source not in sources:
-                sources.add(source)
-            for src in sources:
-                bucket = per_source.setdefault(src, {"count": 0, "symbols": []})
-                bucket["count"] += 1
-                if row.get("symbol") and len(bucket["symbols"]) < 50:
-                    bucket["symbols"].append(row["symbol"])
-        for bucket in per_source.values():
-            bucket["symbols"] = sorted(set(bucket["symbols"]))
-        return {"sources": per_source, "total": len(snap["instruments"])}
+        primary: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            psrc = row.get("source") or "unknown"
+            srcs = set(row.get("sources") or [])
+            srcs.add(psrc)
+            for src in srcs:
+                _bump(per_source.setdefault(src, _new_bucket()), row)
+            _bump(primary.setdefault(psrc, _new_bucket()), row)
+        for bucket_map in (per_source, primary):
+            for bucket in bucket_map.values():
+                bucket["symbols"] = sorted(set(bucket["symbols"]))
+        total = len(rows)
+        market_watch_primary = sum(1 for r in rows if str(r.get("source") or "") == "market_watch_daily_universe")
+        return {
+            "sources": per_source,
+            "primary": primary,
+            "marketWatchPrimaryCount": market_watch_primary,
+            "total": total,
+        }
 
     def pins_view(self) -> dict[str, Any]:
         """Pinned instruments with pin source / time / routing / connection."""

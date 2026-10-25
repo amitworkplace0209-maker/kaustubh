@@ -26,10 +26,12 @@ import { Card, CardContent } from '@/components/ui/card';
 import {
   CATEGORY_COLORS, CATEGORY_ICONS, ENGINE_WORKSPACE_LINKS, ENGINES_API,
   HEALTH_COLORS, STATE_COLORS, engineProfileHref, fmtAgo, fmtEpoch, fmtInt,
-  fmtValue, isRunningState, postEngineAction, usePoll,
+  fmtValue, isRunningState, loadEnginesOverview, postEngineAction,
   type EngineActivityEntry, type EngineDependencies, type EngineErrorEntry,
-  type EngineStatus,
+  type EnginesDocument, type EngineStatus,
 } from '@/lib/system-engines';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
+import { useOneShot } from '@/lib/engine-realtime';
 import { EngineSettingsPanel } from '@/components/engines/engine-settings-panel';
 import { EngineActivityChart } from './charts';
 import { EngineCountersDonut } from './charts';
@@ -66,29 +68,49 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 }
 
 export default function EngineProfilePage({ engineId }: { engineId: string }) {
+  // The live engine status + the fleet come from the ONE `engines` WebSocket
+  // subscription (the whole control plane rides in one frame). Errors /
+  // activity / dependency history are per-engine detail loads — one-shot REST
+  // (mount + manual refresh), never a timer.
+  const { data: controlPlane, live, error: liveError } = useRealtimeChannel<EnginesDocument>('engines', {
+    fallback: loadEnginesOverview,
+    fallbackKey: 'engines-overview',
+    fallbackMs: 20000,
+  });
+
+  const engine = useMemo<EngineStatus | null>(() => {
+    if (!engineId) return null;
+    return controlPlane?.engines?.[engineId] ?? null;
+  }, [controlPlane, engineId]);
+
   const statusPath = engineId ? `${API}/${encodeURIComponent(engineId)}` : null;
-  const { data: engine, error: statusError, refresh: refreshStatus } = usePoll<EngineStatus>(statusPath, 8000);
-  const { data: errors, refresh: refreshErrors } = usePoll<EngineErrorEntry[]>(
-    statusPath ? `${statusPath}/errors?limit=20` : null, 15000,
+  const { data: errors, refresh: refreshErrors } = useOneShot<EngineErrorEntry[]>(
+    engineId ? `${statusPath}/errors?limit=20` : null,
+    true,
   );
-  const { data: activity, refresh: refreshActivity } = usePoll<EngineActivityEntry[]>(
-    statusPath ? `${statusPath}/activity?limit=30` : null, 15000,
+  const { data: activity, refresh: refreshActivity } = useOneShot<EngineActivityEntry[]>(
+    engineId ? `${statusPath}/activity?limit=30` : null,
+    true,
   );
-  const { data: deps, refresh: refreshDeps } = usePoll<EngineDependencies>(
-    statusPath ? `${statusPath}/dependencies` : null, 15000,
+  const { data: deps, refresh: refreshDeps } = useOneShot<EngineDependencies>(
+    engineId ? `${statusPath}/dependencies` : null,
+    true,
   );
-  const { data: fleet } = usePoll<EngineStatus[]>(API, 30000);
+
+  const fleet = useMemo<EngineStatus[] | null>(
+    () => (controlPlane ? Object.values(controlPlane.engines ?? {}) : null),
+    [controlPlane],
+  );
 
   const [busy, setBusy] = useState<string | null>(null);
   const [needsConfirm, setNeedsConfirm] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   const refreshAll = useCallback(() => {
-    refreshStatus();
     refreshErrors();
     refreshActivity();
     refreshDeps();
-  }, [refreshStatus, refreshErrors, refreshActivity, refreshDeps]);
+  }, [refreshErrors, refreshActivity, refreshDeps]);
 
   const run = useCallback(async (action: string, confirmed = false) => {
     setBusy(action);
@@ -125,7 +147,7 @@ export default function EngineProfilePage({ engineId }: { engineId: string }) {
   const activityList = Array.isArray(activity) ? activity : [];
 
   /* Loading / not-found states — honest, never fabricated */
-  if (!engine && !statusError) {
+  if (!engine && !liveError) {
     return (
       <div className="space-y-4">
         <div className="h-6 w-64 animate-pulse rounded bg-muted" />
@@ -140,7 +162,7 @@ export default function EngineProfilePage({ engineId }: { engineId: string }) {
     );
   }
 
-  if (!engine && statusError) {
+  if (!engine && liveError) {
     return (
       <div className="space-y-4">
         <Button size="sm" variant="outline" asChild>
@@ -151,7 +173,7 @@ export default function EngineProfilePage({ engineId }: { engineId: string }) {
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
             <div>
               <p className="font-medium">Engine &lsquo;{engineId}&rsquo; not found or unreachable</p>
-              <p className="mt-1 text-xs text-muted-foreground">{statusError}. Retrying automatically…</p>
+              <p className="mt-1 text-xs text-muted-foreground">{liveError}. Retrying automatically…</p>
               <Button size="sm" variant="outline" className="mt-3" onClick={refreshAll}>
                 <RefreshCw className="mr-1 h-3 w-3" /> Retry now
               </Button>
@@ -183,6 +205,9 @@ export default function EngineProfilePage({ engineId }: { engineId: string }) {
           <Button size="sm" variant="ghost" onClick={refreshAll} title="Refresh now">
             <RefreshCw className="h-4 w-4" />
           </Button>
+          <Badge variant="outline" className={live ? 'border-success/40 text-success' : 'border-warning/40 text-warning'} title={live ? 'Status pushed over the WebSocket' : 'REST fallback polling'}>
+            {live ? 'Live · WebSocket' : 'REST fallback'}
+          </Badge>
         </div>
       </div>
 

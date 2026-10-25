@@ -26,6 +26,7 @@ from services import pipeline_latency
 from ws_socket.engine.canonical import SCHEMA_VERSION
 
 from connection_engine import field_requirements as field_req
+from connection_engine import snapshots as snapshot_mod
 from connection_engine.channels import (
     MARKET_CHANNELS,
     STATE_CHANNELS,
@@ -58,6 +59,7 @@ SOURCE_FEATURE = "feature_engine"
 SOURCE_STATE_BRIDGE = "state_bridge"
 SOURCE_ENGINE_SNAPSHOT = "engine_snapshot"
 SOURCE_DATA_CENTER = "data_center"
+SOURCE_STATE_SNAPSHOT = "state_snapshot"
 
 # Feed freshness thresholds (connection-manager.md §56), configurable.
 FRESH_MAX_AGE_S = 5.0
@@ -106,6 +108,89 @@ PERSISTENCE_CONSUMER_ID = "data_saver"
 PERSISTENCE_POLL_S = 0.2
 PERSISTENCE_DRAIN_LIMIT = 500
 
+# --------------------------------------------------------------------------- #
+# §29 Connection history — real persisted session ledger.
+#
+# Previously spec §29 had no backend surface at all: sessions only lived in the
+# in-memory registry and vanished on detach. Every attach/detach is now written
+# to a bounded MongoDB collection so the control plane can show session
+# history, durations and disconnect reasons as REAL facts (nothing fabricated,
+# size-bounded so a chatty client can never grow it without limit).
+# --------------------------------------------------------------------------- #
+HISTORY_COLLECTION = "connection_history"
+HISTORY_KEEP = 400          # bound: trim oldest docs past this
+HISTORY_TRIM_CHUNK = 80
+HISTORY_TRIM_EVERY_S = 600  # trimming is throttled; inserts are cheap
+_history_last_trim = [0.0]
+
+
+def _history_collection():
+    from database.connection import get_db
+    return get_db()[HISTORY_COLLECTION]
+
+
+async def _record_connection_history(event: dict) -> None:
+    """Best-effort history insert — a DB hiccup must never break the gateway."""
+    try:
+        col = _history_collection()
+        await col.insert_one({"ts": _now_iso(), "epoch": time.time(), **event})
+        await _maybe_trim_history()
+    except Exception as exc:
+        logger.debug("connection history insert skipped: %s", exc)
+
+
+async def _maybe_trim_history() -> None:
+    now = time.time()
+    if now - _history_last_trim[0] < HISTORY_TRIM_EVERY_S:
+        return
+    _history_last_trim[0] = now
+    try:
+        col = _history_collection()
+        count = await col.count_documents({})
+        overflow = count - HISTORY_KEEP
+        if overflow <= 0:
+            return
+        trim = min(overflow + HISTORY_TRIM_CHUNK // 2, HISTORY_TRIM_CHUNK)
+        oldest = col.find({}, {"_id": 1, "epoch": 1}).sort("epoch", 1).limit(trim)
+        ids = [row["_id"] async for row in oldest]
+        if ids:
+            await col.delete_many({"_id": {"$in": ids}})
+    except Exception as exc:
+        logger.debug("connection history trim skipped: %s", exc)
+
+
+async def connection_history_rows(limit: int = 50) -> dict:
+    """Real §29 history: most recent session records + honest live summary."""
+    out: list[dict] = []
+    rows_error = ""
+    try:
+        col = _history_collection()
+        cursor = col.find({}, {"_id": 0}).sort("epoch", -1).limit(max(1, min(int(limit), 250)))
+        async for row in cursor:
+            out.append(row)
+    except Exception as exc:
+        rows_error = str(exc)
+    # Summary from the real rows actually loaded (never extrapolated).
+    durations = [float(r["durationSeconds"]) for r in out if isinstance(r.get("durationSeconds"), (int, float))]
+    started = [float(r["epoch"]) for r in out if isinstance(r.get("epoch"), (int, float))]
+    day_ago = time.time() - 86400.0
+    sessions24h = sum(1 for e in started if e >= day_ago)
+    summary = {
+        "rowsLoaded": len(out),
+        "rowsStored": None,
+        "sessionsLast24h": sessions24h,
+        "avgSessionSeconds": round(sum(durations) / len(durations), 1) if durations else None,
+        "bound": HISTORY_KEEP,
+    }
+    try:
+        summary["rowsStored"] = await _history_collection().count_documents({})
+    except Exception:
+        pass
+    doc = {"events": out, "summary": summary}
+    if rows_error:
+        doc["error"] = rows_error
+    return doc
+
 # state/bus frame -> target channel on the frontend socket
 _STATE_TYPE_CHANNEL = {
     "state_changed": "system",
@@ -128,6 +213,12 @@ _STATE_TYPE_CHANNEL = {
 
 _NOTIFICATION_TYPES = (
     "notification.",
+    # The Notification Center publishes ``notification_created`` /
+    # ``notification_updated`` / ``notification_deleted`` (underscore, not
+    # dot). Without this prefix they fell through to the default routing and
+    # were delivered on the ``system`` channel, so a client subscribed to
+    # ``notifications`` never saw them.
+    "notification_",
     "alert_",
     "notifications.",
 )
@@ -297,6 +388,14 @@ def _map_wire_type(frame: dict) -> str:
         return "data_center.snapshot"
     if ftype.startswith(("quality_scan_", "pipeline_", "download_")):
         return "data.stream_event"
+    if ftype.startswith("notification_"):
+        if ftype == "notification_created":
+            return "notification.new"
+        if ftype == "notification_updated":
+            return "notification.updated"
+        if ftype == "notification_deleted":
+            return "notification.deleted"
+        return "notification.new"
     if ftype.startswith(_NOTIFICATION_TYPES):
         return "notification.new"
     return ftype
@@ -313,6 +412,7 @@ class ConnectionEngine:
         self._persistence_task: asyncio.Task | None = None
         self._engine_snapshot_task: asyncio.Task | None = None
         self._data_center_task: asyncio.Task | None = None
+        self._state_snapshot_task: asyncio.Task | None = None
         self._total_frames_routed = 0
         self._ticks_persisted = 0
         self._persist_errors = 0
@@ -368,6 +468,12 @@ class ConnectionEngine:
             )
         except Exception:
             logger.exception("Could not start Connection Engine data-center loop")
+        try:
+            self._state_snapshot_task = asyncio.get_running_loop().create_task(
+                self._state_snapshot_loop()
+            )
+        except Exception:
+            logger.exception("Could not start Connection Engine state-snapshot loop")
         logger.info("Connection Engine started (backend -> frontend WS #2)")
         self._log_event("info", "engine.started", detail="WS #2 gateway online")
 
@@ -401,6 +507,13 @@ class ConnectionEngine:
             except (asyncio.CancelledError, Exception):
                 pass
             self._data_center_task = None
+        if self._state_snapshot_task:
+            self._state_snapshot_task.cancel()
+            try:
+                await self._state_snapshot_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._state_snapshot_task = None
         for connection_id in list(self._sessions):
             await self.detach(connection_id)
         self._log_event("info", "engine.stopped", detail="WS #2 gateway offline")
@@ -422,6 +535,12 @@ class ConnectionEngine:
         logger.info("[CE] session attached id=%s username=%s active=%d", session.connection_id, session.username, len(self._sessions))
         self._log_event("info", "session.attached", connection_id=session.connection_id,
                         detail=f"username={session.username} active={len(self._sessions)}")
+        await _record_connection_history({
+            "event": "ATTACHED",
+            "connectionId": session.connection_id,
+            "username": session.username,
+            "activeAfter": len(self._sessions),
+        })
         return session
 
     async def detach(self, connection_id: str) -> None:
@@ -442,10 +561,23 @@ class ConnectionEngine:
                 pass
         session.channels.clear()
         session.state_channels.clear()
-        await session.close()
         logger.info("[CE] session detached id=%s active=%d", connection_id, len(self._sessions))
         self._log_event("info", "session.detached", connection_id=connection_id,
                         detail=f"active={len(self._sessions)}")
+        await _record_connection_history({
+            "event": "DETACHED",
+            "connectionId": connection_id,
+            "username": session.username,
+            "reason": session.last_reason() or "disconnect",
+            "lastError": session.last_error.get("code") if session.last_error else None,
+            "durationSeconds": round(max(time.time() - session.attached_at, 0.0), 1),
+            "framesDelivered": session.ticks_sent + session.frames_sent,
+            "bytesSent": session.bytes_sent_total(),
+            "droppedMarket": session.outbox.dropped_market,
+            "droppedCritical": session.outbox.dropped_critical,
+            "activeAfter": len(self._sessions),
+        })
+        await session.close()
 
     def get(self, connection_id: str) -> ClientSession | None:
         return self._sessions.get(connection_id)
@@ -577,6 +709,18 @@ class ConnectionEngine:
             elif channel in STATE_CHANNELS:
                 session.state_channels.add(channel)
                 results.append({"channel": channel, "added": 0, "kind": "state"})
+                # Push the authoritative snapshot IMMEDIATELY so a freshly
+                # opened page has real data without waiting for the next
+                # delta event (and without the UI polling REST for it).
+                # A repeated subscribe re-pushes it too — that is the explicit
+                # "refresh now" path used after a mutation. The hub caches the
+                # document, so a repeat subscribe inside the refresh interval
+                # costs no extra backend work — unless the client asked for a
+                # FORCED rebuild (``force: true``), which always re-reads the
+                # broker so a mutation is visible immediately.
+                await self._push_state_snapshot(
+                    session, channel, force=bool(entry.get("force"))
+                )
             else:
                 errors.append({"channel": channel, "error": "unknown channel"})
 
@@ -589,6 +733,126 @@ class ConnectionEngine:
             extra={"added": [r.get("channel") for r in results], "errors": errors[:5]},
         )
         return {"results": results, "errors": errors, "sync": sync}
+
+    # ------------------------------------------------------------------ #
+    # State snapshots (authoritative documents pushed over the same socket)
+    # ------------------------------------------------------------------ #
+    def _has_state_subscribers(self, channel: str) -> bool:
+        return any(
+            not s.closed and channel in s.state_channels
+            for s in list(self._sessions.values())
+        )
+
+    def _state_snapshot_frame(
+        self, session: ClientSession, channel: str, document: dict
+    ) -> dict:
+        """Enveloped snapshot frame for one state channel.
+
+        The payload document is nested under ``data.payload`` and the frame
+        keeps the same shape as every other bridged frame (the original
+        document is inside ``data``), so the client can read both
+        ``frame.data.type`` and ``frame.data.payload``.
+        """
+        body = {
+            "type": f"{channel}.snapshot",
+            "generatedAt": _now_iso(),
+            "channel": channel,
+            "payload": document,
+        }
+        return self._frame(
+            session,
+            f"{channel}.snapshot",
+            channel=channel,
+            data=body,
+            source=SOURCE_STATE_SNAPSHOT,
+        )
+
+    async def _push_state_snapshot(
+        self, session: ClientSession, channel: str, force: bool = False
+    ) -> None:
+        """Send the current snapshot document of ``channel`` to one session.
+
+        ``force`` re-reads the source (broker / service) instead of answering
+        from the hub cache — used by the explicit "refresh now" action.
+        """
+        if not snapshot_mod.supports_snapshot(channel):
+            return
+        try:
+            interval = snapshot_mod.CHANNEL_REFRESH_INTERVALS.get(channel, 5.0)
+            if force:
+                document = await snapshot_mod.snapshot_hub.build(channel, force=True)
+            elif snapshot_mod.snapshot_hub.is_fresh(channel, interval):
+                document = snapshot_mod.snapshot_hub.document(channel)
+            else:
+                document = await snapshot_mod.snapshot_hub.build(channel)
+        except Exception:
+            logger.exception("Connection Engine: state snapshot build failed channel=%s", channel)
+            return
+        if not document:
+            return
+        try:
+            session.outbox.put(
+                self._state_snapshot_frame(session, channel, document), critical=False
+            )
+            session.frames_sent += 1
+        except Exception:
+            logger.exception("Connection Engine: state snapshot enqueue failed channel=%s", channel)
+
+    async def _state_snapshot_loop(self) -> None:
+        """Refresh the subscribed snapshot documents and push them on change.
+
+        The browser never polls: the backend re-evaluates each subscribed
+        channel on its own cadence and pushes the document ONLY when it
+        actually changed (fingerprint comparison), so an idle page costs zero
+        frames and a busy page costs one small frame per real change.
+        """
+        try:
+            while self._started:
+                await asyncio.sleep(1.0)
+                for channel in snapshot_mod.SNAPSHOT_CHANNELS:
+                    try:
+                        if not self._has_state_subscribers(channel):
+                            continue
+                        interval = snapshot_mod.CHANNEL_REFRESH_INTERVALS.get(channel, 5.0)
+                        built_at = snapshot_mod.snapshot_hub.last_built_at(channel)
+                        if built_at is not None and (time.time() - built_at) < interval:
+                            continue
+                        changed, document = await snapshot_mod.snapshot_hub.build_if_changed(channel)
+                        if not changed or not document:
+                            continue
+                        self._broadcast_state_snapshot(channel, document)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "Connection Engine: state snapshot refresh failed channel=%s", channel
+                        )
+        except asyncio.CancelledError:
+            pass
+
+    def _broadcast_state_snapshot(self, channel: str, document: dict) -> None:
+        """Deliver one snapshot document to every session subscribed to it."""
+        delivered = 0
+        for session in list(self._sessions.values()):
+            if session.closed or channel not in session.state_channels:
+                continue
+            try:
+                session.outbox.put(
+                    self._state_snapshot_frame(session, channel, document), critical=False
+                )
+                session.frames_sent += 1
+                self._total_frames_routed += 1
+                self._channel_delivered[channel] = self._channel_delivered.get(channel, 0) + 1
+                delivered += 1
+            except Exception:
+                logger.exception(
+                    "Connection Engine: state snapshot broadcast failed channel=%s", channel
+                )
+        if delivered:
+            self._log_event(
+                "info", "snapshot.delivered", channel=channel,
+                detail=f"delivered={delivered}",
+            )
 
     async def unsubscribe(self, session: ClientSession, channels: list[dict]) -> dict:
         engine = _engine()
@@ -1041,6 +1305,15 @@ class ConnectionEngine:
         engine control-plane telemetry through the Connection Manager instead of
         polling each engine's REST status endpoint (connection-manager.md §...).
 
+        The frame carries the WHOLE control plane in one document, so the
+        Service Control Center needs a single subscription instead of one REST
+        poll per section:
+
+          * ``engines``  — every registered engine (compact projection)
+          * ``summary``  — the Engine Registry summary (overall / states / healths)
+          * ``brokers``  — the broker registry (trading + market-data status and
+            the selectable broker list)
+
         Each engine is projected through :func:`_compact_engine_status` and the
         result is held to ``ENGINE_STATUS_MAX_BYTES``; a frame that still busts
         the budget degrades to identity + health only (logged, never silently
@@ -1050,8 +1323,9 @@ class ConnectionEngine:
         from services.engine_registry import get_engine_registry
         from services.json_safe import sanitize_for_json
 
+        registry = get_engine_registry()
         engines: dict[str, dict] = {}
-        for status in get_engine_registry().get_all_statuses():
+        for status in registry.get_all_statuses():
             engine_id = str(status.get("engineId") or "")
             if engine_id:
                 engines[engine_id] = _compact_engine_status(status)
@@ -1077,6 +1351,8 @@ class ConnectionEngine:
             "generatedAt": _now_iso(),
             "count": len(engines),
             "engines": payload,
+            "summary": sanitize_for_json(registry.summary()),
+            "brokers": sanitize_for_json(_broker_registry_snapshot()),
         }
 
     async def _engine_snapshot_loop(self) -> None:
@@ -1257,6 +1533,9 @@ class ConnectionEngine:
                 "messagesDropped": s.outbox.dropped_market + s.outbox.dropped_critical,
                 "droppedMarket": s.outbox.dropped_market,
                 "droppedCritical": s.outbox.dropped_critical,
+                "bytesSent": s.bytes_sent_total(),
+                "bytesPerSec": s.bytes_per_sec(),
+                "avgDeliveryLatencyMs": s.avg_delivery_latency_ms(),
                 "username": s.username,
             })
         return records
@@ -1267,6 +1546,9 @@ class ConnectionEngine:
         active = 0
         queue_depth = 0
         queue_max = 0
+        bytes_total = 0
+        byte_rates: list[float] = []
+        latencies: list[float] = []
         for s in list(self._sessions.values()):
             dropped += s.outbox.dropped_market + s.outbox.dropped_critical
             delivered += s.ticks_sent + s.frames_sent
@@ -1274,6 +1556,13 @@ class ConnectionEngine:
                 active += 1
             queue_depth += len(s.outbox)
             queue_max = max(queue_max, len(s.outbox))
+            bytes_total += s.bytes_sent_total()
+            rate = s.bytes_per_sec()
+            if rate is not None:
+                byte_rates.append(rate)
+            latency = s.avg_delivery_latency_ms()
+            if latency is not None:
+                latencies.append(latency)
         return {
             "started": self._started,
             "startedAt": self._started_at,
@@ -1287,6 +1576,11 @@ class ConnectionEngine:
                 "messagesDelivered": delivered,
                 "messagesDropped": dropped,
                 "messagesRouted": self._total_frames_routed,
+                # Real wire measurements (spec §51 — previously honest
+                # NOT_PROVIDED tiles): None until a delivery sample exists.
+                "bytesSent": bytes_total,
+                "bytesPerSec": round(sum(byte_rates), 2) if byte_rates else None,
+                "avgDeliveryLatencyMs": round(sum(latencies) / len(latencies), 2) if latencies else None,
             },
             "channelMetrics": self._channel_metrics(),
             "backpressure": {
@@ -1492,3 +1786,23 @@ class ConnectionEngine:
             state = s.current_state()
             counts[state] = counts.get(state, 0) + 1
         return counts
+
+
+def _broker_registry_snapshot() -> dict:
+    """The broker registry as the control plane sees it.
+
+    One synchronous read of the SAME registry the REST routes
+    (``/api/services/engines/broker/*``) use — never a second opinion.
+    """
+    try:
+        from brokers.broker_registry import get_broker_registry
+
+        registry = get_broker_registry()
+        return {
+            "trading": registry.get_trading_status(),
+            "marketData": registry.get_market_data_status(),
+            "list": registry.get_all_brokers(),
+        }
+    except Exception as exc:  # noqa: BLE001 — a snapshot must never kill the loop
+        logger.warning("Connection Engine: broker registry read failed error=%r", exc)
+        return {"trading": {}, "marketData": {}, "list": []}

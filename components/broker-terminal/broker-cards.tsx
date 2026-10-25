@@ -32,6 +32,7 @@ import {
   sessionBadge, type Tone,
 } from './broker-shared';
 import { getBrokerTerminalOverview, refreshBrokerOverview } from '@/lib/api';
+import { dedupeFetch } from '@/lib/shared-request';
 import { useBackend } from '@/lib/use-backend';
 import { ageLabel, useServerNow } from '@/lib/time-engine';
 import { fmtPnl, fmtQty, fmtRs, toNum } from '@/lib/formatters';
@@ -384,7 +385,14 @@ export function BrokerCardsSection({ heading = 'Broker Terminals', reloadKey = 0
   sub?: string;
 }) {
   const rt = useRealtime();
-  const { data, error, loading, refresh } = useBackend(getBrokerTerminalOverview);
+  // One broker-overview read shared by every mounted card section. The
+  // overview is an expensive broker+engine pass; React dev StrictMode used to
+  // issue it twice on mount (two overlapping 15 s requests).
+  const loadOverview = useCallback(
+    () => dedupeFetch('broker:terminal-overview', getBrokerTerminalOverview, { ttlMs: 0 }),
+    [],
+  );
+  const { data, error, loading, refresh } = useBackend(loadOverview);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
 

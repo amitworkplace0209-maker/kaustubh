@@ -3,21 +3,19 @@
 /**
  * SERVICES -> Order Engine -> History
  *
- * Executed-order history with the filters the doc specifies (§35): date/time,
- * source, broker, terminal, symbol, status, basket, side, order type, and a
- * search across order id / broker order id / basket id / correlation id /
- * symbol. Every row is canonical, so history reads the same whether it came from
- * Kotak, Shoonya or the paper terminal.
+ * Executed-order history with filters. Every row is canonical, so history reads
+ * the same whether it came from Kotak, Shoonya or the paper terminal.
+ *
+ * No background polling — mount-only fetch + manual refresh, so the page never
+ * freezes on auto-refresh intervals or WebSocket subscriptions.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { History, RefreshCw } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { OrderTable } from '@/components/order-engine/order-table';
 import { isWorking } from '@/components/order-engine/status';
-import { useOrderEngineLive } from '@/components/order-engine/use-order-engine-live';
 import { getOrderEngineHistory, type CanonicalOrder } from '@/lib/api';
 
 const STATUS_FILTERS = [
@@ -31,7 +29,6 @@ const STATUS_FILTERS = [
 const SIDES = ['ALL', 'BUY', 'SELL'] as const;
 
 export default function OrderEngineHistoryPage() {
-  const engine = useOrderEngineLive();
   const [rows, setRows] = useState<CanonicalOrder[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -84,7 +81,7 @@ export default function OrderEngineHistoryPage() {
       return (
         order.orderId?.toUpperCase().includes(term) ||
         order.symbol?.toUpperCase().includes(term) ||
-        String(order.basketId ?? '').toUpperCase().includes(term) ||
+        String(order.basketId ?? '').toUpperCase().includes(basket.trim().toUpperCase()) ||
         String(order.correlationId ?? '').toUpperCase().includes(term)
       );
     });
@@ -145,86 +142,80 @@ export default function OrderEngineHistoryPage() {
               </button>
             ))}
           </div>
-
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
-            <div className="space-y-1 lg:col-span-2">
-              <label className="text-[11px] text-muted-foreground">
-                Search order id / symbol / basket / correlation
-              </label>
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="h-9 text-xs"
-                placeholder="Search…"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground">From</label>
-              <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 text-xs" />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground">To</label>
-              <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 text-xs" />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground">Source</label>
-              <select
-                value={source}
-                onChange={(e) => setSource(e.target.value)}
-                className="h-9 w-full rounded-md border border-white/10 bg-black/20 px-2 text-xs"
-              >
-                {sources.map((s) => (
-                  <option key={s} value={s} className="bg-slate-950">
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[11px] text-muted-foreground">Basket</label>
-              <Input
-                value={basket}
-                onChange={(e) => setBasket(e.target.value)}
-                className="h-9 text-xs"
-                placeholder="Basket id"
-              />
-            </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Source
+            </label>
+            <select
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              className="rounded-lg border border-input bg-background px-2 py-1 text-xs"
+            >
+              {sources.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Basket ID
+            </label>
+            <Input
+              value={basket}
+              onChange={(e) => setBasket(e.target.value)}
+              placeholder="basket id…"
+              className="rounded-lg border border-input bg-background px-2 py-1 text-xs w-32"
+            />
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-            <Badge variant="outline">{rows.length} loaded</Badge>
-            <Badge variant="outline">{visible.length} matching</Badge>
-            {(status !== 'ALL' || side !== 'ALL' || source !== 'ALL' || search || basket || from || to) && (
-              <button
-                onClick={() => {
-                  setStatus('ALL');
-                  setSide('ALL');
-                  setSource('ALL');
-                  setSearch('');
-                  setBasket('');
-                  setFrom('');
-                  setTo('');
-                }}
-                className="text-primary underline-offset-2 hover:underline"
-              >
-                Clear filters
-              </button>
-            )}
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              From date
+            </label>
+            <Input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="rounded-lg border border-input bg-background px-2 py-1 text-xs w-32"
+            />
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              To date
+            </label>
+            <Input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="rounded-lg border border-input bg-background px-2 py-1 text-xs w-32"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Search
+            </label>
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="order id / symbol / basket / correlation…"
+              className="rounded-lg border border-input bg-background px-2 py-1 text-xs w-64"
+            />
           </div>
         </CardContent>
       </Card>
 
-      <OrderTable
-        orders={visible}
-        ltp={engine.ltp}
-        emptyMessage={
-          loading
-            ? 'Loading history…'
-            : rows.length > 0
-              ? 'No orders match these filters.'
-              : 'No order history for this terminal yet (honest zero).'
-        }
-      />
+      <div className="rounded-xl border border-border/50 bg-muted/30 shadow-sm p-3">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">
+          {visible.length} orders
+        </p>
+        <OrderTable
+          orders={visible}
+          busyOrderId={null}
+          emptyMessage={
+            loading ? 'Loading history…'
+              : visible.length === 0
+                ? 'No matching orders (honest zero).'
+                : 'No orders available.'
+          }
+        />
+      </div>
     </div>
   );
 }

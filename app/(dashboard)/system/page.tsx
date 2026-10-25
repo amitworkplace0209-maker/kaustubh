@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import {
   Server, Database, Wifi, Calendar, Cpu, MemoryStick, HardDrive,
   Activity, Globe, Download, ShoppingCart, Bell, TrendingUp,
@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getSystemStatus, getNotificationSummary } from '@/lib/api';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 import { PageHeader } from '@/components/design-system';
 
 type IndicatorState = 'online' | 'offline' | 'connecting' | 'disconnected' | 'error';
@@ -82,32 +83,45 @@ function HealthCard({ icon: Icon, title, state, lastOnline, lastOffline, extra }
 }
 
 export default function SystemPage() {
-  const [data, setData] = useState<any>(null);
-  const [notifSummary, setNotifSummary] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [search, setSearch] = useState('');
   const [filterState, setFilterState] = useState('all');
-  const [autoRefresh, setAutoRefresh] = useState(true);
 
-  const fetch = useCallback(async () => {
-    try {
-      const d = await getSystemStatus();
-      setData(d);
-    } catch { /* ignore */ }
-    try {
-      const s = await getNotificationSummary();
-      setNotifSummary(s);
-    } catch { setNotifSummary(null); }
-    finally { setLoading(false); }
-  }, []);
+  // Both documents arrive over the persistent WebSocket — no polling.
+  // `system` carries GET /api/system, `notifications` carries the
+  // notification summary the page shows on the Notification Service card.
+  const { data: systemDoc, refresh: refreshSystem, live } = useRealtimeChannel<{
+    status?: Record<string, any>;
+  }>('system', {
+    fallbackMs: 5000,
+    fallbackKey: 'system:status',
+    fallback: () => getSystemStatus().then((status) => ({ status })),
+    select: (doc) => {
+      const status = (doc as { status?: Record<string, any> })?.status ?? undefined;
+      return status ? { status } : null;
+    },
+  });
+
+  const { data: notifDoc } = useRealtimeChannel<{ summary?: Record<string, any> }>(
+    'notifications',
+    {
+      fallbackMs: 5000,
+      fallbackKey: 'notifications:summary',
+      fallback: () => getNotificationSummary().then((summary) => ({ summary })),
+      select: (doc) => {
+        const summary = (doc as { summary?: Record<string, any> })?.summary ?? undefined;
+        return summary ? { summary } : null;
+      },
+    },
+  );
+
+  const data = systemDoc?.status ?? null;
+  const notifSummary = notifDoc?.summary ?? null;
+  const loading = !data;
 
   useEffect(() => {
     setMounted(true);
-    fetch();
-    const interval = setInterval(() => { if (autoRefresh) fetch(); }, 5000);
-    return () => clearInterval(interval);
-  }, [fetch, autoRefresh]);
+  }, []);
 
   const allCards = useMemo(() => {
     if (!data) return [];
@@ -153,10 +167,11 @@ export default function SystemPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Project Health Dashboard" subtitle={<>{onlineCount} online · {offlineCount} offline · {allCards.length} total components</>}>
-        <Button size="sm" variant={autoRefresh ? 'default' : 'outline'} onClick={() => setAutoRefresh(!autoRefresh)}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${autoRefresh ? 'animate-spin' : ''}`} /> Auto
-        </Button>
-        <Button size="sm" variant="ghost" onClick={fetch}><RefreshCw className="h-4 w-4" /></Button>
+        <Badge variant={live ? 'default' : 'secondary'} className="gap-1">
+          <span className={`h-2 w-2 rounded-full ${live ? 'bg-success' : 'bg-muted-foreground'}`} />
+          {live ? 'Live' : 'Offline'}
+        </Badge>
+        <Button size="sm" variant="ghost" onClick={refreshSystem}><RefreshCw className="h-4 w-4" /></Button>
       </PageHeader>
 
       {/* System Health Summary */}

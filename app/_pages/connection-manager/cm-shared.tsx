@@ -58,6 +58,8 @@ export const CM = {
   orderFeed: '/api/realtime/order-feed',
   /** One connection's full diagnostic record. */
   connection: (id: string) => `/api/realtime/connections/${encodeURIComponent(id)}`,
+  /** §29 persisted connection history (bounded Mongo ledger). */
+  connectionHistory: '/api/realtime/connections/history',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -92,6 +94,10 @@ export interface CmConnection {
   messagesDropped: number | null;
   droppedMarket: number | null;
   droppedCritical: number | null;
+  /** Real wire metrics (spec §51) — present on recent engine builds. */
+  bytesSent?: number | null;
+  bytesPerSec?: number | null;
+  avgDeliveryLatencyMs?: number | null;
   username?: string | null;
 }
 
@@ -158,6 +164,10 @@ export interface CmEnginePayload {
     messagesDelivered: number | null;
     messagesDropped: number | null;
     messagesRouted: number | null;
+    /** Real wire measurements — null until a delivery sample exists. */
+    bytesSent?: number | null;
+    bytesPerSec?: number | null;
+    avgDeliveryLatencyMs?: number | null;
   };
   channelMetrics: Record<string, CmChannelMetric>;
   backpressure: CmBackpressure;
@@ -239,6 +249,38 @@ export interface CmSession {
   framesSent: number | null;
   droppedMarket: number | null;
   droppedCritical: number | null;
+  bytesSent?: number | null;
+  bytesPerSec?: number | null;
+  avgDeliveryLatencyMs?: number | null;
+}
+
+/** §29 persisted connection-history row (bounded Mongo ledger). */
+export interface CmHistoryEvent {
+  event: string;
+  connectionId: string;
+  username?: string | null;
+  reason?: string | null;
+  lastError?: string | null;
+  epoch: number;
+  ts: string;
+  durationSeconds?: number | null;
+  framesDelivered?: number | null;
+  bytesSent?: number | null;
+  droppedMarket?: number | null;
+  droppedCritical?: number | null;
+  activeAfter?: number | null;
+}
+
+export interface CmHistoryDoc {
+  events: CmHistoryEvent[];
+  summary: {
+    rowsLoaded: number;
+    rowsStored: number | null;
+    sessionsLast24h: number;
+    avgSessionSeconds: number | null;
+    bound: number;
+  };
+  error?: string;
 }
 
 /** Heterogeneous by design — each transport reports only the keys it has. */
@@ -259,6 +301,18 @@ export type CmArchitecture = Record<string, CmArchitectureEntry>;
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
+
+/** §29 connection history — one-shot read of the bounded persisted ledger. */
+export function useConnectionHistory(limit = 50): {
+  history: CmHistoryDoc | null;
+  error: string | null;
+  loading: boolean;
+  reload: () => void;
+} {
+  const { data, error, loading, refresh } = useOneShot<CmHistoryDoc>(CM.connectionHistory);
+  void limit;
+  return { history: data, error, loading, reload: refresh };
+}
 
 /**
  * Live engine payload. `source` distinguishes a realtime frame from the
@@ -300,6 +354,7 @@ export function useConnectionManagerData(): {
   sessions: CmSession[] | null;
   architecture: CmArchitecture | null;
   orderFeed: Record<string, unknown> | null;
+  history: CmHistoryDoc | null;
   errors: string[];
   loading: boolean;
   source: 'api' | 'realtime' | null;
@@ -315,6 +370,7 @@ export function useConnectionManagerData(): {
   const sessions = useOneShot<CmSession[]>(CM.sessions);
   const architecture = useOneShot<CmArchitecture>(CM.architecture);
   const orderFeed = useOneShot<Record<string, unknown>>(CM.orderFeed);
+  const history = useOneShot<CmHistoryDoc>(CM.connectionHistory);
 
   const errors = useMemo(() => {
     const out: string[] = [];
@@ -326,8 +382,9 @@ export function useConnectionManagerData(): {
     if (sessions.error) out.push(`sessions: ${sessions.error}`);
     if (architecture.error) out.push(`architecture: ${architecture.error}`);
     if (orderFeed.error) out.push(`order feed: ${orderFeed.error}`);
+    if (history.error) out.push(`history: ${history.error}`);
     return out;
-  }, [eng.error, health.error, events.error, config.error, fields.error, sessions.error, architecture.error, orderFeed.error]);
+  }, [eng.error, health.error, events.error, config.error, fields.error, sessions.error, architecture.error, orderFeed.error, history.error]);
 
   const loading =
     !eng.engine &&
@@ -342,7 +399,8 @@ export function useConnectionManagerData(): {
     sessions.refresh();
     architecture.refresh();
     orderFeed.refresh();
-  }, [eng, health, events, config, fields, sessions, architecture, orderFeed]);
+    history.refresh();
+  }, [eng, health, events, config, fields, sessions, architecture, orderFeed, history]);
 
   return {
     engine: eng.engine,
@@ -354,6 +412,7 @@ export function useConnectionManagerData(): {
     sessions: sessions.data,
     architecture: architecture.data,
     orderFeed: orderFeed.data,
+    history: history.data,
     errors,
     loading,
     source: eng.source,

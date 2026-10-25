@@ -116,6 +116,8 @@ export interface UseLiveStocksResult {
 }
 
 const STALE_MS = 15_000;
+/** Slow reconcile while the shared tick stream is live (ms). */
+const REST_RECONCILE_MS = 60_000;
 
 function emptyStock(symbol: string): LiveStock {
   return {
@@ -305,13 +307,27 @@ export function useLiveStocks(opts: UseLiveStocksOptions = {}): UseLiveStocksRes
     }
   }, [restUrl]);
 
+  // The shared tick stream (one SSE session) is the primary per-symbol update
+  // path; the REST snapshot is the fallback + a slow reconcile so a row's
+  // heavy context (depth, tick counters, subscription reason) still refreshes
+  // while the stream is live, and the row list is rebuilt fast when it is not.
   useEffect(() => {
     refresh();
-    if (pollMs > 0) {
-      const id = setInterval(refresh, pollMs);
-      return () => clearInterval(id);
-    }
-  }, [refresh, pollMs]);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (pollMs <= 0) return;
+    let lastReconcile = Date.now();
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      const now = Date.now();
+      // Stream live → slow reconcile; stream down → the caller's cadence.
+      if (connected && now - lastReconcile < REST_RECONCILE_MS) return;
+      lastReconcile = now;
+      void refresh();
+    }, pollMs);
+    return () => clearInterval(id);
+  }, [refresh, pollMs, connected]);
 
   // SSE merge — uses the SHARED single SSE stream (one per session),
   // updates existing per-symbol state from the central feed.

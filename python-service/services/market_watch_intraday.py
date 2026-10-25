@@ -278,6 +278,10 @@ class ScreenResult:
 
 #: Response keys the brokers use for the margin figure on a 1-qty MIS preview.
 MARGIN_RESPONSE_KEYS = (
+    # Kotak's check-margin envelope returns the required order margin here.
+    # ``ordMrgn`` is the same figure for a fresh preview, but ``reqdMrgn`` is
+    # the canonical "margin required" field and is checked first.
+    "reqdMrgn", "ordMrgn",
     "TotalMargin", "totalMargin", "marginRequired", "requiredMargin",
     "total_margin", "MarginRequired",
 )

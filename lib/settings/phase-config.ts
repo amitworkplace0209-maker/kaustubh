@@ -8,7 +8,7 @@
  * KAUSTUBH phases. New phases register here without touching any component.
  */
 
-import { Database, CandlestickChart, Server, BrainCircuit } from 'lucide-react';
+import { Database, CandlestickChart, Server } from 'lucide-react';
 
 export type PhaseStatus = 'healthy' | 'warning' | 'error' | 'offline' | 'unknown' | 'neutral';
 
@@ -190,49 +190,11 @@ export const SERVICES_PHASE: PhaseConfig = {
   available: true,
 };
 
-export const KHUMBHA_AI_PHASE: PhaseConfig = {
-  phaseId: 'khumbha-ai',
-  group: 'khumbha-ai',
-  appId: 'khumbha-ai',
-  phaseName: 'Khumbha AI',
-  phaseShortName: 'Khumbha AI',
-  phaseFullName: 'KAUSTUBH Khumbha AI',
-  phaseTagline: 'Models, datasets, training, inference and agents',
-  phaseDescription:
-    'AI model training, inference, dataset management and agent orchestration for the KAUSTUBH platform.',
-  phaseThemeColor: '#06B6D4',
-  phaseAltThemeColor: '#0891B2',
-  phaseHomePath: '/ai/dashboard',
-  phaseSettingsPath: '/ai/settings',
-  groupLabel: 'Khumbha AI',
-  groupDescription:
-    'Artificial intelligence models, training pipelines and inference runtime.',
-  icon: BrainCircuit,
-  monogram: 'KA',
-  defaultBrightness: 'dark',
-  defaultAccent: 'purple',
-  statusIndicators: [
-    { id: 'net', label: 'Network', shortLabel: 'NET', source: 'backend health/realtime state', eventType: 'network.updated' },
-    { id: 'db', label: 'Database', shortLabel: 'DB', source: 'backend database health', eventType: 'database.connected' },
-    { id: 'sched', label: 'Scheduler', shortLabel: 'SCHED', source: 'scheduler service', eventType: 'scheduler.started' },
-  ],
-  searchScopes: {
-    stocks: false, instruments: false, ticks: false, subscriptions: false,
-    dataCenter: false, dataQuality: false, tickAnalytics: false,
-    alerts: false, notifications: false, schedules: false, downloads: false, settings: true,
-    symbols: false, watchlist: false, orders: false, positions: false,
-    holdings: false, portfolio: false, trades: false, brokers: false,
-    terminal: false, market: false, system: true, documentation: true,
-  },
-  available: true,
-};
-
 /** Canonical phase registry — single source of truth for all phases. */
 export const PHASE_REGISTRY: Record<string, PhaseConfig> = {
   'data-saver': DATA_SAVER_PHASE,
   trading: TRADING_PHASE,
   services: SERVICES_PHASE,
-  'khumbha-ai': KHUMBHA_AI_PHASE,
 };
 
 /** Get phase config by app ID. */
@@ -242,7 +204,7 @@ export function getPhaseConfig(appId: string): PhaseConfig {
 
 /** Get all available phases (ordered). */
 export function getAvailablePhases(): PhaseConfig[] {
-  return [DATA_SAVER_PHASE, TRADING_PHASE, SERVICES_PHASE, KHUMBHA_AI_PHASE];
+  return [DATA_SAVER_PHASE, TRADING_PHASE, SERVICES_PHASE];
 }
 
 export type PhaseConfigMap = Record<string, PhaseConfig>;

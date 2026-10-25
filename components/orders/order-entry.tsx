@@ -21,7 +21,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import type { StockResult } from './stock-search';
-import { getQuote, getTickStreamUrl } from '@/lib/api';
+import { getQuote } from '@/lib/api';
+import { subscribeSseState, subscribeTicks } from '@/lib/shared-sse';
 import type { QuoteDataRaw } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { getSettingsStore, useAccountMode } from '@/lib/settings-store';
@@ -30,6 +31,9 @@ import { calculateCharges, type ChargeCalculation } from '@/lib/charge-engine';
 import { positionKey } from '@/lib/charge-service';
 import { getTriggerStore, useTriggers } from '@/lib/trigger-store';
 import { useTriggerEngine } from '@/hooks/use-trigger-engine';
+
+/** Slow REST reconcile for the quote while the shared tick stream is live (ms). */
+const QUOTE_RECONCILE_MS = 60_000;
 
 type QuoteData = {
   ltp: number;
@@ -231,6 +235,9 @@ export default function OrderEntry({ stock, initialSide, onOrderPlaced, onBack }
 
   const [form, setForm] = useState<OrderForm>({ ...initialFormWithDefaults });
   const [quote, setQuote] = useState<QuoteData | null>(null);
+  /** Mirrors `stock` for the long-lived tick listener (no re-subscribe churn). */
+  const stockRef = useRef(stock);
+  stockRef.current = stock;
   const [quoteLoading, setQuoteLoading] = useState(true);
   const [funds, setFunds] = useState<FundsData | null>(null);
   const [position, setPosition] = useState<ExistingPosition>(null);
@@ -301,38 +308,41 @@ export default function OrderEntry({ stock, initialSide, onOrderPlaced, onBack }
     return () => { cancelled = true; };
   }, [stock.token, stock.exchange]);
 
-  useEffect(() => { const timer = setInterval(fetchQuote, 5000); return () => clearInterval(timer); }, [fetchQuote]);
+  // LTP rides the SHARED browser tick stream (one SSE session for the whole
+  // app, reconnect with coalescing). This component runs one listener — never
+  // its own EventSource.
+  const [sseConnected, setSseConnected] = useState(false);
+  useEffect(() => (
+    subscribeSseState((s) => setSseConnected(Boolean(s.connected)))
+  ), []);
 
   useEffect(() => {
-    let es: EventSource | null = null;
-    let reconnect: NodeJS.Timeout | null = null;
-    const connect = () => {
+    return subscribeTicks((t) => {
       try {
-        es = new EventSource(getTickStreamUrl());
-        es.onmessage = (event) => {
-          try {
-            const t = JSON.parse(event.data);
-            if (t.ltp == null || t.ltp === 0) return;
-            const tokenMatch = t.instrumentToken != null && String(t.instrumentToken) === String(stock.token);
-            const tsymMatch = t.tradingSymbol != null && stock.tradingSymbol != null &&
-              String(t.tradingSymbol).toUpperCase() === stock.tradingSymbol.toUpperCase();
-            const symMatch = t.symbol != null && stock.symbol != null &&
-              String(t.symbol).toUpperCase() === stock.symbol.toUpperCase();
-            if (!tokenMatch && !tsymMatch && !symMatch) return;
-            setQuote(prev => prev ? { ...prev, ltp: Number(t.ltp), status: 'LIVE', lastUpdated: new Date().toISOString() } : prev);
-          } catch { /* ignore */ }
-        };
-        es.onerror = () => {
-          es?.close(); es = null;
-          reconnect = setTimeout(connect, 3000);
-        };
-      } catch {
-        reconnect = setTimeout(connect, 3000);
-      }
-    };
-    connect();
-    return () => { es?.close(); if (reconnect) clearTimeout(reconnect); };
-  }, [stock.token, stock.symbol, stock.tradingSymbol]);
+        if (t.ltp == null || t.ltp === 0) return;
+        const tokenMatch = t.instrumentToken != null && String(t.instrumentToken) === String(stockRef.current.token);
+        const tsymMatch = t.tradingSymbol != null && stockRef.current.tradingSymbol != null &&
+          String(t.tradingSymbol).toUpperCase() === stockRef.current.tradingSymbol.toUpperCase();
+        const symMatch = t.symbol != null && stockRef.current.symbol != null &&
+          String(t.symbol).toUpperCase() === stockRef.current.symbol.toUpperCase();
+        if (!tokenMatch && !tsymMatch && !symMatch) return;
+        setQuote(prev => prev ? { ...prev, ltp: Number(t.ltp), status: 'LIVE', lastUpdated: new Date().toISOString() } : prev);
+      } catch { /* ignore */ }
+    });
+  }, []);
+
+  // REST quote poll is the FALLBACK: fast while the tick stream is down, a
+  // slow reconcile while it is live (the stream keeps the LTP fresh).
+  useEffect(() => {
+    let lastReconcile = Date.now();
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (sseConnected && Date.now() - lastReconcile < QUOTE_RECONCILE_MS) return;
+      lastReconcile = Date.now();
+      void fetchQuote();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [fetchQuote, sseConnected]);
 
   useEffect(() => {
     let cancelled = false;

@@ -82,9 +82,18 @@ export default function MarketWatchStatusBar({ className }: { className?: string
   }, []);
   useEffect(() => {
     void loadUniverseProof();
-    const iv = setInterval(loadUniverseProof, RECONCILE_INTERVAL_MS);
+    // The weekly lock only changes on user actions on the Weekly page, and the
+    // engine progress above is already frame-driven. Slow reconcile — rest for
+    // the minute right after a load, then refresh as a low-frequency net.
+    let lastLoaded = Date.now();
+    const iv = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (connected && Date.now() - lastLoaded < RECONCILE_INTERVAL_MS) return;
+      lastLoaded = Date.now();
+      void loadUniverseProof();
+    }, RECONCILE_INTERVAL_MS);
     return () => clearInterval(iv);
-  }, [loadUniverseProof]);
+  }, [loadUniverseProof, connected]);
 
   const counts = progress.statusCounts ?? {};
   const liveCount = counts.LIVE ?? 0;

@@ -80,6 +80,38 @@ class DailyUniverseIntentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap["desired"], 0)
         self.assertEqual(self.mgr.subscription_counts()["desired"], 0)
 
+    def test_snapshot_before_first_apply_is_empty(self):
+        """The read endpoint is valid before the first intent of the process.
+
+        The attribute used to be created only inside the apply path, so a
+        fresh backend returned 500 from the daily-intent read endpoint until
+        something applied an intent. It must report an honest empty snapshot.
+        """
+        snap = self.mgr.daily_intent_snapshot()
+        self.assertTrue(snap["ok"])
+        self.assertIsNone(snap["market_date"])
+        self.assertEqual(snap["rows_applied"], 0)
+        self.assertEqual(snap["daily_universe_desired"], 0)
+        self.assertEqual(snap["desired"], 0)
+
+    async def test_snapshot_survives_restart_from_canonical_records(self):
+        """A restored canonical set reports its real size, not zero.
+
+        The in-memory ``_daily_intent`` summary is not persisted; the daily
+        universe records are. After a restart the read endpoint must derive
+        the applied date/count from those records.
+        """
+        await self.mgr.apply_daily_subscription_intent(DAY1, "ses_1", [_row(9)])
+        from services.session.session_manager import CentralSessionManager
+        restarted = CentralSessionManager()
+        restarted._subs = dict(self.mgr._subs)
+        snap = restarted.daily_intent_snapshot()
+        self.assertTrue(snap["ok"])
+        self.assertEqual(snap["market_date"], DAY1)
+        self.assertEqual(snap["rows_applied"], 1)
+        self.assertEqual(snap["daily_universe_desired"], 1)
+        self.assertEqual(snap["desired"], 1)
+
     async def test_single_row_becomes_desired_l8_equity(self):
         snap = await self.mgr.apply_daily_subscription_intent(DAY1, "ses_1", [_row(11, "RELIANCE")])
         self.assertEqual(snap["market_date"], DAY1)
@@ -129,6 +161,28 @@ class DailyUniverseIntentTest(unittest.IsolatedAsyncioTestCase):
         rows = self.mgr.subscription_snapshot()["instruments"]
         revoked = next(r for r in rows if r["instrument_token"] == "1")
         self.assertNotEqual(revoked["state"], "SUBSCRIBED")
+
+    async def test_revoked_rows_are_persisted_with_desired_false(self):
+        """A shrinking intent must persist the revocations, not only new rows.
+
+        The store is the crash-recovery source. Persisting only the incoming
+        rows left yesterday's 2679-symbol universe desired, so a restart
+        restored and subscribed the old, larger set.
+        """
+        persisted = []
+
+        async def _capture(records):
+            persisted.extend(
+                (r["exchange_segment"], r["instrument_token"], bool(r.get("desired")))
+                for r in records
+            )
+
+        with mock.patch.object(self.mgr, "_persist_many", side_effect=_capture):
+            await self.mgr.apply_daily_subscription_intent(DAY1, "ses_1", [_row(1), _row(2)])
+            await self.mgr.apply_daily_subscription_intent(DAY2, "ses_2", [_row(2)])
+
+        self.assertIn(("nse_cm", "1", False), persisted)
+        self.assertIn(("nse_cm", "2", True), persisted)
 
     async def test_pin_survives_revocation(self):
         await self.mgr.apply_daily_subscription_intent(DAY1, "ses_1", [_row(5)])

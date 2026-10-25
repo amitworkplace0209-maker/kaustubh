@@ -673,12 +673,15 @@ async def lock_universe(
     return {**universe.summary(), "persisted": persisted, "universe": universe}
 
 
-async def verify_week(week_id: str) -> dict[str, Any]:
+async def verify_week(week_id: str, universe: Optional[WeeklyUniverse] = None) -> dict[str, Any]:
     """doc §28 step 2 — verify the week/version we are about to monitor.
 
-    Returns an honest verdict; it never repairs or guesses.
+    Returns an honest verdict; it never repairs or guesses. ``universe`` lets a
+    caller that just loaded the lock reuse it instead of paying for an
+    identical second MongoDB read.
     """
-    universe = await load_locked_universe(refresh=True)
+    if universe is None:
+        universe = await load_locked_universe(refresh=True)
     if universe is None:
         return {
             "ok": False,

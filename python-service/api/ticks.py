@@ -53,12 +53,55 @@ async def live_tick_stream(request: Request):
 
 
 @router.get("/recent")
-async def get_recent_ticks(limit: int = 200, symbol: str = ""):
+async def get_recent_ticks(limit: int = 200, symbol: str = "", compact: bool = False):
+    """Recent real ticks.
+
+    ``compact=1`` is the quote-only projection used by the shared live-tick
+    hook: it returns just the fields that hook indexes (symbol / tradingSymbol /
+    instrumentToken / ltp / ts). The full documents are ~4.5 KB each, so a
+    200-row backfill used to ship ~900 KB on every page mount. Compact reads
+    come from the in-memory latest-tick store while the pipeline is live and
+    fall back to a projected MongoDB read after a restart.
+    """
+    capped = min(max(limit, 1), 200)
+    symbol_key = symbol.upper() if symbol else ""
+
+    if compact:
+        if not symbol_key:
+            latest = tick_buffer.get_latest_ticks()
+            if latest:
+                rows = [
+                    {
+                        "symbol": t.get("symbol"),
+                        "tradingSymbol": t.get("tradingSymbol"),
+                        "instrumentToken": t.get("instrumentToken"),
+                        "ltp": t.get("ltp"),
+                        "ts": t.get("ts"),
+                    }
+                    for t in latest.values()
+                    if t.get("symbol") and t.get("ltp") is not None
+                ]
+                if rows:
+                    return {"data": sanitize_for_json(rows[:capped]), "source": "memory"}
+        projection = {
+            "_id": 0,
+            "symbol": 1,
+            "tradingSymbol": 1,
+            "instrumentToken": 1,
+            "ltp": 1,
+            "ts": 1,
+        }
+        db = get_db()
+        query = {"symbol": symbol_key} if symbol_key else {}
+        cursor = db.ticks.find(query, projection).sort("ts", -1).limit(capped)
+        ticks = await cursor.to_list(length=capped)
+        return {"data": sanitize_for_json(ticks), "source": "mongodb"}
+
     db = get_db()
     query = {}
     if symbol:
         query["symbol"] = symbol.upper()
-    cursor = db.ticks.find(query).sort("ts", -1).limit(min(max(limit, 1), 200))
+    cursor = db.ticks.find(query).sort("ts", -1).limit(capped)
     ticks = await cursor.to_list(length=200)
     for t in ticks:
         t["_id"] = str(t["_id"])

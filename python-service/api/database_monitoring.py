@@ -19,6 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from config.settings import settings
 from database.connection_enhanced import (
     connect_mongo,
     disconnect_mongo,
@@ -31,6 +32,7 @@ from database.connection_enhanced import (
     get_db,
     DatabaseConnectionInfo,
 )
+from services.json_safe import sanitize_for_json
 
 logger = logging.getLogger("app.database_api")
 
@@ -247,6 +249,44 @@ async def database_collections(
     except Exception as exc:
         logger.exception("Failed to get collection stats")
         return _bad(f"Failed to get collections: {exc}")
+
+
+@router.get("/sample")
+async def database_sample(
+    collection: str = Query(..., description="Collection name"),
+    limit: int = Query(5, ge=1, le=10),
+):
+    """
+    Real document preview: the latest ``limit`` documents of one collection.
+
+    Read-only (never mutates), authenticated against the CURRENT connection —
+    works on Atlas, local mongod, or a VM-local mongod alike. Documents are
+    sanitized through ``services.json_safe`` so ObjectId/datetime values turn
+    into plain JSON strings without fabrication.
+    """
+    if not is_mongo_connected():
+        return _bad("Database not connected")
+    try:
+        db = get_db()
+        existing = await db.list_collection_names()
+        if collection not in existing:
+            return _bad(f"Unknown collection: {collection}")
+        cursor = (
+            db[collection]
+            .find({})
+            .sort("_id", -1)
+            .limit(limit)
+        )
+        docs = await cursor.to_list(limit)
+        return _ok({
+            "collection": collection,
+            "count": int(await db[collection].count_documents({})),
+            "limit": limit,
+            "samples": sanitize_for_json(docs),
+        })
+    except Exception as exc:
+        logger.exception("Failed to sample collection %s", collection)
+        return _bad(f"Failed to sample {collection}: {exc}")
 
 
 @router.post("/reconnect")

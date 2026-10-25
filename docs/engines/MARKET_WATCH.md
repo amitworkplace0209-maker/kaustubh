@@ -1215,6 +1215,7 @@ watchlist.
 |------|-------------------|
 | Automatic time | Friday (weekday 4) 15:25 IST — `mwr_friday_scan_hhmm` |
 | Trading-day guard | `market_calendar.is_trading_day(now)`; exchange holidays are skipped |
+| Session guard | `SessionManager.snapshot()["active"]`; the automatic run waits for login because the MIS margin rule cannot be satisfied otherwise. Manual runs are not gated. |
 | Engine entry point | `MarketWatchEngine._friday_scan_tick` |
 | Dedupe key | ISO week (`week_id_for(now)`), so one completed scan per week |
 | In-flight guard | `_friday_scan_running_for` + a background `asyncio.Task` |
@@ -1239,9 +1240,62 @@ to apply the rule:
 | Margin | The scan passes `require_margin=True`; a missing broker answer is `MARGIN_UNAVAILABLE`, below `mwr_margin_multiplier_threshold` (default 5x) is `MARGIN_BELOW_THRESHOLD`. The global `mwr_margin_required` switch is not consulted, because it also drives live per-tick eligibility where margin is not resolved for every symbol. |
 | Provenance | Every rejection is persisted with its reason code; no stock is selected from an assumed price, margin or entitlement |
 
-`ScanResult` reports `candidates`, `priced`, `marginResolved`,
-`marginUnavailable`, `selected`, `rejected`, `reasonCounts` and
-`priceSourceCounts`, and is stored in `market_watch_weekly_screen`.
+`ScanResult` reports `candidates`, `priced`, `marginRequested`,
+`marginResolved`, `marginUnavailable`, `selected`, `rejected`, `reasonCounts`
+and `priceSourceCounts`, and is stored in `market_watch_weekly_screen`.
+
+Three broker contracts shape the screen:
+
+* Kotak rejects a quote request carrying 50 symbols. `services/last_price.py`
+  chunks the universe at 49 and, for this screen only, asks for LTP without a
+  second OHLC round-trip.
+* Kotak's margin preview carries the required order margin in
+  `data.reqdMrgn` (with `data.ordMrgn` as the equivalent figure). The extractor
+  reads these fields first; without them a successful broker answer would be
+  misread as `MARGIN_UNAVAILABLE`.
+* Kotak's `check-margin` endpoint disconnects large concurrent bursts and
+  returns HTTP 429 (`stCode: 100025`, "rate limit exceeded") under sustained
+  abuse. Margin resolution defaults to three calls in flight with a small
+  pacing gap (`MAX_CONCURRENCY = 3`, `MARGIN_MIN_INTERVAL_SECONDS = 0.2`).
+  Operators can slow a recovery run without editing code:
+  `MWR_MARGIN_CONCURRENCY`, `MWR_MARGIN_MIN_INTERVAL` and
+  `MWR_MARGIN_TIMEOUT` override the defaults. A full NSE EQ screen still
+  reaches the quota after roughly 500 calls, so the resolver shares a
+  rate-limit cooldown across all workers and retries the same symbol:
+  30 s, 60 s, 120 s, 240 s, then 300 s. A persistent 429 raises
+  `MarginBrokerUnavailable`; it is never recorded as a per-symbol
+  `MARGIN_UNAVAILABLE`. Transport blips ("Server disconnected", timeouts) get
+  2 s / 5 s / 10 s retries under a 20 s per-call ceiling, then abort the same
+  way. A dropped session also raises immediately: continuing would return a
+  batch of `UNAVAILABLE` answers that could be mistaken for a complete screen.
+  A valid broker answer with no recognisable margin field remains a legitimate
+  per-symbol `MARGIN_UNAVAILABLE` and does not abort the screen.
+
+The quote and margin phases share one broker SDK client. If the quote endpoint
+is disconnecting, concurrent quote calls can leave that client unusable and
+the margin phase then times out. The normal Friday run still prices from live
+quotes; an operator recovery run may call `run_scan(..., allow_broker=False)`
+to price from stored candle closes and leave the client fresh for margin. The
+screen doc records the resulting `priceSourceCounts` (`last_close`), so the
+provenance is visible rather than implied.
+
+A recovery run may also prime the resolver with authoritative same-day answers
+from an earlier partial screen (`margin_resolver.prime`). Only the symbols
+whose calls never completed are re-queried, which keeps a manual recovery
+inside the broker session instead of re-spending the whole quota. The normal
+Friday run never reuses a previous week's answers; primed values are the same
+trading day's broker facts, and the final screen doc still records the complete
+`marginRequested` / `marginResolved` / `marginUnavailable` counts.
+
+If the SDK's HTTP/2 transport holds a `check-margin` request open without
+returning a response, the operator recovery tool may replace the REST session
+with HTTP/1.1 and a 14 s timeout. The application client remains HTTP/2; this
+is a transport workaround for a hung stream, not a second margin
+implementation.
+
+Because a quota-hit batch is retried rather than skipped, the scan can take
+20–30 minutes. The batch loop stops at the first fatal margin failure; the
+engine then reports `SCAN_ERROR` and refuses to lock a partial universe.
 
 ### A.14.3 Lock, subscription and persistence
 
@@ -1252,12 +1306,16 @@ to apply the rule:
    ready for Monday without a second review step.
 3. The target is checked with `is_locked` **before** the expensive screen. An
    already-LOCKED week (including a restart after a completed scan) returns
-   `WEEK_ALREADY_LOCKED` without resolving prices or margin; `lock_universe`
+   `WEEK_ALREADY_LOCKED` without resolving prices or margin — immediately for a
+   manual run, and once the automatic run's session guard passes. `lock_universe`
    still enforces the same rule as a race guard (§33).
 4. A partial screen is not a smaller universe. If the candidate master or any
-   margin batch fails, the run reports `SCAN_ERROR`, does not lock, keeps the
-   previous universe, and the automatic path retries after a 300 s back-off. A
-   complete screen that legitimately selects zero names reports
+   margin batch fails — or if no candidate gets a price, or at least one priced
+   candidate was inside the price band but no authoritative margin answer came
+   back — the run reports `SCAN_ERROR`, does not lock, keeps the previous
+   universe, and the automatic path retries after a 300 s back-off. A complete
+   screen that legitimately selects zero names (including the case where every
+   priced candidate is above the cap, so no margin was requested) reports
    `NO_SYMBOLS_SELECTED` and also keeps the previous universe.
 5. After a successful lock the engine calls
    `load_locked_universe(refresh=True)` before rebuilding; otherwise it would
@@ -1338,8 +1396,9 @@ reason codes otherwise.
 
 * `tests/test_market_watch_friday_scan.py` — Friday status shape, target-week
   selection, already-locked and SCAN_ERROR refusals, zero-survivor behaviour,
-  concurrent-trigger guard, lifecycle start/dedupe/back-off, NSE-EQ candidate
-  filtering, subscription intent and the strict price/5x rule.
+  concurrent-trigger guard, lifecycle start/dedupe/back-off/session guard,
+  total price/margin outage classification, NSE-EQ candidate filtering,
+  subscription intent and the strict price/5x rule.
 * `tests/test_scheduler_ledger.py` — the `MARKET_WATCH_FRIDAY_SCAN` ledger
   settles `COMPLETED` / `ALREADY_SATISFIED`, starts catch-up while pending, and
   expires after logout instead of claiming a completion.
@@ -1352,9 +1411,12 @@ reason codes otherwise.
 
 * A scan that selects zero stocks **keeps the previous universe** and records
   `NO_SYMBOLS_SELECTED`. It does not clear the lock or retry every second.
-* A **partial** screen (candidate master or margin batch failure) records
-  `SCAN_ERROR`, never locks the survivors, keeps the previous universe and lets
-  the automatic path retry after 300 s. It does not mark the week done.
+* A **partial** screen (candidate master or margin batch failure) or a **total**
+  price/margin outage records `SCAN_ERROR`, never locks the survivors, keeps the
+  previous universe and lets the automatic path retry after 300 s. It does not
+  mark the week done. Without an active broker session the automatic tick waits
+  for login instead of starting the screen; a manual run still reports the real
+  failure.
 * A DB-Writer rejection is reported as `NOT_PERSISTED`; the engine never writes
   directly to MongoDB instead.
 * Because the Friday scan locks the upcoming week, the Saturday review is

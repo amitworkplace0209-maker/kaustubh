@@ -81,9 +81,31 @@
       ]
     },
     {
+      "name": "Live Watch",
+      "short_name": "Watch",
+      "url": "/data-saver/watch",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
       "name": "Downloads",
       "short_name": "Downloads",
       "url": "/data-saver/downloads",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Schedules",
+      "short_name": "Schedules",
+      "url": "/data-saver/schedules",
       "icons": [
         {
           "src": "/icon-192.png",

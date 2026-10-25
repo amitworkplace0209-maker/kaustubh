@@ -28,6 +28,10 @@ yarn-error.log*
 .env
 .env*.local
 
+# Khumbha AI device-local provider config (URLs, default model, no secrets)
+/khumbha-ai/local-ai.json
+/khumbha-ai/local-ai.tmp
+
 # Auth secrets (hashed PIN storage)
 .auth/
 

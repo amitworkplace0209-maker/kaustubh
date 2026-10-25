@@ -1,7 +1,8 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useMemo } from 'react';
 import { getSystemStatus, getSystemMarket } from '@/lib/api';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 
 export type SystemData = Record<string, any> | null;
 
@@ -11,7 +12,7 @@ export type SystemContextValue = {
   data: SystemData;
   state: SystemState;
   lastUpdated: number | null;
-  /** /api/system/market — canonical market calendar snapshot. Same poll loop. */
+  /** /api/system/market — canonical market calendar snapshot. Same socket. */
   market: SystemData;
   refresh: () => void;
 };
@@ -28,10 +29,22 @@ export function useSystem() {
   return useContext(SystemContext);
 }
 
+/** The `system` document the backend pushes over the WebSocket. */
+type SystemDocument = {
+  status?: Record<string, any>;
+  market?: Record<string, any>;
+  state?: Record<string, any>;
+};
+
 /**
- * Single /api/system poller for the whole app. Every bar (TopBar,
- * WorkspaceTopBar, System page, Dashboard) reads from this one context
- * instead of running its own interval, cutting N overlapping pollers to 1.
+ * ONE system-state source for the whole app.
+ *
+ * Every bar (TopBar, WorkspaceTopBar, System page, Dashboard) reads from this
+ * one context. The data now arrives over the persistent WebSocket: the
+ * backend pushes the authoritative `system` document (the same payload
+ * `/api/system` + `/api/system/market` return) whenever its state actually
+ * changes. The REST call below is only the degraded fallback — it runs while
+ * the socket has no document and stops as soon as one arrives.
  */
 export function SystemProvider({
   pollMs = 10000,
@@ -40,61 +53,30 @@ export function SystemProvider({
   pollMs?: number;
   children: React.ReactNode;
 }) {
-  const [data, setData] = useState<SystemData>(null);
-  const [state, setState] = useState<SystemState>('loading');
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
-  const [market, setMarket] = useState<SystemData>(null);
-  const busyRef = useRef(false);
-  const mountedRef = useRef(true);
+  const { data, error, updatedAt, refresh } = useRealtimeChannel<SystemDocument>('system', {
+    fallbackMs: pollMs,
+    fallbackKey: 'system',
+    fallback: async () => {
+      const [status, market] = await Promise.all([getSystemStatus(), getSystemMarket()]);
+      return { status, market };
+    },
+  });
 
-  const fetchNow = useCallback(async () => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    try {
-      const [res, mk] = await Promise.all([getSystemStatus(), getSystemMarket()]);
-      if (!mountedRef.current) return;
-      setData(res);
-      setMarket(mk);
-      setState('ok');
-      setLastUpdated(Date.now());
-    } catch {
-      if (mountedRef.current) setState('error');
-    } finally {
-      busyRef.current = false;
-    }
-  }, []);
+  const status = data?.status ?? null;
+  const market = data?.market ?? null;
 
-  const refresh = useCallback(() => {
-    void fetchNow();
-  }, [fetchNow]);
+  const state: SystemState = status ? 'ok' : error ? 'error' : 'loading';
 
-  useEffect(() => {
-    mountedRef.current = true;
-    void fetchNow();
-
-    const interval = setInterval(() => {
-      if (typeof document === 'undefined' || !document.hidden) void fetchNow();
-    }, pollMs);
-
-    const onSessionChange = () => void fetchNow();
-    const onVisible = () => {
-      if (!document.hidden) void fetchNow();
-    };
-    window.addEventListener('kotak-session-changed', onSessionChange);
-    document.addEventListener('visibilitychange', onVisible);
-
-    return () => {
-      mountedRef.current = false;
-      busyRef.current = false;
-      clearInterval(interval);
-      window.removeEventListener('kotak-session-changed', onSessionChange);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [fetchNow, pollMs]);
-
-  return (
-    <SystemContext.Provider value={{ data, state, lastUpdated, market, refresh }}>
-      {children}
-    </SystemContext.Provider>
+  const value = useMemo<SystemContextValue>(
+    () => ({
+      data: status,
+      state,
+      lastUpdated: updatedAt || null,
+      market,
+      refresh,
+    }),
+    [status, state, updatedAt, market, refresh],
   );
+
+  return <SystemContext.Provider value={value}>{children}</SystemContext.Provider>;
 }

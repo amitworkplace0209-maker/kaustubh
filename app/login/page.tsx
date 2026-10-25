@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { AUTH_EVENT } from '@/components/auth-provider';
 import {
   TrendingUp, Lock, Eye, EyeOff, Loader2,
-  Database, Server, AlertCircle, ChevronRight, Brain,
+  Database, Server, AlertCircle, ChevronRight,
 } from 'lucide-react';
 
 type AppState = 'loading' | 'welcome' | 'locked' | 'unlocking' | 'workspace';
@@ -58,22 +58,6 @@ const WORKSPACE_DATA = [
     textAccent: 'text-purple',
     dotColor: 'bg-purple',
     status: 'Services Running',
-  },
-  {
-    id: 'ai',
-    title: 'KHUMBHA AI',
-    description: 'Local AI engine: models, datasets, training, inference, agents and infrastructure',
-    icon: Brain,
-    modules: 8,
-    href: '/ai/dashboard',
-    gradient: 'from-teal to-info',
-    glow: 'shadow-info/25',
-    border: 'border-info/30',
-    hoverBorder: 'hover:border-info/60',
-    bgTint: 'bg-info/5',
-    textAccent: 'text-info',
-    dotColor: 'bg-info',
-    status: 'AI Runtime Running',
   },
 ];
 

@@ -24,25 +24,25 @@ export const SM = '/api/phase3/session-manager';
 export const WE = '/api/phase2/websocket-engine';
 
 export const TONE: Record<string, string> = {
-  ACTIVE: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-  SUBSCRIBED: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25',
-  SUBSCRIBED_AND_PINNED: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-  PINNED_ONLY: 'bg-amber-500/10 text-amber-300 border-amber-500/25',
-  SUBSCRIBE_REQUESTED: 'bg-sky-500/10 text-sky-300 border-sky-500/25',
-  UNSUBSCRIBE_REQUESTED: 'bg-slate-500/10 text-slate-300 border-slate-500/25',
-  UNSUBSCRIBED: 'bg-slate-500/10 text-slate-300 border-slate-500/25',
-  NOT_SUBSCRIBED: 'bg-slate-500/10 text-slate-300 border-slate-500/25',
-  EXPIRING: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/25',
-  EXPIRED: 'bg-rose-500/15 text-rose-300 border-rose-500/30',
-  INACTIVE: 'bg-zinc-500/10 text-zinc-300 border-zinc-500/25',
-  ERROR: 'bg-red-500/15 text-red-300 border-red-500/30',
+  ACTIVE: 'bg-emerald-500/15 text-emerald-800 border-emerald-500/40 font-semibold',
+  SUBSCRIBED: 'bg-emerald-500/12 text-emerald-800 border-emerald-500/35',
+  SUBSCRIBED_AND_PINNED: 'bg-amber-500/15 text-amber-800 border-amber-500/40 font-semibold',
+  PINNED_ONLY: 'bg-amber-500/12 text-amber-800 border-amber-500/35',
+  SUBSCRIBE_REQUESTED: 'bg-sky-500/12 text-sky-800 border-sky-500/35',
+  UNSUBSCRIBE_REQUESTED: 'bg-slate-500/12 text-slate-700 border-slate-500/35',
+  UNSUBSCRIBED: 'bg-slate-500/12 text-slate-700 border-slate-400/40',
+  NOT_SUBSCRIBED: 'bg-slate-500/10 text-slate-600 border-slate-400/40',
+  EXPIRING: 'bg-yellow-500/15 text-yellow-800 border-yellow-500/40',
+  EXPIRED: 'bg-rose-500/15 text-rose-800 border-rose-500/40',
+  INACTIVE: 'bg-zinc-500/10 text-zinc-600 border-zinc-400/40',
+  ERROR: 'bg-red-500/15 text-red-800 border-red-500/40',
 };
 
 const TIER_TONE: Record<string, string> = {
-  'L4': 'bg-slate-500/10 text-slate-300 border-slate-500/25',
-  'L8': 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',
-  'L16': 'bg-purple-500/15 text-purple-300 border-purple-500/30',
-  'UNSET': 'bg-zinc-500/10 text-zinc-300 border-zinc-500/25',
+  'L4': 'bg-slate-500/10 text-slate-700 border-slate-400/40',
+  'L8': 'bg-fuchsia-500/15 text-fuchsia-800 border-fuchsia-500/40',
+  'L16': 'bg-purple-500/15 text-purple-800 border-purple-500/40',
+  'UNSET': 'bg-zinc-500/10 text-zinc-600 border-zinc-400/40',
 };
 
 export function tierBadge(level?: number | string, marketData?: string) {
@@ -51,16 +51,42 @@ export function tierBadge(level?: number | string, marketData?: string) {
   return <Badge variant="outline" className={TIER_TONE[label] ?? TIER_TONE.UNSET}>{label}</Badge>;
 }
 
-export function fmtTs(iso?: string | number | null) {
-  if (iso == null || iso === '') return '—';
-  const s = String(iso).replace('Z', '').replace('+00:00', '');
+/** IST display clock — Asia/Kolkata, 23h clock (no '24:00' quirk). */
+const IST_PARTS = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Kolkata',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+function formatIst(ms: number): string {
   try {
-    if (!s.includes('T') && !isNaN(Number(iso))) return new Date(Number(iso) * 1000).toISOString().slice(0, 19).replace('T', ' ');
-    const d = new Date(s.endsWith('Z') || s.includes('T') ? s : Number(s) * 1000);
-    return d.toISOString().slice(0, 19).replace('T', ' ');
+    const p = Object.fromEntries(IST_PARTS.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} IST`;
   } catch {
-    return String(iso);
+    return new Date(ms).toISOString();
   }
+}
+
+/** Format ANY backend timestamp as IST wall time:
+ *  - epoch floats/ints (seconds or ms — the runtime + DB forms)
+ *  - ISO strings with any offset / 'Z' (backend already normalizes DB times to +05:30)
+ *  Unparsable input is returned as-is — nothing is ever fabricated here. */
+export function fmtTs(v?: unknown): string {
+  if (v == null || v === '') return '—';
+  const raw = String(v).trim();
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return '—';
+    return formatIst(n >= 1e12 ? n : n * 1000);
+  }
+  const ms = Date.parse(raw);
+  if (Number.isNaN(ms)) return raw;
+  return formatIst(ms);
 }
 
 export function fmtNum(n?: number | string | null): string {
@@ -83,8 +109,8 @@ export function fmtDuration(seconds?: number | string | null): string {
 
 export function LivePill({ ok, label }: { ok: boolean; label: string }) {
   return (
-    <Badge variant="outline" className={ok ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-slate-500/10 text-slate-300 border-slate-500/25'}>
-      <span className={`mr-1.5 inline-block h-2 w-2 rounded-full ${ok ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}`} />
+    <Badge variant="outline" className={ok ? 'bg-emerald-500/15 text-emerald-800 border-emerald-500/40 font-semibold' : 'bg-slate-500/12 text-slate-700 border-slate-400/40'}>
+      <span className={`mr-1.5 inline-block h-2 w-2 rounded-full ${ok ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
       {label}
     </Badge>
   );

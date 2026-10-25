@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { WifiOff } from 'lucide-react';
+import { dedupeFetch } from '@/lib/shared-request';
 
 /**
  * OfflineBanner — an honest connectivity indicator.
@@ -30,7 +31,11 @@ export function OfflineBanner() {
       // The interface says "online" — verify the app can actually reach the
       // server before we claim the app is online.
       setProbing(true);
-      fetch('/api/health', { cache: 'no-store', method: 'GET' })
+      dedupeFetch(
+        'health:reachability',
+        () => fetch('/api/health', { cache: 'no-store', method: 'GET' }),
+        { ttlMs: 2000 },
+      )
         .then((res) => setOffline(!res.ok))
         .catch(() => setOffline(true))
         .finally(() => setProbing(false));

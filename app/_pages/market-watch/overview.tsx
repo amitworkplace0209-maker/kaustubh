@@ -24,7 +24,7 @@ export default function OverviewTab({ onNavigate }: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const { ticks, connectionState, frames } = useMarketWatchRealtime([]);
+  const { ticks, connectionState, connected: socketConnected, frames } = useMarketWatchRealtime([]);
 
   const fetchData = useCallback(async () => {
     // Doc §25: ONE failing endpoint must never blank the whole summary. Fetch
@@ -52,19 +52,23 @@ export default function OverviewTab({ onNavigate }: {
 
   useEffect(() => {
     fetchData();
-    // doc §25/§26 — the three realtime frames below already carry feedState,
-    // universe size, ranking snapshot and the auto pins. This is a 60s
-    // reconciliation safety net for a dropped socket, not the update path; it
-    // used to be a full `/ui` + `/ranking` + `/pins` refetch every 12s.
-    const iv = setInterval(fetchData, RECONCILE_INTERVAL_MS);
+    // doc §25/§26 — the realtime frames below already carry feedState, universe
+    // size, ranking snapshot, the auto pins AND the controlled `/ui` publish.
+    // This interval is ONLY the safety net while the socket cannot deliver.
+    const iv = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (socketConnected) return;
+      fetchData();
+    }, RECONCILE_INTERVAL_MS);
     return () => { if (iv) clearInterval(iv); };
-  }, [fetchData]);
+  }, [fetchData, socketConnected]);
 
   // Realtime state frames overlay the REST summary (fresher than polling).
   useEffect(() => {
     const s = frames['market_watch.status'];
     const r = frames['market_watch.ranking'];
     const p = frames['market_watch.pins'];
+    const u2 = frames['market_watch.ui'];
     if (s) {
       const d = (s as any)?.data;
       if (d) {
@@ -90,6 +94,17 @@ export default function OverviewTab({ onNavigate }: {
           snapshotCount: d.snapshotCount ?? prev.snapshotCount,
           latest: d.latest ?? prev.latest,
         } : prev));
+      }
+    }
+    if (u2) {
+      // The engine's controlled UI publish — the exact `/ui` document.
+      const d = (u2 as any)?.data;
+      const payload = d?.payload ?? d;
+      if (payload && typeof payload === 'object') {
+        setUi((prev) => ({
+          ...(prev ?? ({} as UiPayload)),
+          ...payload,
+        }));
       }
     }
     if (p) {

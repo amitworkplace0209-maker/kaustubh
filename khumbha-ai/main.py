@@ -15,32 +15,82 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+import local_ai
 
 HOST = os.getenv("AI_HOST", "127.0.0.1")
 PORT = int(os.getenv("AI_PORT", "8001"))
+BRIDGE_TOKEN = os.getenv("AI_BRIDGE_TOKEN", "").strip()
 
 logger = logging.getLogger("khumbha")
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="KAUSTUBH Khumbha AI Runtime", version="1.0.0", docs_url="/docs")
+app = FastAPI(title="KAUSTUBH Khumbha AI Runtime", version=local_ai.BRIDGE_VERSION, docs_url="/docs")
 
-allowed = os.getenv("AI_CORS_ORIGINS", "http://localhost:3000,http://localhost:3001").split(",")
+# Local AI provider registry (Ollama / LM Studio / llama.cpp / custom OpenAI).
+# Config is stored on the device at khumbha-ai/local-ai.json (gitignored).
+REGISTRY = local_ai.ProviderRegistry()
+
+# Token gate runs INSIDE CORS: CORS is added after this middleware so error
+# responses still receive the browser's CORS headers. The token is optional;
+# when AI_BRIDGE_TOKEN is empty the bridge is loopback-only by default.
+@app.middleware("http")
+async def bridge_token_gate(request: Request, call_next):
+    if request.method == "OPTIONS":
+        response = await call_next(request)
+    elif BRIDGE_TOKEN and request.url.path not in {"/health", "/docs", "/openapi.json"}:
+        supplied = request.headers.get("x-khumbha-ai-token", "")
+        if not secrets.compare_digest(supplied, BRIDGE_TOKEN):
+            response = JSONResponse(
+                {"detail": "invalid or missing X-Khumbha-AI-Token"},
+                status_code=401,
+            )
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
+    return response
+
+
+allowed = [
+    origin.strip()
+    for origin in os.getenv(
+        "AI_CORS_ORIGINS",
+        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001",
+    ).split(",")
+    if origin.strip()
+]
+allow_all_origins = "*" in allowed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in allowed if o.strip()],
-    allow_credentials=True,
+    allow_origins=["*"] if allow_all_origins else allowed,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Outermost middleware: add the Private Network Access opt-in to every response,
+# including CORS preflights (which short-circuit inside CORSMiddleware). A page
+# served from the VM may ask this loopback bridge for permission; the browser
+# still decides whether to grant it.
+@app.middleware("http")
+async def private_network_header(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Access-Control-Allow-Private-Network", "true")
+    return response
 
 
 # --------------------------------------------------------------------------
@@ -184,6 +234,45 @@ class SuggestRequest(BaseModel):
     prices: list[float] | None = None
 
 
+class ProviderUpdate(BaseModel):
+    baseUrl: str | None = None
+    kind: str | None = None
+    label: str | None = None
+    enabled: bool | None = None
+    model: str | None = None
+
+
+class DefaultsUpdate(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    maxTokens: int | None = None
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+    provider: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    maxTokens: int | None = None
+    timeoutSec: float | None = None
+
+
+class AnalyzeRequest(BaseModel):
+    kind: str
+    context: dict[str, Any]
+    question: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    maxTokens: int | None = None
+
+
 def _seed_models():
     if not MODELS:
         m = Model(
@@ -211,7 +300,13 @@ _seed_models()
 # --------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "khumbha-ai-runtime", "uptimeSec": round(time.time() - APP_START, 1)}
+    return {
+        "status": "ok",
+        "service": "khumbha-ai-runtime",
+        "bridgeVersion": local_ai.BRIDGE_VERSION,
+        "uptimeSec": round(time.time() - APP_START, 1),
+        "localAi": REGISTRY.summary(),
+    }
 
 
 @app.get("/api/hardware")
@@ -241,6 +336,7 @@ def dashboard():
         "recentRuns": sorted(INFERENCE_HISTORY, key=lambda r: r["ts"], reverse=True)[:10],
         "models": [{"id": m.id, "name": m.name, "status": m.status, "metrics": m.metrics} for m in MODELS.values()],
         "agents": [{"id": a.id, "name": a.name, "status": a.status} for a in AGENTS.values()],
+        "localAi": REGISTRY.summary(),
     }
 
 
@@ -375,6 +471,109 @@ def suggestions(req: SuggestRequest):
     elif last3[-1] < avg:
         out.append({"kind": "position", "text": "Latest value is below the series mean"})
     return {"suggestions": out}
+
+
+# --------------------------------------------------------------------------
+# Local AI providers (Ollama / LM Studio / llama.cpp / custom OpenAI-compatible)
+# --------------------------------------------------------------------------
+def _provider_error(exc: Exception) -> HTTPException:
+    text = str(exc)
+    if isinstance(exc, KeyError):
+        return HTTPException(404, text)
+    if "timed out" in text.lower():
+        return HTTPException(504, text)
+    return HTTPException(502 if isinstance(exc, RuntimeError) else 400, text)
+
+
+@app.get("/api/ai/status")
+def ai_status():
+    snapshot = REGISTRY.snapshot(probe=False)
+    return {**snapshot, "summary": REGISTRY.summary(), "uptimeSec": round(time.time() - APP_START, 1)}
+
+
+@app.get("/api/providers")
+@app.get("/api/ai/providers")
+def ai_providers(probe: bool = True):
+    """Provider registry + real model discovery.
+
+    ``probe=false`` returns the last known real state without touching a model
+    server (used by dashboards). ``probe=true`` refreshes in parallel.
+    """
+    return REGISTRY.snapshot(probe=probe)
+
+
+@app.post("/api/providers/{provider_id}/probe")
+def ai_provider_probe(provider_id: str):
+    try:
+        result = REGISTRY.probe(provider_id)
+    except Exception as exc:  # noqa: BLE001 - route boundary
+        raise _provider_error(exc) from exc
+    return {"ok": True, "provider": provider_id, **result}
+
+
+@app.put("/api/providers/{provider_id}")
+def ai_provider_update(provider_id: str, req: ProviderUpdate):
+    try:
+        REGISTRY.update_provider(provider_id, req.model_dump(exclude_none=True))
+        snapshot = REGISTRY.snapshot(probe=False)
+        provider = next(p for p in snapshot["providers"] if p["id"] == provider_id)
+        if provider["enabled"] and provider["baseUrl"]:
+            REGISTRY.probe(provider_id)
+            snapshot = REGISTRY.snapshot(probe=False)
+            provider = next(p for p in snapshot["providers"] if p["id"] == provider_id)
+    except Exception as exc:  # noqa: BLE001 - route boundary
+        raise _provider_error(exc) from exc
+    return {"ok": True, "provider": provider}
+
+
+@app.put("/api/ai/defaults")
+def ai_defaults_update(req: DefaultsUpdate):
+    try:
+        defaults = REGISTRY.update_defaults(req.model_dump(exclude_none=True))
+    except Exception as exc:  # noqa: BLE001 - route boundary
+        raise _provider_error(exc) from exc
+    return {"ok": True, "defaults": defaults}
+
+
+@app.get("/api/ai/models")
+def ai_local_models():
+    return {
+        "models": REGISTRY.models(probe=True),
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/ai/chat")
+def ai_chat(req: ChatRequest):
+    try:
+        data = REGISTRY.chat(
+            [m.model_dump() for m in req.messages],
+            provider_id=req.provider,
+            model=req.model,
+            temperature=req.temperature,
+            max_tokens=req.maxTokens,
+            timeout=req.timeoutSec,
+        )
+    except Exception as exc:  # noqa: BLE001 - route boundary
+        raise _provider_error(exc) from exc
+    return {"data": data}
+
+
+@app.post("/api/ai/analyze")
+def ai_analyze(req: AnalyzeRequest):
+    try:
+        data = REGISTRY.analyze(
+            req.kind,
+            req.context,
+            question=req.question,
+            provider_id=req.provider,
+            model=req.model,
+            temperature=req.temperature,
+            max_tokens=req.maxTokens,
+        )
+    except Exception as exc:  # noqa: BLE001 - route boundary
+        raise _provider_error(exc) from exc
+    return {"data": data}
 
 
 @app.get("/api/agents")

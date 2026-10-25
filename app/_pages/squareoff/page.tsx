@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
-  Activity, RotateCcw, RefreshCw, Timer, Power, Layers, Clock, ShieldCheck,
-  History, CalendarDays, Radio, ListOrdered, FileSearch, AlertTriangle,
+  Activity, RotateCcw, RefreshCw, Timer, Power, Layers, ShieldCheck,
+  History, CalendarDays, Radio, FileSearch,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -13,38 +14,7 @@ import {
   squareOffTradingPosition, getPositions, getOrderBook,
   getSquareoffDetail, getSquareoffHistory, runSquareoffNow, getTerminalAudit,
 } from '@/lib/api';
-import {
-  PageHeader,
-  SectionCard,
-  MetricCard,
-  StatCard,
-  StatusBadge,
-  EmptyState,
-  LoadingState,
-  ErrorState,
-  LiveIndicator,
-} from '@/components/design-system';
 
-/**
- * SERVICES -> Trading -> Squareoff Engine
- *
- * Redesign per docs/engines/squareoff-engine.md:
- *   §15 Squareoff Card · §16 UI statuses · §17 Live Progress Panel ·
- *   §18 Last Run Summary · §22 run/attempt data model + per-day history.
- *
- * Live contract (project honesty rule):
- *   - Engine snapshot arrives on WebSocket #2 (`squareoff_engine` registry id)
- *     via useEngineStatus, with a one-shot REST fallback — never interval
- *     polled. LiveIndicator shows which source is driving the header.
- *   - Detail (schedule + broker counts) + history load once via the new
- *     detail/history endpoints and refresh on demand or when the realtime
- *     engine state changes — never on a timer.
- *   - Positions / pending orders are broker reality (GET /api/trading/*).
- *     Unknown renders as —, never an invented 0.
- *   - History is the engine's own recent runs (in-memory, last 50) grouped by
- *     trading_date (IST). The permanent record is the audit trail
- *     (SQUARE_OFF_* events) — shown best-effort below.
- */
 const ENGINE = '/api/services/engines/squareoff_engine';
 
 type Tab = 'live' | 'history' | 'perday';
@@ -68,28 +38,28 @@ function fmtClockIST(ts?: number | string | null): string {
   return d.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
 }
 
-const STATE_STATUS: Record<string, 'success' | 'warning' | 'danger' | 'neutral' | 'info'> = {
-  SQUAREOFF_COMPLETE: 'success',
-  COMPLETED: 'success',
-  COMPLETE: 'success',
-  CLOSED: 'success',
-  SQUAREOFF_IN_PROGRESS: 'warning',
-  IN_PROGRESS: 'warning',
-  VERIFYING: 'warning',
-  WAITING_RETRY: 'warning',
-  PLACING_EXIT: 'warning',
-  SQUAREOFF_INCOMPLETE: 'danger',
-  FAILED: 'danger',
-  INCOMPLETE: 'danger',
-  PARTIAL: 'warning',
-  IDLE: 'neutral',
-  SCHEDULED: 'info',
-  NO_POSITIONS: 'neutral',
+const STATE_TONE: Record<string, string> = {
+  SQUAREOFF_COMPLETE: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700',
+  COMPLETED: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700',
+  COMPLETE: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700',
+  CLOSED: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700',
+  SQUAREOFF_IN_PROGRESS: 'border-amber-500/40 bg-amber-500/10 text-amber-700',
+  IN_PROGRESS: 'border-amber-500/40 bg-amber-500/10 text-amber-700',
+  VERIFYING: 'border-amber-500/40 bg-amber-500/10 text-amber-700',
+  WAITING_RETRY: 'border-amber-500/40 bg-amber-500/10 text-amber-700',
+  PLACING_EXIT: 'border-amber-500/40 bg-amber-500/10 text-amber-700',
+  SQUAREOFF_INCOMPLETE: 'border-rose-500/40 bg-rose-500/10 text-rose-700',
+  FAILED: 'border-rose-500/40 bg-rose-500/10 text-rose-700',
+  INCOMPLETE: 'border-rose-500/40 bg-rose-500/10 text-rose-700',
+  PARTIAL: 'border-amber-500/40 bg-amber-500/10 text-amber-700',
+  IDLE: 'border-slate-500/40 bg-slate-500/10 text-slate-700',
+  SCHEDULED: 'border-slate-500/40 bg-slate-500/10 text-slate-700',
+  NO_POSITIONS: 'border-slate-500/40 bg-slate-500/10 text-slate-700',
 };
 
-function stateTone(s?: string): 'success' | 'warning' | 'danger' | 'neutral' | 'info' {
-  if (!s) return 'neutral';
-  return STATE_STATUS[String(s).toUpperCase()] ?? STATE_STATUS[String(s)] ?? 'neutral';
+function stateTone(s?: string): string {
+  if (!s) return STATE_TONE.IDLE;
+  return STATE_TONE[String(s).toUpperCase()] ?? STATE_TONE.IDLE;
 }
 
 function posQty(p: any): number {
@@ -112,31 +82,28 @@ function eligibleForScope(p: any, scope: string): boolean {
 }
 
 export default function SquareoffPage() {
-  const { data: engine, error: engineError, source, updatedAt, connected, refresh: refreshEngine } =
+  const { data: engine, error: engineError, source, connected, refresh: refreshEngine } =
     useEngineStatus<any>('squareoff_engine', ENGINE);
 
-  // One-shot detail (schedule + broker counts + runs) — refreshed on demand
-  // and whenever the realtime engine state flips (event-driven, no timer).
   const [detail, setDetail] = useState<any>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [detailLoading, setDetailLoading] = useState(true);
   const loadDetail = async () => {
-    setDetailLoading(true);
     try {
       const r = await getSquareoffDetail();
       setDetail(r?.data ?? r);
       setDetailError(null);
     } catch (e: any) {
       setDetailError(e?.message ?? 'detail fetch failed');
-    } finally {
-      setDetailLoading(false);
     }
   };
   useEffect(() => { void loadDetail(); }, []);
 
-  // Broker reality — positions + pending orders (one-shot + manual refresh).
-  const { data: positionsRaw, error: posError, refresh: refreshPositions, loading: posLoading } =
-    useBackend(async () => (await getPositions())?.data?.data ?? (await getPositions())?.data ?? []);
+  const { data: positionsRaw, error: posError, refresh: refreshPositions } =
+    useBackend(async () => {
+      const r = await getPositions();
+      const d = r?.data;
+      return d?.data ?? d ?? [];
+    });
   const { data: ordersRaw, refresh: refreshOrders } =
     useBackend(async () => {
       try {
@@ -149,13 +116,12 @@ export default function SquareoffPage() {
       } catch { return []; }
     });
 
-  // History (one-shot) + audit trail (best-effort permanent record).
   const [history, setHistory] = useState<any>(null);
   const loadHistory = async () => {
     try {
       const r = await getSquareoffHistory(20);
       setHistory(r?.data ?? r);
-    } catch { /* honest empty below */ }
+    } catch { /* honest empty */ }
   };
   useEffect(() => { void loadHistory(); }, []);
   const { data: auditRaw } = useBackend(async () => {
@@ -165,8 +131,6 @@ export default function SquareoffPage() {
     } catch { return []; }
   });
 
-  // Realtime follow-up: when the engine pushes a new squareoff state, pull
-  // the fresh detail/positions/history once (no interval).
   const liveState: string | undefined = engine?.squareoffState ?? detail?.squareoffState;
   useEffect(() => {
     if (source !== 'realtime') return;
@@ -185,7 +149,6 @@ export default function SquareoffPage() {
     refreshOrders();
   };
 
-  // ---- merged live model (realtime push wins, detail fills broker counts) ----
   const sched = engine?.schedule ?? engine?.config ?? detail?.schedule ?? {};
   const squareoffTime: string = sched?.squareoffTime ?? detail?.schedule?.squareoffTime ?? '15:16';
   const freezeTime: string = sched?.freezeTime ?? detail?.schedule?.freezeTime ?? '15:15';
@@ -197,8 +160,6 @@ export default function SquareoffPage() {
 
   const state: string = engine?.squareoffState ?? detail?.squareoffState ?? 'IDLE';
   const health: string = engine?.health ?? 'UNKNOWN';
-  const healthStatus: 'success' | 'warning' | 'danger' | 'neutral' =
-    health === 'HEALTHY' ? 'success' : health === 'UNHEALTHY' ? 'danger' : health === 'DEGRADED' ? 'warning' : 'neutral';
 
   const activeRun = engine?.activeRun ?? detail?.activeRun ?? (history?.active?.[0] as any) ?? null;
   const lastRun = engine?.lastRun ?? detail?.lastRun ?? (history?.recent?.[0] as any) ?? null;
@@ -258,7 +219,6 @@ export default function SquareoffPage() {
     }).slice(0, 30);
   }, [auditRaw]);
 
-  // ---- actions ----
   const [selected, setSelected] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -311,154 +271,197 @@ export default function SquareoffPage() {
     refreshPositions();
   };
 
-  const ago = updatedAt ? Math.max(0, Math.round((Date.now() - updatedAt) / 1000)) : null;
   const live = Boolean(connected && source === 'realtime');
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Squareoff Engine"
-        subtitle={
-          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span>End-of-trading safety · MARKET-exit &amp; 15s retry · squareoff_engine</span>
-            <LiveIndicator live={live} label={source === 'realtime' ? `live · updated ${ago ?? '—'}s ago` : source === 'api' ? 'REST snapshot (no live frame yet)' : 'offline'} />
-            <span className="font-mono text-[10px] text-muted-foreground">Today · {tradingDate} IST</span>
-          </span>
-        }
-      >
-        <StatusBadge status={stateTone(state)} label={state} />
-        {health !== 'UNKNOWN' && <StatusBadge status={healthStatus} label={health} />}
-        <Badge variant="outline" className="hidden sm:inline-flex font-mono text-[10px]">
-          {engine?.engineName ?? 'Squareoff'} · v{engine?.version ?? '—'}
-        </Badge>
-        <Button size="sm" variant="outline" onClick={refreshAll}><RefreshCw className="mr-1 h-3 w-3" /> Refresh</Button>
-      </PageHeader>
+    <div className="space-y-4 pb-6">
+      {/* HERO */}
+      <section className="relative overflow-hidden rounded-2xl border border-amber-500/25 bg-gradient-to-br from-amber-500/[0.07] via-orange-500/[0.04] to-rose-500/[0.07] shadow-sm">
+        <div aria-hidden className="pointer-events-none absolute -left-10 -top-10 h-44 w-44 rounded-full bg-amber-500/12 blur-[80px]" />
+        <div aria-hidden className="pointer-events-none absolute -right-10 -top-10 h-44 w-44 rounded-full bg-rose-500/12 blur-[80px]" />
+        <div className="relative flex flex-wrap items-center gap-3 p-4 sm:p-5">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-500 via-orange-500 to-rose-600 text-white shadow-sm">
+            <RotateCcw className="h-6 w-6" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">Squareoff Engine</h1>
+            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
+              End-of-trading safety · MARKET-exit · 15s retry · squareoff_engine · Today {tradingDate} IST
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className={`text-[10px] font-medium ${stateTone(state)}`}>{state}</Badge>
+            {health !== 'UNKNOWN' && (
+              <Badge variant="outline" className={`text-[10px] font-medium ${stateTone(health)}`}>{health}</Badge>
+            )}
+            <Badge variant="outline" className="hidden sm:inline-flex font-mono text-[10px]">
+              {engine?.engineName ?? 'Squareoff'} · v{engine?.version ?? '—'}
+            </Badge>
+            <Badge variant="outline" className="text-[10px] font-mono">
+              {live ? 'LIVE · WS#2' : 'REST snapshot'}
+            </Badge>
+            <Button size="sm" variant="outline" onClick={refreshAll} className="gap-1.5">
+              <RefreshCw className="h-3.5 w-3.5" /> Refresh
+            </Button>
+            <Button size="sm" variant="outline" asChild className="gap-1.5">
+              <Link href="/services/system/profile/squareoff_engine">
+                <FileSearch className="h-3.5 w-3.5" /> Profile
+              </Link>
+            </Button>
+          </div>
+        </div>
+      </section>
 
       {engineError && (
-        <ErrorState message={String(engineError)} onRetry={refreshAll} />
+        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-700">
+          Engine error: {engineError}
+        </div>
       )}
       {detailError && (
-        <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-          Live detail unavailable ({detailError}) — showing engine snapshot. Restart the backend to load the new detail/history endpoints.
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-700">
+          Detail unavailable ({detailError}) — showing engine snapshot.
         </div>
       )}
 
-      {/* Top metrics — live */}
+      {/* METRICS */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          icon={Activity}
-          title="Squareoff state"
-          value={state}
-          sub={engine?.lastHeartbeat ? fmtClockIST(engine.lastHeartbeat) : `engine ${engine?.state ?? '—'}`}
-          tone={stateTone(state) === 'success' ? 'success' : stateTone(state) === 'warning' ? 'warning' : stateTone(state) === 'danger' ? 'danger' : 'neutral'}
-        />
-        <StatCard
-          icon={Clock}
-          title="Schedule"
-          value={`${squareoffTime} IST`}
-          sub={`freeze ${freezeTime} · retry ${retrySec ?? '—'}s · scope ${scope}`}
-          tone="teal"
-        />
-        <StatCard
-          icon={ShieldCheck}
-          title="Flow safety"
-          value={activeRun ? 'RUNNING' : 'IDLE'}
-          sub={`pending ${pendingCount ?? '—'} · remaining ${activeRun?.results?.length ?? detail?.remainingQuantity ?? '—'} · retries ${activeRun?.retryCount ?? detail?.retryCount ?? 0}`}
-          tone={activeRun ? 'warning' : 'neutral'}
-        />
-        <StatCard
-          icon={Layers}
-          title="Residual positions"
-          value={openCount != null ? String(openCount) : '—'}
-          sub={`to close ${toCloseCount ?? '—'} (${scope}) · auto ${autoEnabled == null ? '—' : autoEnabled ? 'ON' : 'OFF'}`}
-          tone={openCount != null && openCount > 0 ? 'warning' : 'success'}
-        />
+        <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Engine state</p>
+          <p className="mt-1 font-mono font-bold tabular-nums">{state}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{`last beat ${engine?.lastHeartbeat ? fmtClockIST(engine.lastHeartbeat) : '—'}`}</p>
+        </div>
+        <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Schedule</p>
+          <p className="mt-1 font-mono font-bold tabular-nums">{squareoffTime} IST</p>
+          <p className="mt-1 text-xs text-muted-foreground">{`freeze ${freezeTime} · retry ${retrySec ?? '—'}s · scope ${scope}`}</p>
+        </div>
+        <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Flow safety</p>
+          <p className="mt-1 font-mono font-bold tabular-nums">{activeRun ? 'RUNNING' : 'IDLE'}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{`pending ${pendingCount ?? '—'} · remaining ${activeRun?.results?.length ?? detail?.remainingQuantity ?? '—'}`}</p>
+        </div>
+        <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Residual positions</p>
+          <p className="mt-1 font-mono font-bold tabular-nums">{openCount != null ? String(openCount) : '—'}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{`to close ${toCloseCount ?? '—'} · auto ${autoEnabled == null ? '—' : autoEnabled ? 'ON' : 'OFF'}`}</p>
+        </div>
       </div>
 
-      {/* Tabs: Live / History / Per-day */}
-      <div className="flex flex-wrap items-center gap-2">
+      {/* TABS */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-border/50 pb-2">
         {([
           { k: 'live', label: 'Live', icon: Radio },
           { k: 'history', label: 'History', icon: History },
           { k: 'perday', label: 'Per Day', icon: CalendarDays },
-        ] as { k: Tab; label: string; icon: any }[]).map(({ k, label, icon: Icon }) => (
+        ] as const).map(({ k, label, icon: Icon }) => (
           <Button key={k} size="sm" variant={tab === k ? 'default' : 'outline'} onClick={() => setTab(k)}>
             <Icon className="mr-1 h-3 w-3" /> {label}
             {k === 'history' && recentRuns.length > 0 && <Badge variant="secondary" className="ml-1">{recentRuns.length}</Badge>}
           </Button>
         ))}
         <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-          {source === 'realtime' ? 'driven by WS#2 engine.status' : 'driven by REST snapshot'} · {connected ? 'socket up' : 'socket down'}
+          {connected ? 'socket up' : 'socket down'} · {source === 'realtime' ? 'WS#2' : 'REST'}
         </span>
       </div>
 
+      {/* LIVE */}
       {tab === 'live' && (
-        <div className="space-y-6">
-          {/* §15 Squareoff Card */}
-          <SectionCard
-            title="Squareoff card — doc §15"
-            icon={Timer}
-            headerRight={<Badge variant="outline">Automatic Squareoff [{autoEnabled == null ? '—' : autoEnabled ? 'ON' : 'OFF'}]</Badge>}
-            className="shadow-soft"
-          >
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <Timer className="h-3.5 w-3.5 text-amber-700" />
+              <h2 className="text-sm font-semibold text-foreground">Squareoff card</h2>
+              <span className="ml-auto font-mono text-[10px]">Auto [{autoEnabled == null ? '—' : autoEnabled ? 'ON' : 'OFF'}]</span>
+            </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <MetricCard icon={Clock} title="Squareoff Time" value={`${squareoffTime}`} sub="IST · Asia/Kolkata" />
-              <MetricCard icon={ShieldCheck} title="Freeze Before" value="1 min" sub={`freeze ${freezeTime} IST`} />
-              <MetricCard icon={Timer} title="Retry Interval" value={`${retrySec ?? '—'} sec`} sub={`max ${maxRetries ?? '—'} tries`} />
-              <MetricCard icon={Layers} title="Position Scope" value={scope} sub="Intraday only — delivery never auto-closed" />
+              <div className="rounded-lg border border-border/60 bg-background p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Squareoff time</p>
+                <p className="font-mono tabular-nums">{squareoffTime}</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">IST · Asia/Kolkata</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Freeze before</p>
+                <p className="font-mono tabular-nums">1 min</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">freeze {freezeTime} IST</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Retry interval</p>
+                <p className="font-mono tabular-nums">{retrySec ?? '—'} sec</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">max {maxRetries ?? '—'} tries</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Position scope</p>
+                <p className="font-mono tabular-nums">{scope}</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">intraday only</p>
+              </div>
             </div>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <MetricCard icon={ListOrdered} title="Pending Orders" value={pendingCount != null ? String(pendingCount) : '—'} sub="broker open / trigger-pending" />
-              <MetricCard icon={Layers} title="Open Positions" value={openCount != null ? String(openCount) : '—'} sub="net qty ≠ 0 (broker)" />
-              <MetricCard icon={Activity} title="Positions To Close" value={toCloseCount != null ? String(toCloseCount) : '—'} sub={`eligible under ${scope}`} />
-              <MetricCard
-                icon={Power}
-                title="Run"
-                value={activeRun ? 'IN PROGRESS' : 'READY'}
-                sub={activeRun ? (activeRun.runId ?? activeRun.requestId ?? '') : 'manual run needs confirmation'}
-                tone={activeRun ? 'warning' : 'neutral'}
-              />
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-border/60 bg-background p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Pending orders</p>
+                <p className="font-mono tabular-nums">{pendingCount != null ? String(pendingCount) : '—'}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Open positions</p>
+                <p className="font-mono tabular-nums">{openCount != null ? String(openCount) : '—'}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Positions to close</p>
+                <p className="font-mono tabular-nums">{toCloseCount != null ? String(toCloseCount) : '—'}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Run</p>
+                <p className="font-mono tabular-nums">{activeRun ? 'IN PROGRESS' : 'READY'}</p>
+              </div>
             </div>
-            <div className="mt-3 rounded-lg border border-border/50 bg-muted/20 p-3 text-xs space-y-2">
-              <div className="font-medium">RUN SQUAREOFF NOW? (§20 — emergency, audited)</div>
-              <p className="text-muted-foreground">This will: freeze new trading · cancel pending orders · place MARKET orders for eligible open positions · retry incomplete exits per policy.</p>
+            <div className="mt-4 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3">
+              <div className="font-medium text-amber-700 text-sm">RUN SQUAREOFF NOW? (emergency, audited)</div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Freezes new trading · cancels pending orders · places MARKET orders for eligible positions · retries incomplete exits.
+              </p>
               {runAllNotice && (
-                <div className={`rounded-md px-3 py-2 text-xs ${runAllNotice.kind === 'ok' ? 'bg-success/10 text-success border border-success/20' : 'bg-destructive/10 text-destructive border border-destructive/20'}`}>{runAllNotice.text}</div>
+                <div className={`mt-3 rounded-md px-3 py-2 text-xs ${runAllNotice.kind === 'ok' ? 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-700 border border-rose-500/20'}`}>
+                  {runAllNotice.text}
+                </div>
               )}
               {!confirmAll ? (
                 <Button size="sm" variant="destructive" onClick={() => setConfirmAll(true)} disabled={!!activeRun}>
                   <RotateCcw className="mr-1 h-3 w-3" /> {activeRun ? 'Run in progress…' : 'RUN SQUAREOFF NOW'}
                 </Button>
               ) : (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button size="sm" variant="destructive" onClick={runAllNow} disabled={runAllBusy}>{runAllBusy ? 'Starting…' : 'CONFIRM SQUAREOFF'}</Button>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="destructive" onClick={runAllNow} disabled={runAllBusy}>
+                    {runAllBusy ? 'Starting…' : 'CONFIRM SQUAREOFF'}
+                  </Button>
                   <Button size="sm" variant="ghost" onClick={() => setConfirmAll(false)}>Cancel</Button>
                 </div>
               )}
             </div>
-          </SectionCard>
+          </div>
 
-          {/* §17 Live Progress Panel */}
-          <SectionCard
-            title="Live progress — doc §17"
-            icon={Radio}
-            headerRight={<Badge variant="outline">{activeRun ? (activeRun.runId ?? activeRun.requestId ?? 'active') : 'no active run'}</Badge>}
-            className="shadow-soft"
-          >
+          {/* Live progress */}
+          <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <Activity className="h-3.5 w-3.5 text-amber-700" />
+              <h2 className="text-sm font-semibold text-foreground">Live progress</h2>
+              <span className="ml-auto font-mono text-[10px]">{activeRun ? (activeRun.runId ?? activeRun.requestId ?? 'active') : 'no active run'}</span>
+            </div>
             {!activeRun ? (
-              <EmptyState icon={Radio} title="No active squareoff run" description="The live progress panel appears here during a run (run id, status, started, last check, next retry, remaining qty, per-position table). Engine is IDLE — honest idle, not a hidden run." />
+              <div className="rounded-lg border border-border/60 bg-background p-4 text-center">
+                <div className="text-xs text-muted-foreground">No active squareoff run</div>
+                <p className="mt-1 text-[10px] text-muted-foreground">Engine is IDLE — honest idle, not a hidden run.</p>
+              </div>
             ) : (
               <div className="space-y-3 text-xs">
                 <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
-                  <div><div className="text-muted-foreground">Run</div><div className="font-mono font-medium">{activeRun.runId ?? activeRun.requestId ?? '—'}</div></div>
-                  <div><div className="text-muted-foreground">Status</div><StatusBadge status={stateTone(activeRun.status)} label={String(activeRun.status ?? '—')} /></div>
-                  <div><div className="text-muted-foreground">Started</div><div className="font-mono">{fmtIST(activeRun.startedAtIST ?? activeRun.startedAt)}</div></div>
-                  <div><div className="text-muted-foreground">Source</div><div className="font-mono">{activeRun.source ?? '—'} · {activeRun.terminal ?? '—'}</div></div>
-                  <div><div className="text-muted-foreground">Retry</div><div className="font-mono">{activeRun.retryCount ?? (activeRun.results || []).length ?? 0} · every {retrySec ?? 15}s</div></div>
-                  <div><div className="text-muted-foreground">Trading day</div><div className="font-mono">{activeRun.tradingDate ?? '—'}</div></div>
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Run</p><p className="font-mono tabular-nums">{activeRun.runId ?? activeRun.requestId ?? '—'}</p></div>
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Status</p><Badge variant="outline" className={`text-[10px] ${stateTone(String(activeRun.status ?? ''))}`}>{activeRun.status ?? '—'}</Badge></div>
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Started</p><p className="font-mono tabular-nums">{fmtIST(activeRun.startedAtIST ?? activeRun.startedAt)}</p></div>
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Source</p><p className="font-mono tabular-nums">{activeRun.source ?? '—'} · {activeRun.terminal ?? '—'}</p></div>
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Retry</p><p className="font-mono tabular-nums">{activeRun.retryCount ?? (activeRun.results || []).length ?? 0} · every {retrySec ?? 15}s</p></div>
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Trading day</p><p className="font-mono tabular-nums">{activeRun.tradingDate ?? '—'}</p></div>
                 </div>
                 {(activeRun.results || []).length > 0 ? (
-                  <div className="overflow-auto rounded-lg border">
+                  <div className="overflow-auto rounded-lg border border-border/50">
                     <table className="w-full text-left text-xs">
                       <thead className="bg-muted/60 text-muted-foreground">
                         <tr><th className="px-2 py-1.5">Symbol</th><th className="px-2 py-1.5">Side</th><th className="px-2 py-1.5 text-right">Qty</th><th className="px-2 py-1.5">Order</th><th className="px-2 py-1.5">Status</th><th className="px-2 py-1.5">Attempt</th></tr>
@@ -468,9 +471,9 @@ export default function SquareoffPage() {
                           <tr key={i} className="border-t">
                             <td className="px-2 py-1.5 font-medium">{r.symbol ?? '—'}</td>
                             <td className="px-2 py-1.5 font-mono">{r.side ?? '—'}</td>
-                            <td className="px-2 py-1.5 text-right font-mono">{fmtNum(r.requestedQty)}</td>
+                            <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtNum(r.requestedQty)}</td>
                             <td className="px-2 py-1.5 font-mono">{r.orderId ?? '—'}</td>
-                            <td className="px-2 py-1.5"><StatusBadge status={stateTone(r.status)} label={String(r.status ?? '—')} /></td>
+                            <td className="px-2 py-1.5"><Badge variant="outline" className={`text-[10px] ${stateTone(String(r.status ?? ''))}`}>{r.status ?? '—'}</Badge></td>
                             <td className="px-2 py-1.5 font-mono">{r.attemptId ?? r.attempt ?? '—'}</td>
                           </tr>
                         ))}
@@ -478,113 +481,159 @@ export default function SquareoffPage() {
                     </table>
                   </div>
                 ) : (
-                  <p className="text-muted-foreground">Collecting broker positions…</p>
+                  <p className="mt-3 text-xs text-muted-foreground">Collecting broker positions…</p>
                 )}
               </div>
             )}
-          </SectionCard>
+          </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <SectionCard title="Open positions — real (broker)" icon={Layers} headerRight={<Badge variant="outline">{posError ? 'error' : `${openList.length} open · ${toCloseList.length} eligible`}</Badge>} className="shadow-soft">
-              {detailLoading && posLoading && openList.length === 0 ? (
-                <LoadingState text="Loading positions…" />
-              ) : posError ? (
-                <ErrorState message={String(posError)} onRetry={refreshPositions} />
+            {/* Open positions */}
+            <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+              <div className="flex items-center gap-2 mb-3">
+                <Layers className="h-3.5 w-3.5 text-amber-700" />
+                <h2 className="text-sm font-semibold text-foreground">Open positions — broker reality</h2>
+                <span className="ml-auto font-mono text-[10px]">{openList.length} open · {toCloseList.length} eligible</span>
+              </div>
+              {posError ? (
+                <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700">{String(posError)}</div>
               ) : openList.length === 0 ? (
-                <EmptyState icon={Layers} title="No open positions" description="No open positions — nothing to close (§12). Positions are broker reality via /api/trading/positions; a zero here is honest, not a hidden book." />
+                <div className="rounded-lg border border-border/60 bg-background p-4 text-center">
+                  <p className="text-xs text-muted-foreground">No open positions</p>
+                  <p className="mt-1 text-[10px] text-muted-foreground">Broker reality — zero is honest.</p>
+                </div>
               ) : (
-                <div className="overflow-auto rounded-lg border">
+                <div className="overflow-auto rounded-lg border border-border/50">
                   <table className="w-full text-left text-xs">
-                    <thead className="sticky top-0 bg-muted/60 text-muted-foreground">
-                      <tr><th className="px-2 py-1.5"></th><th className="px-2 py-1.5">Symbol</th><th className="px-2 py-1.5">Qty</th><th className="px-2 py-1.5 text-right">Avg</th><th className="px-2 py-1.5 text-right">LTP</th><th className="px-2 py-1.5 text-right">P&amp;L</th><th className="px-2 py-1.5">Eligible</th></tr>
+                    <thead className="bg-muted/60 text-muted-foreground sticky top-0">
+                      <tr><th className="px-2 py-1.5"></th><th className="px-2 py-1.5">Symbol</th><th className="px-2 py-1.5">Qty</th><th className="px-2 py-1.5 text-right">Avg</th><th className="px-2 py-1.5 text-right">LTP</th><th className="px-2 py-1.5 text-right">P&L</th><th className="px-2 py-1.5">Eligible</th></tr>
                     </thead>
                     <tbody>
                       {openList.map((p: any, i: number) => (
-                        <tr key={i} className={`border-t hover:bg-muted/20 ${selected === p ? 'bg-primary/10' : ''}`} onClick={() => { setSelected(p); setConfirmOne(false); }}>
+                        <tr key={i} className={`border-t hover:bg-muted/50 ${selected === p ? 'bg-amber-500/5' : ''}`} onClick={() => { setSelected(p); setConfirmOne(false); }}>
                           <td className="px-2 py-1.5"><input type="radio" name="pos" checked={selected === p} onChange={() => { setSelected(p); setConfirmOne(false); }} /></td>
                           <td className="px-2 py-1.5 font-medium">{posSymbol(p)}</td>
-                          <td className="px-2 py-1.5 font-mono">{fmtNum(posQty(p))}</td>
-                          <td className="px-2 py-1.5 text-right font-mono">{fmtNum(p?.avgPrice ?? p?.netAveragePrice)}</td>
-                          <td className="px-2 py-1.5 text-right font-mono">{fmtNum(p?.ltp)}</td>
-                          <td className={`px-2 py-1.5 text-right font-mono ${(p?.pnl ?? p?.unrealizedPnl ?? 0) < 0 ? 'text-destructive' : 'text-success'}`}>{fmtNum(p?.pnl ?? p?.unrealizedPnl)}</td>
-                          <td className="px-2 py-1.5">{eligibleForScope(p, scope) ? <StatusBadge status="success" label="yes" /> : <StatusBadge status="neutral" label="out of scope" />}</td>
+                          <td className="px-2 py-1.5 font-mono tabular-nums">{fmtNum(posQty(p))}</td>
+                          <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtNum(p?.avgPrice ?? p?.netAveragePrice)}</td>
+                          <td className="px-2 py-1.5 text-right font-mono tabular-nums">{fmtNum(p?.ltp)}</td>
+                          <td className={`px-2 py-1.5 text-right font-mono tabular-nums ${(p?.pnl ?? p?.unrealizedPnl ?? 0) < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>{fmtNum(p?.pnl ?? p?.unrealizedPnl)}</td>
+                          <td className="px-2 py-1.5">
+                            {eligibleForScope(p, scope) ? (
+                              <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 text-[10px]">yes</Badge>
+                            ) : (
+                              <Badge variant="outline" className="border-slate-500/40 bg-slate-500/10 text-slate-700 text-[10px]">out of scope</Badge>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               )}
-            </SectionCard>
+            </div>
 
-            <SectionCard title="Square-off action" icon={Power} headerRight={<Badge variant="outline" className="border-primary/40 text-primary">POST /api/trading/positions/squareoff</Badge>} className="shadow-soft">
+            {/* Square-off action */}
+            <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+              <div className="flex items-center gap-2 mb-3">
+                <Power className="h-3.5 w-3.5 text-amber-700" />
+                <h2 className="text-sm font-semibold text-foreground">Square-off action</h2>
+                <span className="ml-auto font-mono text-[10px]">POST /api/trading/positions/squareoff</span>
+              </div>
               {!selected ? (
-                <EmptyState icon={Power} title="Select a position" description="Select a position on the left to square it off with a MARKET exit order. Same broker path as end-of-day squareoff (verified remaining qty, no blind duplicate — §10/§11)." />
+                <div className="rounded-lg border border-border/60 bg-background p-4 text-center">
+                  <div className="text-xs text-muted-foreground">Select a position</div>
+                  <p className="mt-1 text-[10px] text-muted-foreground">Select a position on the left to square it off with a MARKET exit order.</p>
+                </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="rounded-lg border border-border/50 bg-muted/20 p-3 text-xs space-y-1.5">
-                    <div className="flex justify-between"><span className="text-muted-foreground">Symbol</span><span className="font-mono font-medium">{posSymbol(selected)}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">Qty</span><span className="font-mono font-medium">{fmtNum(posQty(selected))}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">Exits with</span><span className="font-mono">{posQty(selected) > 0 ? 'SELL' : 'BUY'} MARKET · {selected.product ?? 'MIS'}</span></div>
-                    {notice && <div className={`rounded-md px-3 py-2 text-xs ${notice.kind === 'ok' ? 'bg-success/10 text-success border border-success/20' : 'bg-destructive/10 text-destructive border border-destructive/20'}`}>{notice.text}</div>}
+                  <div className="rounded-lg border border-border/50 bg-background p-3">
+                    <div className="flex justify-between text-xs"><span className="text-muted-foreground">Symbol</span><span className="font-mono font-medium">{posSymbol(selected)}</span></div>
+                    <div className="flex justify-between text-xs"><span className="text-muted-foreground">Qty</span><span className="font-mono font-medium">{fmtNum(posQty(selected))}</span></div>
+                    <div className="flex justify-between text-xs"><span className="text-muted-foreground">Exits with</span><span className="font-mono">{posQty(selected) > 0 ? 'SELL' : 'BUY'} MARKET · {selected.product ?? 'MIS'}</span></div>
+                    {notice && (
+                      <div className={`mt-2 rounded-md px-3 py-2 text-xs ${notice.kind === 'ok' ? 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-700 border border-rose-500/20'}`}>{notice.text}</div>
+                    )}
                     {!confirmOne ? (
-                      <Button size="sm" variant="destructive" onClick={() => setConfirmOne(true)} className="w-full sm:w-auto"><RotateCcw className="mr-1 h-3 w-3" /> Square off position</Button>
+                      <Button size="sm" variant="destructive" onClick={() => setConfirmOne(true)} className="w-full sm:w-auto">
+                        <RotateCcw className="mr-1 h-3 w-3" /> Square off position
+                      </Button>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <Button size="sm" onClick={squareOffSelected} disabled={busy}>{busy ? 'Placing…' : 'Confirm MARKET exit'}</Button>
+                        <Button size="sm" onClick={squareOffSelected} disabled={busy}>
+                          {busy ? 'Placing…' : 'Confirm MARKET exit'}
+                        </Button>
                         <Button size="sm" variant="ghost" onClick={() => setConfirmOne(false)}>Cancel</Button>
                       </div>
                     )}
                   </div>
-                  <details className="rounded-lg border border-border/50 bg-muted/10 px-3 py-2">
+                  <details className="rounded-lg border border-border/50 bg-muted/10 p-2">
                     <summary className="cursor-pointer text-xs font-medium">Raw engine JSON</summary>
-                    <pre className="mt-2 max-h-48 overflow-auto rounded bg-black/40 p-2 text-[10px] text-muted-foreground">{JSON.stringify(engine ?? detail, null, 2)}</pre>
+                    <pre className="mt-2 max-h-48 overflow-auto rounded bg-[var(--chart-1)]/5 p-2 text-[10px] text-muted-foreground">{JSON.stringify(engine ?? detail, null, 2)}</pre>
                   </details>
                 </div>
               )}
-            </SectionCard>
+            </div>
           </div>
 
-          {/* §18 Last Run Summary */}
-          <SectionCard
-            title="Last run summary — doc §18"
-            icon={FileSearch}
-            headerRight={lastRun ? <Badge variant="outline">{lastRun.runId ?? lastRun.requestId ?? ''}</Badge> : <Badge variant="outline">no runs yet</Badge>}
-            className="shadow-soft"
-          >
+          {/* Last run summary */}
+          <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <FileSearch className="h-3.5 w-3.5 text-amber-700" />
+              <h2 className="text-sm font-semibold text-foreground">Last run summary</h2>
+              <span className="ml-auto font-mono text-[10px]">{lastRun ? (lastRun.runId ?? lastRun.requestId ?? '') : 'no runs yet'}</span>
+            </div>
             {!lastRun ? (
-              <EmptyState icon={FileSearch} title="No squareoff runs yet" description="History appears here after the first run (scheduler 15:16 IST or RUN SQUAREOFF NOW). The engine keeps the last 50 runs; the audit trail below is the permanent record." />
+              <div className="rounded-lg border border-border/60 bg-background p-4 text-center">
+                <p className="text-xs text-muted-foreground">No squareoff runs yet</p>
+                <p className="mt-1 text-[10px] text-muted-foreground">History appears after the first run.</p>
+              </div>
             ) : (
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <MetricCard icon={Activity} title="Result" value={String(lastRun.status ?? '—')} sub={`${lastRun.source ?? '—'} · ${lastRun.tradingDate ?? ''}`} tone={stateTone(lastRun.status) === 'success' ? 'success' : stateTone(lastRun.status) === 'danger' ? 'danger' : 'warning'} />
-                <MetricCard icon={Layers} title="Positions" value={`${lastRun.positionsClosed ?? (lastRun.results || []).filter((r: any) => ['COMPLETE', 'SUBMITTED'].includes(String(r.status))).length ?? '—'} closed`} sub={`found ${lastRun.positionsFound ?? (lastRun.results || []).length ?? '—'} · remaining ${lastRun.positionsRemaining ?? '—'}`} />
-                <MetricCard icon={Timer} title="Attempts / retries" value={String((lastRun.results || []).length ?? '—')} sub={`retries ${lastRun.retryCount ?? 0} · every ${retrySec ?? 15}s`} />
-                <MetricCard icon={Clock} title="Window" value={fmtClockIST(lastRun.startedAtIST ?? lastRun.startedAt)} sub={lastRun.completedAtIST ? `→ ${fmtClockIST(lastRun.completedAtIST)} IST` : '—'} />
+                <div className="rounded-lg border border-border/60 bg-background p-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Result</p>
+                  <p className="font-mono tabular-nums">{String(lastRun.status ?? '—')}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background p-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Positions</p>
+                  <p className="font-mono tabular-nums">{lastRun.positionsClosed ?? '—'} closed</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background p-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Attempts</p>
+                  <p className="font-mono tabular-nums">{String((lastRun.results || []).length ?? '—')}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background p-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Window</p>
+                  <p className="font-mono tabular-nums">{fmtClockIST(lastRun.startedAtIST ?? lastRun.startedAt)}</p>
+                </div>
               </div>
             )}
-          </SectionCard>
+          </div>
         </div>
       )}
 
+      {/* HISTORY */}
       {tab === 'history' && (
-        <SectionCard
-          title="Run history — doc §22 (last 50, never rewritten)"
-          icon={History}
-          headerRight={<Badge variant="outline">{recentRuns.length} runs</Badge>}
-          className="shadow-soft"
-        >
+        <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <History className="h-3.5 w-3.5 text-amber-700" />
+            <h2 className="text-sm font-semibold text-foreground">Run history — last 50</h2>
+            <span className="ml-auto font-mono text-[10px]">{recentRuns.length} runs</span>
+          </div>
           {recentRuns.length === 0 ? (
-            <EmptyState icon={History} title="No history yet" description="Runs are recorded here with run id, trading date, per-position attempts and errors. History is append-only — a completed day is never overwritten to look clean." />
+            <div className="rounded-lg border border-border/60 bg-background p-4 text-center">
+              <p className="text-xs text-muted-foreground">No history yet</p>
+            </div>
           ) : (
             <div className="space-y-2">
               {recentRuns.map((r: any, i: number) => (
-                <details key={i} className="rounded-lg border border-border/50 bg-muted/10 px-3 py-2">
+                <details key={i} className="rounded-lg border border-border/50 bg-background p-3">
                   <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-xs">
-                    <StatusBadge status={stateTone(r.status)} label={String(r.status ?? '—')} />
+                    <Badge variant="outline" className={`text-[10px] ${stateTone(String(r.status ?? ''))}`}>{r.status ?? '—'}</Badge>
                     <span className="font-mono font-medium">{r.runId ?? r.requestId ?? '—'}</span>
                     <span className="font-mono text-muted-foreground">{r.tradingDate ?? ''} · {fmtClockIST(r.startedAtIST ?? r.startedAt)} IST</span>
-                    <span className="text-muted-foreground">{r.source ?? ''} · found {r.positionsFound ?? (r.results || []).length ?? 0} · closed {r.positionsClosed ?? '—'}</span>
+                    <span className="text-muted-foreground">{r.source ?? ''} · found {r.positionsFound ?? (r.results || []).length ?? 0}</span>
                   </summary>
-                  <div className="mt-2 overflow-auto rounded border">
+                  <div className="mt-2 overflow-auto rounded border border-border/50">
                     <table className="w-full text-left text-[11px]">
                       <thead className="bg-muted/60 text-muted-foreground">
                         <tr><th className="px-2 py-1">Attempt</th><th className="px-2 py-1">Symbol</th><th className="px-2 py-1">Side</th><th className="px-2 py-1 text-right">Qty</th><th className="px-2 py-1">Order</th><th className="px-2 py-1">Status</th><th className="px-2 py-1">Error</th></tr>
@@ -595,104 +644,137 @@ export default function SquareoffPage() {
                             <td className="px-2 py-1 font-mono">{a.attemptId ?? a.attempt ?? j + 1}</td>
                             <td className="px-2 py-1 font-medium">{a.symbol ?? '—'}</td>
                             <td className="px-2 py-1 font-mono">{a.side ?? '—'}</td>
-                            <td className="px-2 py-1 text-right font-mono">{fmtNum(a.requestedQty)}</td>
+                            <td className="px-2 py-1 text-right font-mono tabular-nums">{fmtNum(a.requestedQty)}</td>
                             <td className="px-2 py-1 font-mono">{a.orderId ?? '—'}</td>
-                            <td className="px-2 py-1"><StatusBadge status={stateTone(a.status)} label={String(a.status ?? '—')} /></td>
+                            <td className="px-2 py-1"><Badge variant="outline" className={`text-[10px] ${stateTone(String(a.status ?? ''))}`}>{a.status ?? '—'}</Badge></td>
                             <td className="px-2 py-1 font-mono text-muted-foreground">{a.error ? String(a.error).slice(0, 80) : '—'}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                  {r.error && <p className="mt-1 font-mono text-[11px] text-destructive">{String(r.error)}</p>}
+                  {r.error && <p className="mt-1 font-mono text-[11px] text-rose-700">{String(r.error)}</p>}
                 </details>
               ))}
             </div>
           )}
           {sqAudit.length > 0 && (
             <div className="mt-4 space-y-1.5">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Permanent audit trail — SQUARE_OFF_* (GET /api/terminal/audit)</div>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Permanent audit trail — SQUARE_OFF_*</div>
               {sqAudit.map((e: any, i: number) => (
-                <div key={i} className="flex items-start gap-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-1.5 text-[11px]">
+                <div key={i} className="flex items-start gap-2 rounded-lg border border-border/50 bg-background px-3 py-1.5 text-[11px]">
                   <time className="whitespace-nowrap font-mono text-muted-foreground">{fmtIST(e?.ts)}</time>
                   <span className="flex-1 truncate font-mono">{e?.action ?? e?.event_id ?? JSON.stringify(e).slice(0, 120)}</span>
                 </div>
               ))}
             </div>
           )}
-        </SectionCard>
+        </div>
       )}
 
+      {/* PER DAY */}
       {tab === 'perday' && (
         <div className="space-y-3">
-          <SectionCard title="Per trading day — doc §22" icon={CalendarDays} headerRight={
-            dayOptions.length ? (
-              <select value={day} onChange={(e) => setDay(e.target.value)} className="rounded-md border border-input bg-background px-2 py-1 text-xs">
-                {dayOptions.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
-            ) : <Badge variant="outline">no days yet</Badge>
-          } className="shadow-soft">
+          <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <CalendarDays className="h-3.5 w-3.5 text-amber-700" />
+              <h2 className="text-sm font-semibold text-foreground">Per trading day</h2>
+              <span className="ml-auto font-mono text-[10px]">{dayOptions.length ? dayOptions.length : 'no days yet'}</span>
+            </div>
             {!daySummary ? (
-              <EmptyState icon={CalendarDays} title="No runs for this day" description="Pick another trading date. Each day keeps its own runs, attempts and remaining quantities — one active run per day (§28 single-run lock)." />
+              <div className="rounded-lg border border-border/60 bg-background p-4 text-center">
+                <p className="text-xs text-muted-foreground">No runs for this day</p>
+              </div>
             ) : (
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <MetricCard icon={CalendarDays} title="Trading day" value={daySummary.tradingDate ?? day} sub={`${daySummary.runs ?? 0} runs`} />
-                <MetricCard icon={Activity} title="Completed" value={String(daySummary.completed ?? 0)} sub={`partial ${daySummary.partial ?? 0} · failed ${daySummary.failed ?? 0}`} tone={(daySummary.failed ?? 0) > 0 ? 'danger' : 'success'} />
-                <MetricCard icon={Layers} title="Positions closed" value={String(daySummary.positionsClosed ?? 0)} sub={`remaining ${daySummary.positionsRemaining ?? 0}`} />
-                <MetricCard icon={Timer} title="Attempts" value={String(daySummary.attempts ?? (dayRuns.reduce((s: number, r: any) => s + ((r.results || []).length || 0), 0)))} sub={`retry every ${retrySec ?? 15}s`} />
+                <div className="rounded-lg border border-border/60 bg-background p-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Trading day</p>
+                  <p className="font-mono tabular-nums">{daySummary.tradingDate ?? day}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background p-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Completed</p>
+                  <p className="font-mono tabular-nums text-emerald-700">{daySummary.completed ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background p-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Positions closed</p>
+                  <p className="font-mono tabular-nums">{daySummary.positionsClosed ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background p-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Attempts</p>
+                  <p className="font-mono tabular-nums">{String(daySummary.attempts ?? (dayRuns.reduce((s: number, r: any) => s + ((r.results || []).length || 0), 0)))}</p>
+                </div>
               </div>
             )}
-          </SectionCard>
+          </div>
           {dayRuns.length > 0 && (
-            <SectionCard title={`Runs on ${day}`} icon={ListOrdered} headerRight={<Badge variant="outline">{dayRuns.length}</Badge>} className="shadow-soft">
+            <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+              <h2 className="text-sm font-semibold text-foreground mb-3">Runs on {day}</h2>
               <div className="space-y-2">
                 {dayRuns.map((r: any, i: number) => (
-                  <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2 text-xs">
-                    <StatusBadge status={stateTone(r.status)} label={String(r.status ?? '—')} />
+                  <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/50 bg-background px-3 py-2 text-xs">
+                    <Badge variant="outline" className={`text-[10px] ${stateTone(String(r.status ?? ''))}`}>{r.status ?? '—'}</Badge>
                     <span className="font-mono font-medium">{r.runId ?? r.requestId}</span>
                     <span className="font-mono text-muted-foreground">{fmtClockIST(r.startedAtIST ?? r.startedAt)}{r.completedAtIST ? ` → ${fmtClockIST(r.completedAtIST)}` : ''} IST</span>
-                    <span className="text-muted-foreground">found {r.positionsFound ?? (r.results || []).length ?? 0} · closed {r.positionsClosed ?? '—'} · remaining {r.positionsRemaining ?? '—'}</span>
-                    {r.error && <span className="font-mono text-destructive">{String(r.error).slice(0, 100)}</span>}
+                    <span className="text-muted-foreground">found {r.positionsFound ?? (r.results || []).length ?? 0} · closed {r.positionsClosed ?? '—'}</span>
+                    {r.error && <span className="font-mono text-rose-700">{String(r.error).slice(0, 100)}</span>}
                   </div>
                 ))}
               </div>
-            </SectionCard>
+            </div>
           )}
           {(byDay || []).length > 1 && (
-            <SectionCard title="All days" icon={CalendarDays} className="shadow-soft">
-              <div className="overflow-auto rounded-lg border">
+            <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+              <h2 className="text-sm font-semibold text-foreground mb-3">All days</h2>
+              <div className="overflow-auto rounded-lg border border-border/50">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-muted/60 text-muted-foreground">
                     <tr><th className="px-2 py-1.5">Day</th><th className="px-2 py-1.5 text-right">Runs</th><th className="px-2 py-1.5 text-right">Done</th><th className="px-2 py-1.5 text-right">Partial</th><th className="px-2 py-1.5 text-right">Failed</th><th className="px-2 py-1.5 text-right">Closed</th><th className="px-2 py-1.5 text-right">Attempts</th></tr>
                   </thead>
                   <tbody>
                     {(byDay || []).map((d: any, i: number) => (
-                      <tr key={i} className={`border-t hover:bg-muted/20 ${String(d.tradingDate) === day ? 'bg-primary/10' : ''}`} onClick={() => setDay(String(d.tradingDate))}>
+                      <tr key={i} className={`border-t hover:bg-muted/50 ${String(d.tradingDate) === day ? 'bg-amber-500/5' : ''}`} onClick={() => setDay(String(d.tradingDate))}>
                         <td className="px-2 py-1.5 font-mono font-medium">{d.tradingDate}</td>
-                        <td className="px-2 py-1.5 text-right font-mono">{d.runs ?? 0}</td>
-                        <td className="px-2 py-1.5 text-right font-mono text-success">{d.completed ?? 0}</td>
-                        <td className="px-2 py-1.5 text-right font-mono text-warning">{d.partial ?? 0}</td>
-                        <td className="px-2 py-1.5 text-right font-mono text-destructive">{d.failed ?? 0}</td>
-                        <td className="px-2 py-1.5 text-right font-mono">{d.positionsClosed ?? 0}</td>
-                        <td className="px-2 py-1.5 text-right font-mono">{d.attempts ?? 0}</td>
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums">{d.runs ?? 0}</td>
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-emerald-700">{d.completed ?? 0}</td>
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-amber-700">{d.partial ?? 0}</td>
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-rose-700">{d.failed ?? 0}</td>
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums">{d.positionsClosed ?? 0}</td>
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums">{d.attempts ?? 0}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            </SectionCard>
+            </div>
           )}
         </div>
       )}
 
-      <SectionCard title="Flow safety & schedule" icon={ShieldCheck} className="shadow-soft">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <MetricCard icon={ShieldCheck} title="Freeze coordination" value={`${freezeTime} IST`} sub={autoEnabled ? 'auto squareoff armed' : 'manual only'} tone={autoEnabled ? 'warning' : 'neutral'} />
-          <MetricCard icon={Timer} title="Pending-order cancel" value={pendingCount != null ? String(pendingCount) : '—'} sub="verified before each exit (§7)" />
-          <MetricCard icon={Layers} title="Remaining qty" value={activeRun ? String((activeRun.results || []).length) : '—'} sub={`retry ${retrySec ?? 15}s · max ${maxRetries ?? 3}`} />
-          <MetricCard icon={AlertTriangle} title="Incomplete policy" value="SQUAREOFF_INCOMPLETE" sub="deadline → notify, never silent success" tone="danger" />
+      {/* FLOW SAFETY */}
+      <div className="rounded-xl border border-border/50 bg-muted/30 p-3 shadow-sm">
+        <div className="flex items-center gap-2 mb-3">
+          <ShieldCheck className="h-3.5 w-3.5 text-amber-700" />
+          <h2 className="text-sm font-semibold text-foreground">Flow safety & schedule</h2>
         </div>
-      </SectionCard>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-lg border border-border/60 bg-background p-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Freeze coordination</p>
+            <p className="font-mono tabular-nums">{freezeTime} IST</p>
+          </div>
+          <div className="rounded-lg border border-border/60 bg-background p-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Pending-order cancel</p>
+            <p className="font-mono tabular-nums">{pendingCount != null ? String(pendingCount) : '—'}</p>
+          </div>
+          <div className="rounded-lg border border-border/60 bg-background p-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Remaining qty</p>
+            <p className="font-mono tabular-nums">{activeRun ? String((activeRun.results || []).length) : '—'}</p>
+          </div>
+          <div className="rounded-lg border border-border/60 bg-background p-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Incomplete policy</p>
+            <p className="font-mono tabular-nums text-rose-700">SQUAREOFF_INCOMPLETE</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

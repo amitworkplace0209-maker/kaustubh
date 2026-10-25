@@ -30,7 +30,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { pnlTone, StatusBadge, ErrorState, EmptyState, SectionHeading, LiveIndicator } from '@/components/design-system';
 import { useDummyState } from '@/hooks/use-dummy-state';
-import { useLatestTicks } from '@/hooks/use-latest-ticks';
+import { useLatestTicks, type DcLiveTick } from '@/hooks/use-latest-ticks';
 import { getDummyWatchlists } from '@/lib/dummy';
 import { DummyThemedPage, MarketSessionCard, DummyBadge, VirtualFundsNote, LivePulse } from '@/components/dummy/ui';
 import { EngineStatusCard } from '@/components/dashboard/engine-status-card';
@@ -40,6 +40,7 @@ import { feedDummyLtp } from '@/lib/dummy-ltp';
 import { formatIST } from '@/lib/ist';
 import { useDummyTheme } from '@/lib/dummy-theme';
 import { cn } from '@/lib/utils';
+import { dedupeFetch } from '@/lib/shared-request';
 import type { SectionsPayload } from '@/app/_pages/market-watch/mw-shared';
 
 function fmt(v?: number | null): string {
@@ -95,18 +96,21 @@ function KpiCell({ icon: Icon, label, value, sub, tone, pulse, unavailable }: {
   );
 }
 
-function WatchlistStrip({ watchlist, connected }: { watchlist: string[]; connected: boolean }) {
-  const { latest } = useLatestTicks(true);
+function WatchlistStrip({
+  watchlist,
+  connected,
+  latest,
+}: {
+  watchlist: string[];
+  connected: boolean;
+  latest: Map<string, DcLiveTick>;
+}) {
   const rows = watchlist
     .map((s) => {
       const t = latest.get(s);
       return t && typeof t.ltp === 'number' ? { symbol: s, ltp: t.ltp, ts: t.ts } : null;
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
-
-  useEffect(() => {
-    for (const r of rows) feedDummyLtp(r.symbol, r.ltp);
-  }, [rows]);
 
   return (
     <div>
@@ -145,14 +149,18 @@ function WatchlistStrip({ watchlist, connected }: { watchlist: string[]; connect
  * circuit rule the backend reports as engine-owned and therefore never applied,
  * so the strip could show rows the engine had not cleared.
  */
-function TopStocksStrip() {
-  const { latest } = useLatestTicks(true);
+function TopStocksStrip({ latest }: { latest: Map<string, DcLiveTick> }) {
   const [stocks, setStocks] = useState<Array<{ symbol: string; ltp: number | null; changePct: number | null; }>>([]);
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/market-watch/sections', { cache: 'no-store' })
-      .then((r) => r.json())
+    // Share the exact key used by Market Watch's fetchJson so a dashboard
+    // mount and a Market Watch mount never issue two identical large reads.
+    dedupeFetch(
+      'mw:get:/api/market-watch/sections',
+      () => fetch('/api/market-watch/sections', { cache: 'no-store' }).then((r) => r.json()),
+      { ttlMs: 0 },
+    )
       .then((data: SectionsPayload) => {
         if (cancelled) return;
         const rows: Array<{ symbol: string; ltp: number | null; changePct: number | null; }> = [];
@@ -383,7 +391,9 @@ export default function DummyDashboard() {
       ))}
 
       {/* 3. Broker Terminal — the shared 4-card section (Kotak · Shoonya · Dummy · Combined) */}
-      <BrokerCardsSection heading="Broker Terminals" reloadKey={loading ? 1 : 0} />
+      {/* No reloadKey: useBackend already fetches once on mount. Keying it on
+          the local loading flag fired a SECOND broker-overview request. */}
+      <BrokerCardsSection heading="Broker Terminals" />
 
       {/* 4. Live market watch + risk picture */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -394,8 +404,8 @@ export default function DummyDashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <WatchlistStrip watchlist={watchlist} connected={wsConnected} />
-            <TopStocksStrip />
+            <WatchlistStrip watchlist={watchlist} connected={wsConnected} latest={latest} />
+            <TopStocksStrip latest={latest} />
           </CardContent>
         </Card>
 

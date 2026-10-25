@@ -17,7 +17,7 @@ from models import (
     SubscribeRequest,
     SubscribeResponse,
 )
-from scheduler import do_login, do_logout, get_scheduler_info, get_schedule, get_scheduler_state, get_scheduler_summary, get_scheduler_readiness, get_scheduler_phases
+from scheduler import do_login, do_logout, effective_settings_preview, get_scheduler_info, get_schedule, get_scheduler_state, get_scheduler_summary, get_scheduler_readiness, get_scheduler_phases
 from ws_socket.ws_manager import ws_manager
 from brokers.manager import active_mode, get_active_adapter
 from services.session.session_manager import session_manager, MANUAL_SESSION_SECONDS
@@ -327,11 +327,31 @@ async def scheduler_status_endpoint() -> dict:
             "tradingDay": schedule["today_trading_day"],
         },
         "todayPhases": schedule.get("today_phase_times"),
+        "scheduleIssues": schedule.get("issues", []),
+        "scheduleIssuesOk": schedule.get("issues_error_count", 0) == 0,
+        "tradingDayBehavior": schedule.get("trading_day_behavior"),
+        "marketTimezone": schedule.get("market_timezone"),
+        "timezoneLabel": schedule.get("schedule", {}).get("timezone"),
         "nextTickCollection": schedule["next_tick_collection_time"],
         "enabledBrokers": state.get("enabled_brokers", []),
         "brokers": state.get("brokers", {}),
         "timestamp": datetime.now(IST).isoformat(),
     }
+
+
+@router.get("/api/scheduler/settings-preview")
+async def scheduler_settings_preview_endpoint() -> dict:
+    """GET /api/scheduler/settings-preview — the LIVE effective scheduler
+    configuration for the settings page.
+
+    One backend call that resolves every ``sched_*`` / scan key exactly the
+    way the engine resolves it each tick (runtime cache → env default), marks
+    the persisted source (`db` vs `default`), computes the next occurrence of
+    each event under the configured trading-day behaviour and market
+    timezone, and returns cross-key ordering validation issues. The settings
+    UI renders this verbatim — no client-side schedule math, nothing fake.
+    """
+    return await effective_settings_preview()
 
 
 @router.get("/api/scheduler/readiness")

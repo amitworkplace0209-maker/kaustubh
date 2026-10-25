@@ -28,9 +28,9 @@ import { getSettingsStore, useAccountMode } from '@/lib/settings-store';
 import { calculateCharges } from '@/lib/charge-engine';
 import { capsFor, type TradeCapabilities } from '@/components/orders/trade/capabilities';
 import { VALIDITIES } from '@/components/orders/trade/lifecycle';
-import { InstrumentSearch } from '@/components/orders/trade/instrument-search';
+import { InstrumentSearch } from '@/components/trading/instrument-search';
 import { useToast } from '@/hooks/use-toast';
-import { getTickStreamUrl } from '@/lib/api';
+import { subscribeTicks } from '@/lib/shared-sse';
 import type { InstrumentSelection } from '@/components/orders/trade/types';
 import type { BasketExecResult, BasketExecState } from '@/components/orders/basket/types';
 import dynamic from 'next/dynamic';
@@ -307,29 +307,19 @@ export function BasketPage({ mode, preloadedLoggedIn }: { mode: any; preloadedLo
     void fetchNotifications();
   }, [fetchNotifications]);
 
-  // ---- live LTP via SSE ----
+  // ---- live LTP via the SHARED browser tick stream ----
   useEffect(() => {
     if (!loggedIn) return;
-    let es: EventSource | null = null;
-    let reconnect: NodeJS.Timeout | null = null;
-    const connect = () => {
+    // One SSE session for the whole app; this page only registers a listener.
+    return subscribeTicks((t) => {
       try {
-        es = new EventSource(getTickStreamUrl());
-        es.onmessage = (event) => {
-          try {
-            const t = JSON.parse(event.data);
-            if (t.ltp == null || t.ltp === 0) return;
-            const sym = t.symbol ? String(t.symbol).toUpperCase() : '';
-            const token = t.instrumentToken != null ? String(t.instrumentToken) : '';
-            setQuoteMap((prev) => ({ ...prev, [sym]: { ltp: Number(t.ltp), change: t.change ?? 0, changePct: t.change_pct ?? 0, ts: Date.now() } }));
-            if (token) setQuoteMap((prev) => ({ ...prev, [token]: { ltp: Number(t.ltp), change: t.change ?? 0, changePct: t.change_pct ?? 0, ts: Date.now() } }));
-          } catch { /* ignore */ }
-        };
-        es.onerror = () => { es?.close(); es = null; reconnect = setTimeout(connect, 3000); };
-      } catch { reconnect = setTimeout(connect, 3000); }
-    };
-    connect();
-    return () => { es?.close(); if (reconnect) clearTimeout(reconnect); };
+        if (t.ltp == null || t.ltp === 0) return;
+        const sym = t.symbol ? String(t.symbol).toUpperCase() : '';
+        const token = t.instrumentToken != null ? String(t.instrumentToken) : '';
+        setQuoteMap((prev) => ({ ...prev, [sym]: { ltp: Number(t.ltp), change: t.change ?? 0, changePct: t.change_pct ?? 0, ts: Date.now() } }));
+        if (token) setQuoteMap((prev) => ({ ...prev, [token]: { ltp: Number(t.ltp), change: t.change ?? 0, changePct: t.change_pct ?? 0, ts: Date.now() } }));
+      } catch { /* ignore */ }
+    });
   }, [loggedIn]);
 
   // ---- legs management ----

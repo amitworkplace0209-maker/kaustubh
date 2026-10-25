@@ -3,15 +3,18 @@
 // Shared notifications layer for the whole KAUSTUBH platform.
 //
 // Single source of truth for unread-count + feed across ALL products
-// (Trading, Data Saver, Services, Khumbha AI). It reuses the REAL backend
-// notifications API via lib/api.ts and the shared request manager
-// (lib/shared-request.ts) so every product shares ONE poll timer per resource
-// instead of each page starting its own interval. Never fabricates data.
+// (Trading, Data Saver, Services, Khumbha AI).
+//
+// Data flow: the backend pushes the authoritative `notifications` document
+// over the persistent WebSocket (see lib/realtime-store.ts) — the feed, the
+// unread count and the alert summary all arrive in ONE frame. The REST calls
+// below are only the DEGRADED fallback: they run while the socket has no
+// document yet (backend down / not logged in) and stop the moment the socket
+// delivers one. Never fabricates data.
 
-import { useCachedResource, useSharedPolling } from '@/lib/shared-request';
+import { useCachedResource } from '@/lib/shared-request';
 import {
   getNotifications,
-  getAlerts,
   getAlertSummary,
   markNotificationRead,
   markNotificationUnread,
@@ -19,7 +22,7 @@ import {
   deleteNotification,
   clearAllNotifications,
 } from '@/lib/api';
-import { useRealtime } from '@/components/realtime-provider';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 
 export type SharedNotification = {
   _id: string;
@@ -41,19 +44,42 @@ export type NotificationsResponse = {
 const NOTIF_RESOURCE = 'notifications';
 const NOTIF_TTL_MS = 4000;
 
+/** The shape the backend pushes on the `notifications` channel. */
+type NotificationsDocument = {
+  notifications?: any[];
+  total?: number;
+  unreadCount?: number;
+  summary?: Record<string, any>;
+  alerts?: Record<string, any>;
+  live?: boolean;
+};
+
 const fetchFeed = (unreadOnly = false): Promise<NotificationsResponse> =>
   getNotifications(unreadOnly ? '?unread_only=true' : '').then((r) => r as NotificationsResponse);
 
+const fetchAlertSummary = () => getAlertSummary();
+
 /**
  * Shared live feed + unread count for page-header bells and panels.
- * Uses the shared poll timer so the count is fetched at most once per tick
- * no matter how many components subscribe.
+ *
+ * The socket delivers the whole document (feed + counts + alert summary) in
+ * one frame; the REST poll below is only the fallback while the socket is
+ * down.
  */
 export function useNotificationsPoll(options: { pollMs?: number } = {}) {
   const { pollMs = 10000 } = options;
-  const { data } = useSharedPolling<NotificationsResponse>(NOTIF_RESOURCE, fetchFeed, {
-    intervalMs: pollMs,
-    ttlMs: NOTIF_TTL_MS,
+  const { data } = useRealtimeChannel<NotificationsResponse>('notifications', {
+    fallbackMs: pollMs,
+    fallbackKey: `${NOTIF_RESOURCE}:feed`,
+    fallback: () => fetchFeed(),
+    select: (doc) => {
+      const d = doc as NotificationsDocument;
+      return {
+        notifications: (d.notifications ?? []) as SharedNotification[],
+        unreadCount: Number(d.unreadCount ?? 0),
+        total: Number(d.total ?? 0),
+      };
+    },
   });
   const notifications: SharedNotification[] = data?.notifications ?? [];
   const unreadCount = data?.unreadCount ?? 0;
@@ -75,31 +101,18 @@ export function useNotificationsCache(ttlMs = NOTIF_TTL_MS) {
   return { notifications, unreadCount, refresh, invalidate };
 }
 
-/** Live unread-only count for a badge (deduplicated, one shared timer).
+/** Live unread-only count for a badge.
  *
- * Realtime-first: the centralized SSE stream (RealtimeProvider) pushes
- * `unreadCount` on every notification frame, so the badge updates instantly.
- * The shared poll timer is only a reconciliation fallback for the times when
- * the realtime channel is NOT hydrated — while live, polling short-circuits to
- * the pushed value and never hits the network.
+ * Comes straight from the socket document — no request at all while the
+ * socket is healthy.
  */
 export function useUnreadCount(pollMs = 10000): number {
-  const realtime = useRealtime();
-  const { data } = useSharedPolling<NotificationsResponse>(
-    `${NOTIF_RESOURCE}:unread`,
-    () =>
-      realtime.hydrated
-        ? Promise.resolve({
-            notifications: [],
-            unreadCount: realtime.notificationsState.unreadCount,
-            total: 0,
-          } as NotificationsResponse)
-        : fetchFeed(true),
-    { intervalMs: pollMs, ttlMs: NOTIF_TTL_MS },
-  );
-  if (realtime.hydrated && realtime.notificationsState.unreadCount >= 0) {
-    return realtime.notificationsState.unreadCount;
-  }
+  const { data } = useRealtimeChannel<{ unreadCount: number }>('notifications', {
+    fallbackMs: pollMs,
+    fallbackKey: `${NOTIF_RESOURCE}:unread`,
+    fallback: () => fetchFeed(true),
+    select: (doc) => ({ unreadCount: Number((doc as NotificationsDocument).unreadCount ?? 0) }),
+  });
   return data?.unreadCount ?? 0;
 }
 
@@ -109,73 +122,63 @@ export type ActiveAlertsResponse = {
   total: number;
 };
 
-/** Live active-alert count for the Alerts bell (realtime-first, poll fallback). */
+/** Live active-alert count for the Alerts bell (socket-first, REST fallback). */
 export function useActiveAlertCount(pollMs = 15000): number {
-  const realtime = useRealtime();
-  const { data } = useSharedPolling<ActiveAlertsResponse>(
-    'alerts:active',
-    () =>
-      realtime.hydrated
-        ? Promise.resolve({
-            alerts: [],
-            activeCount: realtime.notificationsState.activeAlerts,
-            total: realtime.notificationsState.activeAlerts,
-          } as ActiveAlertsResponse)
-        // Use the summary endpoint for a count-only query: it returns the real
-        // active count without sending an invalid pagination `limit` that the
-        // backend rejects (limit must be an integer >= 1).
-        : getAlertSummary().then((s) => ({
-            alerts: [],
-            activeCount: Number(s?.active ?? 0),
-            total: Number(s?.total ?? 0),
-          })) as unknown as Promise<ActiveAlertsResponse>,
-    { intervalMs: pollMs, ttlMs: 6000 },
-  );
-  const live = realtime.hydrated ? realtime.notificationsState.activeAlerts : data?.activeCount ?? 0;
-  return live;
+  const { data } = useRealtimeChannel<{ activeCount: number }>('notifications', {
+    fallbackMs: pollMs,
+    fallbackKey: `${NOTIF_RESOURCE}:alerts`,
+    fallback: () =>
+      fetchAlertSummary().then((s) => ({
+        activeCount: Number(s?.active ?? 0),
+      })),
+    select: (doc) => {
+      const alerts = (doc as NotificationsDocument).alerts ?? {};
+      return { activeCount: Number(alerts.active ?? 0) };
+    },
+  });
+  return data?.activeCount ?? 0;
 }
 
 /**
  * Severity-aware alert badge for the topbar: real timests never zeros. Tone is
  * driven by real alert severity (critical=red, warning=amber, info=neutral,
- * none=hidden). Realtime-first; single shared poll fallback.
+ * none=hidden). Socket-first; single shared REST fallback.
  */
 export type AlertBadgeTone = 'critical' | 'warning' | 'info' | 'none';
 
 export function useActiveAlertBadge(pollMs = 15000): { count: number; tone: AlertBadgeTone } {
-  const realtime = useRealtime();
-  const { data } = useSharedPolling<{ activeCount: number; critical: number; warning: number }>(
-    'alerts:badge',
-    () =>
-      realtime.hydrated
-        ? Promise.resolve({
-            activeCount: realtime.notificationsState.activeAlerts,
-            critical: 0,
-            warning: 0,
-          })
-        : getAlertSummary().then((s) => ({
-            activeCount: Number(s?.active ?? 0),
-            critical: Number(s?.critical ?? 0),
-            warning: Number(s?.warning ?? 0),
-          })),
-    { intervalMs: pollMs, ttlMs: 6000 },
-  );
+  const { data } = useRealtimeChannel<{
+    activeCount: number;
+    critical: number;
+    warning: number;
+  }>('notifications', {
+    fallbackMs: pollMs,
+    fallbackKey: `${NOTIF_RESOURCE}:alerts`,
+    fallback: () =>
+      fetchAlertSummary().then((s) => ({
+        activeCount: Number(s?.active ?? 0),
+        critical: Number(s?.critical ?? 0),
+        warning: Number(s?.warning ?? 0),
+      })),
+    select: (doc) => {
+      const alerts = (doc as NotificationsDocument).alerts ?? {};
+      return {
+        activeCount: Number(alerts.active ?? 0),
+        critical: Number(alerts.critical ?? 0),
+        warning: Number(alerts.warning ?? 0),
+      };
+    },
+  });
 
-  const liveCount = realtime.hydrated ? realtime.notificationsState.activeAlerts : data?.activeCount ?? 0;
-  const liveAlerts = realtime.hydrated ? realtime.notificationsState.latestAlerts : [];
-  const hasCritical = liveAlerts.some((a) => a.severity === 'critical');
-  const hasWarning = !hasCritical && liveAlerts.some((a) => a.severity === 'warning');
+  const count = data?.activeCount ?? 0;
+  const critical = data?.critical ?? 0;
+  const warning = data?.warning ?? 0;
 
   let tone: AlertBadgeTone = 'none';
-  if (realtime.hydrated) {
-    if (hasCritical || liveCount > 0) tone = hasCritical ? 'critical' : liveCount > 0 ? 'info' : 'none';
-    if (hasWarning) tone = 'warning';
-  } else {
-    if ((data?.critical ?? 0) > 0) tone = 'critical';
-    else if ((data?.warning ?? 0) > 0) tone = 'warning';
-    else if (liveCount > 0) tone = 'info';
-  }
-  return { count: liveCount, tone };
+  if (critical > 0) tone = 'critical';
+  else if (warning > 0) tone = 'warning';
+  else if (count > 0) tone = 'info';
+  return { count, tone };
 }
 
 // ---- Mutations (all hit the REAL backend; pages call these then refetch) ----

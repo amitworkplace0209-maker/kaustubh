@@ -3,9 +3,10 @@
   "version": "1.0.1",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node server.mjs",
+    "dev:next": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node server.mjs --production",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"tests/*.test.ts\""

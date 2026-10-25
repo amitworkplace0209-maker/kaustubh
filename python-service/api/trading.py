@@ -270,6 +270,16 @@ async def positions():
         ttl=_BROKER_CACHE_TTL, fail_cooldown=_BROKER_CACHE_COOLDOWN,
         timeout=_BROKER_CACHE_TIMEOUT,
     )
+    return await build_positions_payload(result)
+
+
+async def build_positions_payload(result):
+    """Normalise the raw broker positions response into the UI shape.
+
+    Extracted from the ``/api/trading/positions`` route so the realtime
+    WebSocket snapshot (``connection_engine.snapshots``) can serve the EXACT
+    same document — one implementation, one shape, no second opinion.
+    """
     raw_data = result.get("data") if isinstance(result, dict) else result
     if not isinstance(raw_data, list):
         return result
@@ -522,7 +532,7 @@ async def positions():
         except Exception as e:
             log.warning("OHLC enrichment failed: %s", e)
 
-    return {"data": normalized, "stat": result.get("stat", "ok")}
+    return {"data": normalized, "stat": result.get("stat", "ok") if isinstance(result, dict) else "ok"}
 
 
 @router.post("/positions/squareoff")

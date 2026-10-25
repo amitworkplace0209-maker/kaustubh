@@ -116,6 +116,20 @@ test('WS reconnecting intermediate state → warning, not healthy', () => {
   assert.equal(byId(entries, 'ws').level, 'warning');
 });
 
+test('WS waiting for the market window → neutral standby, never red', () => {
+  const entries = deriveStatus(
+    baseInput({
+      brokerWsConnected: false,
+      brokerWsState: 'WAITING_FOR_MARKET_WINDOW',
+      marketRec: { market_status: 'CLOSED', day_class: 'EXCHANGE_HOLIDAY', is_exchange_holiday: true },
+    }),
+  );
+  const ws = byId(entries, 'ws');
+  assert.equal(ws.level, 'neutral');
+  assert.equal(ws.state, 'WAITING');
+  assert.match(ws.detail, /Market closed/);
+});
+
 test('database connected=false is an error, never guessed online', () => {
   const entries = deriveStatus(baseInput({ dbRec: { connected: false, checkedAt: '2026-09-12T00:00:00+05:30' } }));
   assert.equal(byId(entries, 'db').level, 'error');

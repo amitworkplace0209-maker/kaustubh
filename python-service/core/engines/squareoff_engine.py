@@ -24,16 +24,15 @@ import asyncio
 import logging
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Any, Optional
 
 from core.engines.engine_config import ConfigField, read_only
 from core.engines.engine_base import EngineBase, EngineState, EngineHealth, EngineCategory
+from core.timezones import IST
 from services.engine_event_bus import get_event_bus, EngineEvent, EngineEvents
 
 logger = logging.getLogger("app.squareoff_engine")
-
-IST = timezone(timedelta(hours=5, minutes=30))
 
 # Doc §2 defaults — used only when no live setting is present, and always
 # labelled as defaults by the UI.

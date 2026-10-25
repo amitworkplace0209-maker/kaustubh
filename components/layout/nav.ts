@@ -36,6 +36,9 @@ import {
   Pin as PinIcon,
   CalendarClock,
   FileText,
+  ShieldCheck,
+  FlaskConical,
+  Sprout,
 } from 'lucide-react';
 import { PHASE2_NAV } from '@/lib/phase2-nav';
 
@@ -467,6 +470,7 @@ export const SERVICES_SHELL: ShellConfig = {
         label: 'Engines',
         items: [
           { id: 'feature-engine', href: '/services/feature-engine', label: 'Feature Engine', icon: Sparkles, keywords: ['features', 'vwap', 'sma', 'calculations', 'indicators'] },
+          { id: 'local-connect-engine', href: '/services/local-connect-engine', label: 'Local Connect Engine', icon: ShieldCheck, keywords: ['local', 'connect', 'bridge', 'localhost', 'auth', 'permission', 'device'] },
           { id: 'search-engine', href: '/services/search', label: 'Search Engine', icon: Search, keywords: ['search', 'discovery', 'symbol', 'rank', 'suggest'] },
           { id: 'connection-manager', href: '/services/connection-manager', label: 'Connection Manager', icon: Cable, keywords: ['connection', 'gateway', 'sessions', 'routes', 'ws2'], children: [
             { id: 'connection-manager-overview', href: '/services/connection-manager', label: 'Overview', icon: Cable, keywords: ['connection', 'gateway', 'realtime', 'flow', 'channels', 'backpressure'] },
@@ -479,7 +483,12 @@ export const SERVICES_SHELL: ShellConfig = {
       {
         label: 'Data & Storage',
         items: [
-          { id: 'db-writer', href: '/services/db-writer', label: 'DB Writer', icon: Database, keywords: ['db', 'write', 'persistence', 'mongo', 'ticks', 'flush', 'buffer'] },
+          { id: 'db-writer', href: '/services/db-writer', label: 'DB Writer', icon: Database, keywords: ['db', 'write', 'persistence', 'mongo', 'ticks', 'flush', 'buffer'], children: [
+            { id: 'db-writer-overview', href: '/services/db-writer/overview', label: 'Overview', icon: Activity, keywords: ['db writer', 'overview', 'pipeline', 'buffer'] },
+            { id: 'db-writer-permissions', href: '/services/db-writer/permissions', label: 'Permissions', icon: ShieldCheck, keywords: ['db writer', 'permissions', 'ticks', 'on', 'off'] },
+            { id: 'db-writer-storage', href: '/services/db-writer/storage', label: 'Storage & Daily', icon: HardDrive, keywords: ['db writer', 'storage', 'daily', 'size', 'count'] },
+            { id: 'db-writer-settings', href: '/services/db-writer/settings', label: 'Settings', icon: SettingsIcon, keywords: ['db writer', 'settings', 'cap', 'reason'] },
+          ] },
           { id: 'storage-engine', href: '/services/storage', label: 'Storage Engine', icon: HardDrive, keywords: ['storage', 'infrastructure', 'monitoring', 'db', 'health'] },
         ],
       },
@@ -509,11 +518,15 @@ export const SERVICES_SHELL: ShellConfig = {
       {
         label: 'Trading',
         items: [
-          { id: 'order-engine', href: '/services/order-engine', label: 'Order Engine', icon: ListOrdered, keywords: ['order', 'execution', 'basket', 'orchestration', 'reject', 'fill'], children: [
-            { id: 'order-engine-overview', href: '/services/order-engine', label: 'Overview', icon: ListOrdered, keywords: ['order', 'engine', 'summary', 'execution'] },
+          { id: 'order-engine', href: '/services/order-engine', label: 'Order Engine', icon: ListOrdered, keywords: ['order', 'engine', 'execution', 'basket', 'orchestration', 'reject', 'fill', 'dummy', 'kotak', 'shoonya'], children: [
+            { id: 'order-engine-overview', href: '/services/order-engine', label: 'Overview', icon: ListOrdered, keywords: ['order', 'engine', 'summary', 'fleet', 'brokers'] },
+            { id: 'order-engine-dummy', href: '/services/order-engine/dummy', label: 'Dummy Engine', icon: FlaskConical, keywords: ['dummy', 'paper', 'engine', 'ltp', 'fill', 'verify'] },
+            { id: 'order-engine-kotak', href: '/services/order-engine/kotak', label: 'Kotak Engine', icon: Building2, keywords: ['kotak', 'engine', 'sdk', 'neo', 'orders', 'ws2'] },
+            { id: 'order-engine-shoonya', href: '/services/order-engine/shoonya', label: 'Shoonya Engine', icon: Sprout, keywords: ['shoonya', 'engine', 'noren', 'sdk', 'oauth', 'orders'] },
             { id: 'order-engine-orders', href: '/services/order-engine/orders', label: 'Orders', icon: ListOrdered, keywords: ['order', 'book', 'live', 'reject', 'fill'] },
             { id: 'order-engine-history', href: '/services/order-engine/history', label: 'History', icon: History, keywords: ['order', 'history', 'executions', 'past'] },
             { id: 'order-engine-basket', href: '/services/order-engine/basket', label: 'Basket', icon: Boxes, keywords: ['basket', 'orders', 'push', 'multi'] },
+            { id: 'order-engine-settings', href: '/services/order-engine/settings', label: 'Settings', icon: ShieldCheck, keywords: ['order', 'engine', 'settings', 'prefs', 'slippage', 'config'] },
           ] },
           { id: 'squareoff', href: '/services/squareoff', label: 'Squareoff', icon: RotateCcw, keywords: ['squareoff', 'position', 'close', 'freeze', 'retry', 'exit'] },
           { id: 'broker-terminal', href: '/services/broker-terminal', label: 'Broker Terminal', icon: Building2, keywords: ['terminal', 'broker', 'kotak', 'shoonya', 'dummy', 'adaptor'], children: [
@@ -557,72 +570,12 @@ export const SERVICES_SHELL: ShellConfig = {
   logoutEndpoint: '/api/auth/logout',
 };
 
-export const KHUMBHA_AI_SHELL: ShellConfig = {
-  id: 'khumbha-ai',
-  wrapperClass: 'ws-phase2',
-  brand: 'KHUMBHA AI',
-  tagline: 'Khumbha AI',
-  monogram: 'KA',
-  version: 'KHUMBHA AI v1.0',
-  nav: {
-    label: 'KHUMBHA AI',
-    groups: [
-      {
-        label: 'Main',
-        items: [
-          { id: 'dashboard', href: '/ai/dashboard', label: 'Dashboard', icon: LayoutDashboard, keywords: ['overview', 'home'] },
-          { id: 'models', href: '/ai/models', label: 'Models', icon: Boxes },
-          { id: 'datasets', href: '/ai/datasets', label: 'Datasets', icon: Database },
-          { id: 'training', href: '/ai/training', label: 'Training', icon: Cpu },
-        ],
-      },
-      {
-        label: 'Runtime',
-        items: [
-          { id: 'inference', href: '/ai/inference', label: 'Inference', icon: Sparkles },
-          { id: 'agents', href: '/ai/agents', label: 'Agents', icon: Layers },
-          { id: 'suggestions', href: '/ai/suggestions', label: 'Suggestions', icon: BookOpen },
-        ],
-      },
-      {
-        label: 'Infrastructure',
-        items: [
-          { id: 'infrastructure', href: '/ai/infrastructure', label: 'Infrastructure', icon: Globe },
-          { id: 'jobs', href: '/ai/jobs', label: 'Jobs', icon: History },
-          { id: 'logs', href: '/ai/logs', label: 'Logs', icon: ScrollText },
-          { id: 'settings', href: '/ai/settings', label: 'Settings', icon: SettingsIcon, keywords: ['preferences', 'appearance'] },
-          { id: 'theme', href: '/ai/theme', label: 'Theme', icon: Palette, keywords: ['appearance', 'dark', 'light', 'amoled', 'customize'] },
-        ],
-      },
-    ],
-  },
-  statusEndpoints: [
-    '/api/phase2/websocket',
-    '/api/phase2/alerts',
-    '/api/phase2/system',
-  ],
-  statusLinks: {
-    websocket: '/ai/infrastructure',
-    database: '/ai/infrastructure',
-    scheduler: '/ai/infrastructure',
-    session: '/ai/infrastructure',
-    internet: '/ai/infrastructure',
-  },
-  mobilePrimary: ['dashboard', 'models', 'training', 'inference'],
-  alertsRoute: '/ai/settings',
-  notificationsRoute: '/ai/settings',
-  sessionMode: 'none',
-  loginEndpoint: '/api/auth/manual-login',
-  logoutEndpoint: '/api/auth/logout',
-};
-
-export type ShellWorkspace = 'data-saver' | 'trading' | 'services' | 'khumbha-ai';
+export type ShellWorkspace = 'data-saver' | 'trading' | 'services';
 
 export const SHELL_CONFIGS: Record<ShellWorkspace, ShellConfig> = {
   'data-saver': DATA_SAVER_SHELL,
   trading: TRADING_SHELL,
   services: SERVICES_SHELL,
-  'khumbha-ai': KHUMBHA_AI_SHELL,
 };
 
 export function getShellConfig(workspace: ShellWorkspace): ShellConfig {

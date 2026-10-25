@@ -22,6 +22,7 @@ Honest scope / design:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -177,8 +178,12 @@ async def _webauthn_credential() -> dict | None:
 
 
 async def mode_lock_status() -> dict:
-    lock = await _doc("mode_lock") or {}
-    wn = await _webauthn_credential()
+    # Both documents are independent; issuing the reads together removes one
+    # sequential Atlas round trip from every terminal page load.
+    lock, wn = await asyncio.gather(_doc("mode_lock"), _doc("webauthn"))
+    lock = lock or {}
+    if not wn or not wn.get("credential_id"):
+        wn = None
     pin_ok = bool(lock.get("pin") and lock["pin"].get("hash"))
     methods: list[str] = []
     if pin_ok:

@@ -146,7 +146,7 @@ function KpiTile({
         className="absolute inset-x-0 top-0 h-[2px]"
         style={{ backgroundImage: `linear-gradient(90deg, hsl(var(--${varOf(accent)})), transparent 85%)` }}
       />
-      <div className="relative flex items-start gap-2.5 p-3">
+      <div className="relative flex items-start gap-1 p-3">
         <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1', s.chip)}>
           <Icon className="h-3.5 w-3.5" />
         </span>
@@ -232,10 +232,10 @@ function InfraCard(def: InfraCardDef) {
   const effective = state === 'unknown' ? 'neutral' : STATE_ACCENT_MAP[state];
 
   return (
-    <Panel className={cn('p-0', state === 'ok' && 'border-success/20', state === 'bad' && 'border-destructive/30', state === 'warn' && 'border-warning/30')}>
+    <Panel className={cn('p-0 relative transition-all duration-200', state === 'ok' && 'border-success/50 ring-1 ring-success/10 hover:border-success/80 hover:ring-success/30', state === 'bad' && 'border-destructive/60 ring-1 ring-destructive/10 hover:border-destructive/90 hover:ring-destructive/30', state === 'warn' && 'border-warning/50 ring-1 ring-warning/10 hover:border-warning/90 hover:ring-warning/30')}>
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger className="w-full text-left" disabled={loading}>
-          <div className="flex items-center gap-2.5 px-3.5 py-3">
+          <div className="flex items-center gap-1 px-3.5 py-3">
             <span className={cn('relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1', s.chip)}>
               <Icon className="h-4 w-4" />
               {state === 'ok' ? (
@@ -1070,7 +1070,7 @@ export default function SystemIndicatorsPage() {
     fleetCounts.total > 0 ? Math.round((fleetCounts.healthy / fleetCounts.total) * 100) : null;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       {/* ================= HERO ================= */}
       <Panel
         className="si-sweep si-grid relative overflow-hidden rounded-3xl border-border/60 p-0 shadow-soft-lg"
@@ -1168,7 +1168,7 @@ export default function SystemIndicatorsPage() {
           </div>
 
           {/* Hero readouts + controls */}
-          <div className="flex flex-col items-stretch gap-2.5">
+          <div className="flex flex-col items-stretch gap-1">
             <div className="flex items-center gap-2">
               <div className="flex flex-col items-center rounded-xl border border-border/50 bg-background/50 px-3 py-1.5 backdrop-blur">
                 <span className="font-mono text-base font-bold leading-none tabular-nums">
@@ -1208,7 +1208,7 @@ export default function SystemIndicatorsPage() {
       {/* Registry failure gets its own banner — the fleet is the whole point. */}
       {fleetError && (
         <Panel className="border-destructive/35 p-3" style={{ backgroundImage: 'linear-gradient(120deg, hsl(var(--destructive) / 0.12), transparent 60%)' }}>
-          <div className="flex items-start gap-2.5">
+          <div className="flex items-start gap-1">
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-destructive/12 text-destructive ring-1 ring-destructive/25">
               <LifeBuoy className="h-4 w-4" />
             </span>
@@ -1223,7 +1223,7 @@ export default function SystemIndicatorsPage() {
       )}
 
       {/* ================= LIVE KPI RAIL ================= */}
-      <section aria-label="Live vitals" className="space-y-2.5">
+      <section aria-label="Live vitals" className="space-y-1">
         <SectionHead
           icon={Activity}
           title="Live Vitals"
@@ -1236,7 +1236,7 @@ export default function SystemIndicatorsPage() {
             </span>
           }
         />
-        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
           <KpiTile
             icon={Cpu}
             label="CPU"
@@ -1309,14 +1309,14 @@ export default function SystemIndicatorsPage() {
       </section>
 
       {/* ================= RESOURCE GAUGES ================= */}
-      <section aria-label="Resource utilisation" className="space-y-2.5">
+      <section aria-label="Resource utilisation" className="space-y-1">
         <SectionHead
           icon={Cpu}
           title="Resource Utilisation"
           caption="Host pressure with the 60% / 85% alert ladder marked on every meter"
           accent="purple"
         />
-        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-1 lg:grid-cols-4">
           {[
             { icon: Cpu, label: 'CPU', pct: cpuPct, accent: 'teal' as Accent, sub: node?.cpuLoad1m != null ? `load avg ${node.cpuLoad1m.toFixed(2)} / ${node.cpuLoad5m?.toFixed(2) ?? '—'} / ${node.cpuLoad15m?.toFixed(2) ?? '—'}` : 'no load average' },
             { icon: MemoryStick, label: 'Memory', pct: ramPct, accent: 'info' as Accent, sub: node?.ramTotalBytes != null ? `${fmtBytes(node.ramUsedBytes)} of ${fmtBytes(node.ramTotalBytes)}` : 'no reading' },
@@ -1339,7 +1339,7 @@ export default function SystemIndicatorsPage() {
       </section>
 
       {/* ================= ENGINE FLEET ================= */}
-      <section aria-label="Engine fleet" className="space-y-2.5">
+      <section aria-label="Engine fleet" className="space-y-1">
         <SectionHead
           icon={Blocks}
           title="Engine Fleet"
@@ -1371,14 +1371,14 @@ export default function SystemIndicatorsPage() {
       </section>
 
       {/* ================= DATA PIPELINE ================= */}
-      <section aria-label="Data pipeline" className="space-y-2.5">
+      <section aria-label="Data pipeline" className="space-y-1">
         <SectionHead
           icon={Workflow}
           title="Data Pipeline"
           caption="Tick ingestion → validation → persistence, stage by stage"
           accent="teal"
         />
-        <div className="grid grid-cols-1 items-start gap-2.5 xl:grid-cols-3">
+        <div className="grid grid-cols-1 items-start gap-1 xl:grid-cols-3">
           <Panel className="p-3.5">
             <div className="mb-2.5 flex items-center justify-between">
               <p className="text-xs font-bold">Pipeline flow</p>
@@ -1554,14 +1554,14 @@ export default function SystemIndicatorsPage() {
       </section>
 
       {/* ================= MARKET DATA PLANE ================= */}
-      <section aria-label="Market data plane" className="space-y-2.5">
+      <section aria-label="Market data plane" className="space-y-1">
         <SectionHead
           icon={TrendingUp}
           title="Market Data Plane"
           caption="Universe coverage, ranking cadence and instrument freshness"
           accent="teal"
         />
-        <div className="grid grid-cols-1 items-start gap-2.5 lg:grid-cols-3">
+        <div className="grid grid-cols-1 items-start gap-1 lg:grid-cols-3">
           <Panel className="p-3.5">
             <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
               <Pill label={marketPlane.feedState ?? 'feed n/a'} accent={marketPlane.feedState === 'CONNECTED' || marketPlane.feedState === 'SUBSCRIBED' ? 'success' : marketPlane.feedState ? 'warning' : 'neutral'} live={marketPlane.feedState === 'CONNECTED'} />
@@ -1714,14 +1714,14 @@ export default function SystemIndicatorsPage() {
       </section>
 
       {/* ================= CONNECTION & ALERTING ================= */}
-      <section aria-label="Connections and alerting" className="space-y-2.5">
+      <section aria-label="Connections and alerting" className="space-y-1">
         <SectionHead
           icon={BellRing}
           title="Connections and alerting"
           caption="Message routing, session broker reachability and the alerting plane"
           accent="warning"
         />
-        <div className="grid grid-cols-1 items-start gap-2.5 lg:grid-cols-3">
+        <div className="grid grid-cols-1 items-start gap-1 lg:grid-cols-3">
           <Panel className="p-3.5">
             <div className="mb-2.5 flex items-center justify-between">
               <p className="text-xs font-bold">Connection Manager</p>
@@ -1768,7 +1768,7 @@ export default function SystemIndicatorsPage() {
 
           <Panel className="p-3.5">
             <p className="mb-2.5 text-xs font-bold">Host pressure</p>
-            <div className="space-y-2.5">
+            <div className="space-y-1">
               {[
                 { label: 'CPU', pct: cpuPct, accent: 'teal' as Accent },
                 { label: 'Memory', pct: ramPct, accent: 'info' as Accent },
@@ -1795,7 +1795,7 @@ export default function SystemIndicatorsPage() {
       </section>
 
       {/* ================= INFRASTRUCTURE ================= */}
-      <section aria-label="Infrastructure" className="space-y-2.5">
+      <section aria-label="Infrastructure" className="space-y-1">
         <SectionHead
           icon={Server}
           title="Infrastructure"
@@ -1803,7 +1803,7 @@ export default function SystemIndicatorsPage() {
           accent="info"
           count={`${infraCards.length} services`}
         />
-        <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-1 md:grid-cols-2 xl:grid-cols-3">
           {infraCards.map((c) => (
             <InfraCard key={c.name} {...c} />
           ))}
@@ -1811,14 +1811,14 @@ export default function SystemIndicatorsPage() {
       </section>
 
       {/* ================= PERFORMANCE ================= */}
-      <section aria-label="Performance" className="space-y-2.5">
+      <section aria-label="Performance" className="space-y-1">
         <SectionHead
           icon={Gauge}
           title="Performance"
           caption="Round-trip timings and the background tick writer"
           accent="purple"
         />
-        <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-1 md:grid-cols-2 xl:grid-cols-3">
           {perfCards.map((c) => (
             <InfraCard key={c.name} {...c} />
           ))}
@@ -1826,7 +1826,7 @@ export default function SystemIndicatorsPage() {
       </section>
 
       {/* ================= APPLICATION SERVICES ================= */}
-      <section aria-label="Application services" className="space-y-2.5">
+      <section aria-label="Application services" className="space-y-1">
         <SectionHead
           icon={Bot}
           title="Application Services"
@@ -1834,7 +1834,7 @@ export default function SystemIndicatorsPage() {
           accent="warning"
           count={`${serviceCards.length} endpoints`}
         />
-        <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-1 md:grid-cols-2 xl:grid-cols-3">
           {serviceCards.map((c) => (
             <InfraCard key={c.name} {...c} />
           ))}

@@ -38,12 +38,13 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from database.connection import get_db
+from services import read_cache
 
 from datetime import timedelta
 from core.timezones import IST
@@ -324,6 +325,7 @@ async def _save_account(account: dict):
         {"$set": {"value": account, "updatedAt": datetime.now(timezone.utc)}},
         upsert=True,
     )
+    read_cache.invalidate("dummy:state")
 
 
 async def get_dummy_orders() -> list:
@@ -341,6 +343,7 @@ async def _save_orders(orders: list):
         {"$set": {"value": orders, "updatedAt": datetime.now(timezone.utc)}},
         upsert=True,
     )
+    read_cache.invalidate("dummy:state")
 
 
 async def _load_positions_raw() -> list:
@@ -479,6 +482,7 @@ async def _save_positions(positions: list):
         {"$set": {"value": positions, "updatedAt": datetime.now(timezone.utc)}},
         upsert=True,
     )
+    read_cache.invalidate("dummy:state")
 
 
 async def get_dummy_transactions() -> list:
@@ -496,6 +500,7 @@ async def _save_transactions(txns: list):
         {"$set": {"value": txns, "updatedAt": datetime.now(timezone.utc)}},
         upsert=True,
     )
+    read_cache.invalidate("dummy:state")
 
 
 async def _append_ledger_entry(
@@ -1412,7 +1417,7 @@ async def _term_closed_position(position: dict, quantity: int, exit_price: float
         from services.dummy_extras import record_closed_position
         await record_closed_position(
             symbol=position.get("symbol", ""),
-            tradingSymbol=position.get("tradingSymbol", ""),
+            trading_symbol=position.get("tradingSymbol", ""),
             exchange=position.get("exchange", "nse_cm"),
             exchange_segment=position.get("exchangeSegment", "NSE_CM"),
             token=position.get("token", ""),
@@ -1663,7 +1668,7 @@ async def squareoff_dummy_position(symbol: str, product: str = "MIS", source: st
         target = next(
             (p for p in positions
              if str(p.get("symbol", "")).upper() == str(symbol or "").strip().upper()
-             and (not req.product or str(p.get("product", "")).upper() == str(req.product).upper())),
+             and (not product or str(p.get("product", "")).upper() == str(product).upper())),
             None,
         )
         if target is None or int(target.get("netQuantity") or 0) == 0:
@@ -1799,6 +1804,7 @@ async def reset_dummy_account(starting_balance: float = 0) -> dict:
             {"$set": {"value": [], "updatedAt": datetime.now(timezone.utc)}},
             upsert=True,
         )
+    read_cache.invalidate("dummy:state")
     return {"account": account, "stat": "Ok", "message": "Dummy account reset successfully"}
 
 
@@ -2033,6 +2039,62 @@ async def get_demo_daily_report(date: Optional[str] = Query(None)):
         "openPositions": open_pos,
         "closedPositions": closed_today,
         "stat": "Ok",
+    }
+
+
+def _to_engine_order_intent(req: DemoPlaceOrderRequest) -> dict:
+    """Map the paper-engine request shape onto the Order Engine's order intent.
+
+    The Order Engine speaks ONE shape for every terminal (``_order_kwargs`` /
+    ``_adapter_kwargs`` in ``core/engines/order_engine.py``): snake_case keys,
+    scalar values, and the optional richer paper fields (``expected_ltp``,
+    ``amount``, ``lot_size``, ``margin_per_share`` …) that only the Dummy
+    adapter declares.
+
+    The browser sends the paper shape (``transactionType``, ``orderType``,
+    ``disclosedQty``, ``ltp`` …). This function is the single, explicit
+    translation between the two.
+
+    It used to be MISSING from this module: ``place_demo_order`` called it
+    without ever defining or importing it, so every ``POST
+    /api/demo/order/place`` died with ``NameError: name
+    '_to_engine_order_intent' is not defined`` → HTTP 500. No paper order could
+    ever be placed from the trade page.
+    """
+    def _int(value: Any, default: int = 0) -> str:
+        try:
+            return str(int(value))
+        except (TypeError, ValueError):
+            return str(default)
+
+    def _float(value: Any, default: float = 0.0) -> str:
+        try:
+            return str(float(value))
+        except (TypeError, ValueError):
+            return str(default)
+
+    return {
+        # identity
+        "symbol": str(req.symbol or ""),
+        "trading_symbol": str(req.tradingSymbol or req.symbol or ""),
+        "token": str(req.token or ""),
+        "exchange": str(req.exchange or "nse_cm"),
+        "exchange_segment": str(req.exchangeSegment or "NSE_CM"),
+        # order intent
+        "transaction_type": str(req.transactionType or "BUY").upper(),
+        "product": str(req.product or "MIS").upper(),
+        "order_type": str(req.orderType or "MKT").upper(),
+        "quantity": _int(req.quantity),
+        "price": _float(req.price),
+        "trigger_price": _float(req.triggerPrice),
+        "disclosed_quantity": _int(req.disclosedQty),
+        "validity": str(req.validity or "DAY").upper(),
+        # paper-only extras (forwarded only because the Dummy adapter declares them)
+        "expected_ltp": _float(req.ltp),
+        "source": str(req.source or "MANUAL").upper(),
+        "amount": _float(req.amount),
+        "lot_size": _int(req.lotSize),
+        "margin_per_share": _float(req.marginPerShare),
     }
 
 

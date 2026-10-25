@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, memo } from 'react';
 import Link from 'next/link';
 import {
-  Activity, AlertCircle, ArrowUpRight, CheckCircle2, ChevronDown, ChevronRight,
+  Activity, AlertCircle, ArrowUpRight, ChevronDown, ChevronRight, CheckCircle2,
   Copy, ExternalLink, HeartPulse, MoreVertical, Play, RefreshCw, RotateCw,
   Search, Shield, ShoppingCart, Square, Stethoscope, UserRound, Wifi,
 } from 'lucide-react';
@@ -21,20 +21,20 @@ import {
 import {
   CATEGORY_COLORS, CATEGORY_ICONS, ENGINE_WORKSPACE_LINKS, ENGINES_API,
   HEALTH_COLORS, STATE_COLORS, engineProfileHref, fmtAgo, fmtEpoch, fmtInt,
-  fmtValue, isRunningState, postEngineAction, usePoll,
+  fmtValue, isRunningState, loadEnginesOverview, postEngineAction,
   type BrokerOption, type BrokerStatus, type BrokerSwitchResult,
-  type EngineStatus, type SystemSummary,
+  type EngineStatus, type EnginesDocument, type SystemSummary,
 } from '@/lib/system-engines';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 import { EngineSettingsPanel } from '@/components/engines/engine-settings-panel';
 import { FleetStatusDonut } from './charts';
 
 /**
- * SERVICES → System (Phase 3 Service Control Center)
+ * SERVICES → System (Service Control Center)
  *
- * Full fleet page: summary cards, fleet chart cards, broker services, and one
- * rich card per registered engine. Every card carries a dropdown (⋮) menu plus
- * an expandable inline details section, and links out to the engine's full
- * profile/detail page at /services/system/[engineId].
+ * Redesigned fleet page: glassmorphism cards, staggered engine rendering
+ * (one engine mounts line-by-line with a rising stagger), live WebSocket
+ * indicators, ambient sweep background, and animated summary counters.
  *
  * Real backend data only. Every value comes from the Engine Registry API.
  * Missing values render as N/A, never as invented data.
@@ -48,25 +48,127 @@ const HEALTH_RANK: Record<string, number> = {
   UNHEALTHY: 0, DEGRADED: 1, UNKNOWN: 2, HEALTHY: 3,
 };
 
+const STATE_DOT: Record<string, { bg: string; ring: string }> = {
+  RUNNING: { bg: 'bg-success', ring: 'ring-success/40' },
+  HEALTHY: { bg: 'bg-success', ring: 'ring-success/40' },
+  REGISTERED: { bg: 'bg-muted', ring: 'ring-muted/40' },
+  STARTING: { bg: 'bg-warning', ring: 'ring-warning/40' },
+  STOPPED: { bg: 'bg-muted', ring: 'ring-muted/40' },
+  STOPPING: { bg: 'bg-warning', ring: 'ring-warning/40' },
+  DEGRADED: { bg: 'bg-warning', ring: 'ring-warning/40' },
+  ERROR: { bg: 'bg-destructive', ring: 'ring-destructive/40' },
+  DISCONNECTED: { bg: 'bg-destructive', ring: 'ring-destructive/40' },
+  STALE: { bg: 'bg-warning', ring: 'ring-warning/40' },
+  DISABLED: { bg: 'bg-muted', ring: 'ring-muted/40' },
+  DEPENDENCY_ERROR: { bg: 'bg-destructive', ring: 'ring-destructive/40' },
+  RESTARTING: { bg: 'bg-info', ring: 'ring-info/40' },
+  UNKNOWN: { bg: 'bg-muted', ring: 'ring-muted/40' },
+};
+
+/* ------------------------------------------------------------------ */
+/* Live dot — pulses when the WebSocket is pushing fresh data         */
+/* ------------------------------------------------------------------ */
+
+function LiveDot({ live }: { live: boolean }) {
+  return (
+    <span
+      className={[
+        'relative inline-flex h-2 w-2 rounded-full',
+        live ? 'bg-success ring-2 ring-success/50 animate-pulse' : 'bg-warning ring-2 ring-warning/50',
+      ].join(' ')}
+      aria-label={live ? 'Live · WebSocket' : 'REST fallback'}
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Animated counter                                                   */
+/* ------------------------------------------------------------------ */
+
+function AnimatedCounter({ value, label, color = 'text-foreground' }: { value: number; label: string; color?: string }) {
+  const [display, setDisplay] = useState(value);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let raf: number;
+    const start = performance.now();
+    const from = display;
+    const to = value;
+    const dur = 700;
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / dur);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(Math.round(from + (to - from) * eased));
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [value, display]);
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className={`font-mono font-bold tabular-nums ${color}`}>{display}</span>
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Glow pill — decorative ambient pill behind header badges           */
+/* ------------------------------------------------------------------ */
+
+function GlowPill({ color }: { color: string }) {
+  return (
+    <span
+      className="absolute -inset-px blur-xl opacity-40 rounded-full"
+      style={{ background: color }}
+      aria-hidden="true"
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* QuickRow                                                           */
+/* ------------------------------------------------------------------ */
+
 function QuickRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <span className="text-muted-foreground">{label}</span>
+      <span className="text-muted-foreground text-[11px]">{label}</span>
       <span className="min-w-0 text-right">{children}</span>
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/* Engine card: full card + dropdown menu + expandable details + links */
+/* Status dot                                                         */
+/* ------------------------------------------------------------------ */
+
+function StatusDot({ state }: { state: string }) {
+  const style = STATE_DOT[state] ?? STATE_DOT.UNKNOWN;
+  return (
+    <span
+      className={`inline-flex h-2 w-2 shrink-0 rounded-full ${style.bg} shadow`}
+      style={{ boxShadow: `0 0 8px ${style.bg === 'bg-success' ? '#22c55e' : style.bg === 'bg-warning' ? '#f59e0b' : '#ef4444'}` }}
+      aria-label={state}
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Engine card: glassmorphism + staggered mount                       */
 /* ------------------------------------------------------------------ */
 
 function EngineCard({
   engine,
   onAction,
+  index,
+  className,
+  style,
 }: {
   engine: EngineStatus;
   onAction: (id: string, action: string, confirm?: boolean) => Promise<ActionResult>;
+  index: number;
+  className?: string;
+  style?: React.CSSProperties;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -104,7 +206,16 @@ function EngineCard({
   };
 
   return (
-    <Card className={`shadow-soft flex flex-col transition-all duration-200 hover:-translate-y-0.5 hover:shadow-soft-lg hover:border-primary/25 ${expanded ? 'border-primary/40 ring-1 ring-primary/20' : ''}`}>
+    <Card
+      className={[
+        'relative overflow-hidden border-border/60 bg-card/60 backdrop-blur-md shadow-soft',
+        'transition-all duration-300',
+        'hover:-translate-y-1 hover:shadow-soft-lg hover:border-primary/30',
+        expanded ? 'border-primary/40 ring-1 ring-primary/20' : '',
+        className,
+      ].filter(Boolean).join(' ')}
+      style={style}>
+      <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100 pointer-events-none" aria-hidden="true" />
       <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2 gap-2">
         <button
           type="button"
@@ -112,13 +223,26 @@ function EngineCard({
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
           title={expanded ? 'Collapse details' : 'Expand details'}
         >
-          <Icon className={`h-4 w-4 shrink-0 ${CATEGORY_COLORS[engine.engineCategory] || 'text-muted-foreground'}`} />
+          <div className="relative shrink-0">
+            <Icon className={`h-4 w-4 ${CATEGORY_COLORS[engine.engineCategory] || 'text-muted-foreground'}`} />
+            <div
+              className="absolute -inset-1 blur-md opacity-40 rounded-full"
+              style={{ background: CATEGORY_COLORS[engine.engineCategory] || '#6b7280' }}
+              aria-hidden="true"
+            />
+          </div>
           <span className="min-w-0">
             <CardTitle className="truncate text-sm font-medium">{engine.engineName}</CardTitle>
             <span className="block truncate font-mono text-[10px] text-muted-foreground">{engine.engineId}</span>
           </span>
         </button>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="relative flex h-2 w-2">
+            <StatusDot state={engine.state} />
+            {running && (
+              <span className="absolute -inset-1 animate-ping rounded-full bg-success opacity-60" aria-hidden="true" />
+            )}
+          </span>
           <Badge className={STATE_COLORS[engine.state] || STATE_COLORS.UNKNOWN}>
             {engine.state}
           </Badge>
@@ -174,7 +298,7 @@ function EngineCard({
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="rounded p-1 text-muted-foreground hover:text-foreground"
+            className="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
             aria-label={expanded ? 'Collapse' : 'Expand'}
           >
             {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -196,10 +320,10 @@ function EngineCard({
           </QuickRow>
         ) : null}
         <QuickRow label="Events">
-          <span className="font-mono">{fmtInt(engine.metrics?.eventCount)}</span>
+          <span className="font-mono text-success">{fmtInt(engine.metrics?.eventCount)}</span>
         </QuickRow>
         <QuickRow label="Errors">
-          <span className={`font-mono ${(engine.metrics?.errorCount ?? 0) > 0 ? 'text-destructive' : ''}`}>
+          <span className={`font-mono ${(engine.metrics?.errorCount ?? 0) > 0 ? 'text-destructive' : 'text-success'}`}>
             {fmtInt(engine.metrics?.errorCount)}
           </span>
         </QuickRow>
@@ -208,26 +332,26 @@ function EngineCard({
         </QuickRow>
 
         {expanded && (
-          <div className="mt-2 space-y-2 border-t pt-3">
+          <div className="mt-2 space-y-2 border-t border-border/40 pt-3">
             <div className="grid grid-cols-2 gap-x-3 gap-y-1">
               <QuickRow label="Version"><span className="font-mono">{engine.version || 'N/A'}</span></QuickRow>
-              <QuickRow label="Category"><span>{engine.engineCategory || 'N/A'}</span></QuickRow>
+              <QuickRow label="Category"><span className="capitalize text-[11px]">{engine.engineCategory || 'N/A'}</span></QuickRow>
               <QuickRow label="Warnings"><span className="font-mono">{fmtInt(engine.metrics?.warningCount)}</span></QuickRow>
               <QuickRow label="Queue"><span className="font-mono">{fmtInt(engine.metrics?.queueSize)}</span></QuickRow>
               <QuickRow label="Workload"><span className="font-mono">{engine.metrics?.workload ?? 'N/A'}{engine.metrics?.workload != null ? '%' : ''}</span></QuickRow>
               <QuickRow label="Last op"><span className="font-mono">{engine.metrics?.lastOperationDurationMs != null ? `${engine.metrics.lastOperationDurationMs}ms` : 'N/A'}</span></QuickRow>
               <QuickRow label="Started"><span className="font-mono">{fmtEpoch(engine.startedAt)}</span></QuickRow>
               <QuickRow label="Uptime"><span className="font-mono">{fmtAgo(engine.startedAtAgo)}</span></QuickRow>
-              <QuickRow label="Connection"><span>{engine.connectionState || 'N/A'}</span></QuickRow>
+              <QuickRow label="Connection"><span className="capitalize text-[11px]">{engine.connectionState || 'N/A'}</span></QuickRow>
             </div>
 
             {engine.dependencies.length > 0 && (
               <div>
-                <span className="text-muted-foreground">Dependencies:</span>
+                <span className="text-muted-foreground text-[10px]">Dependencies:</span>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {engine.dependencies.map((d) => (
                     <Link key={d} href={engineProfileHref(d)}>
-                      <Badge variant="outline" className="text-[10px] hover:border-primary hover:text-primary">{d}</Badge>
+                      <Badge variant="outline" className="text-[10px] hover:border-primary hover:text-primary transition-colors">{d}</Badge>
                     </Link>
                   ))}
                 </div>
@@ -235,11 +359,11 @@ function EngineCard({
             )}
             {engine.dependents.length > 0 && (
               <div>
-                <span className="text-muted-foreground">Dependents:</span>
+                <span className="text-muted-foreground text-[10px]">Dependents:</span>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {engine.dependents.map((d) => (
                     <Link key={d} href={engineProfileHref(d)}>
-                      <Badge variant="outline" className="text-[10px] hover:border-primary hover:text-primary">{d}</Badge>
+                      <Badge variant="outline" className="text-[10px] hover:border-primary hover:text-primary transition-colors">{d}</Badge>
                     </Link>
                   ))}
                 </div>
@@ -247,12 +371,12 @@ function EngineCard({
             )}
             {customEntries.length > 0 && (
               <div>
-                <span className="text-muted-foreground">Custom metrics ({customEntries.length}):</span>
+                <span className="text-muted-foreground text-[10px]">Custom metrics ({customEntries.length}):</span>
                 <div className="mt-1 space-y-0.5">
                   {customEntries.slice(0, 5).map(([k, v]) => (
                     <div key={k} className="flex justify-between gap-2">
                       <span className="truncate font-mono text-[11px]">{k}</span>
-                      <span className="font-mono text-[11px]">{fmtValue(v)}</span>
+                      <span className="font-mono text-[11px] text-success">{fmtValue(v)}</span>
                     </div>
                   ))}
                 </div>
@@ -260,7 +384,7 @@ function EngineCard({
             )}
             {configEntries.length > 0 && (
               <div>
-                <span className="text-muted-foreground">Config ({configEntries.length}):</span>
+                <span className="text-muted-foreground text-[10px]">Config ({configEntries.length}):</span>
                 <div className="mt-1 space-y-0.5">
                   {configEntries.slice(0, 5).map(([k, v]) => (
                     <div key={k} className="flex justify-between gap-2">
@@ -272,16 +396,13 @@ function EngineCard({
               </div>
             )}
 
-            {/* The engine's real, writable settings — not a read-only mirror of
-                the summary above. Rendered last so the fact list stays scannable
-                and the editor is the explicit next step. */}
             <EngineSettingsPanel engineId={engine.engineId} engineName={engine.engineName} compact />
             {engine.recentErrors.length > 0 && (
               <div>
-                <span className="text-muted-foreground">Recent errors:</span>
+                <span className="text-muted-foreground text-[10px]">Recent errors:</span>
                 <div className="mt-1 space-y-1">
                   {engine.recentErrors.slice(0, 3).map((err, i) => (
-                    <div key={i} className="rounded bg-destructive/5 p-1 text-[10px] text-destructive">
+                    <div key={i} className="rounded bg-destructive/5 p-1 border border-destructive/20 text-[10px] text-destructive">
                       {err.code}: {err.message?.slice(0, 80)}
                     </div>
                   ))}
@@ -337,8 +458,11 @@ function EngineCard({
   );
 }
 
+/* Memoize so only the changed card re-renders on live ticks. */
+const MemoEngineCard = memo(EngineCard);
+
 /* ------------------------------------------------------------------ */
-/* Broker card (unchanged behaviour, keeps trading/market-data switch) */
+/* Broker card                                                        */
 /* ------------------------------------------------------------------ */
 
 function BrokerCard({
@@ -361,19 +485,20 @@ function BrokerCard({
     : brokers.map((b) => ({ ...b, implemented: !!b.capabilities?.marketData }));
 
   return (
-    <Card className="shadow-soft transition-all duration-200 hover:-translate-y-0.5 hover:shadow-soft-lg hover:border-primary/25">
+    <Card className="relative overflow-hidden border-border/60 bg-card/60 backdrop-blur-md shadow-soft transition-all duration-300 hover:-translate-y-0.5 hover:shadow-soft-lg hover:border-primary/25">
+      <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100 pointer-events-none" aria-hidden="true" />
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <div className="flex items-center gap-2">
-          <span className="rounded-xl bg-primary/10 p-2">
+          <span className="relative rounded-xl bg-primary/10 p-2">
             <Icon className="h-4 w-4 text-primary" />
+            {isConnected && (
+              <span className="absolute -right-1 -bottom-1 flex h-2 w-2">
+                <span className="relative inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" aria-hidden="true" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-success" aria-hidden="true" />
+              </span>
+            )}
           </span>
           <CardTitle className="text-sm font-medium">{title}</CardTitle>
-          {isImplemented && isConnected && (
-            <span className="relative flex h-2 w-2" title="Live">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
-            </span>
-          )}
         </div>
         {status && (
           <Badge className={
@@ -390,7 +515,7 @@ function BrokerCard({
           <>
             <QuickRow label="Broker"><span className="font-medium">{status.displayName}</span></QuickRow>
             {!isImplemented ? (
-              <div className="italic text-muted-foreground">
+              <div className="italic text-muted-foreground text-[11px]">
                 {status.message || `${status.displayName} adapter is not implemented yet`}
               </div>
             ) : (
@@ -452,15 +577,29 @@ function BrokerCard({
 }
 
 /* ------------------------------------------------------------------ */
-/* Main page                                                           */
+/* Main page                                                          */
 /* ------------------------------------------------------------------ */
 
 export default function SystemPage() {
-  const { data: summary, error: summaryError, refresh: refreshSummary } = usePoll<SystemSummary>(`${API}/summary`, 10000);
-  const { data: engines, error: enginesError, refresh: refreshEngines } = usePoll<EngineStatus[]>(`${API}`, 8000);
-  const { data: tradingBroker, error: tradingError, refresh: refreshTrading } = usePoll<BrokerStatus>(`${API}/broker/trading`, 10000);
-  const { data: marketDataBroker, error: marketDataError, refresh: refreshMarketData } = usePoll<BrokerStatus>(`${API}/broker/market-data`, 10000);
-  const { data: brokers, refresh: refreshBrokers } = usePoll<BrokerOption[]>(`${API}/broker/list`, 30000);
+  const {
+    data: controlPlane,
+    live,
+    error: liveError,
+    refresh: refreshControlPlane,
+  } = useRealtimeChannel<EnginesDocument>('engines', {
+    fallback: loadEnginesOverview,
+    fallbackKey: 'engines-overview',
+    fallbackMs: 20000,
+  });
+
+  const engines: EngineStatus[] | null = useMemo(
+    () => (controlPlane ? Object.values(controlPlane.engines ?? {}) : null),
+    [controlPlane],
+  );
+  const summary: SystemSummary | null = controlPlane?.summary ?? null;
+  const tradingBroker: BrokerStatus | null = controlPlane?.brokers?.trading ?? null;
+  const marketDataBroker: BrokerStatus | null = controlPlane?.brokers?.marketData ?? null;
+  const brokers: BrokerOption[] | null = controlPlane?.brokers?.list ?? null;
 
   const [search, setSearch] = useState('');
   const [filterState, setFilterState] = useState('all');
@@ -471,16 +610,12 @@ export default function SystemPage() {
   const [fleetBusy, setFleetBusy] = useState<string | null>(null);
   const [fleetMsg, setFleetMsg] = useState<string | null>(null);
 
-  const enginesList = Array.isArray(engines) ? engines : null;
-  const hasPollErrors = [enginesError, summaryError, tradingError, marketDataError].some(Boolean);
+  const enginesList = engines;
+  const hasPollErrors = !enginesList && !!liveError;
 
   const refreshAll = useCallback(() => {
-    refreshSummary();
-    refreshEngines();
-    refreshTrading();
-    refreshMarketData();
-    refreshBrokers();
-  }, [refreshSummary, refreshEngines, refreshTrading, refreshMarketData, refreshBrokers]);
+    refreshControlPlane();
+  }, [refreshControlPlane]);
 
   const handleAction = useCallback(async (engineId: string, action: string, confirm = false): Promise<ActionResult> => {
     const r = await postEngineAction(
@@ -499,10 +634,9 @@ export default function SystemPage() {
       setBrokerResult((prev) => ({ ...prev, [kind]: result }));
     } finally {
       setBrokerBusy(null);
-      refreshTrading();
-      refreshMarketData();
+      setTimeout(refreshAll, 600);
     }
-  }, [refreshTrading, refreshMarketData]);
+  }, [refreshAll]);
 
   const handleFleetAction = useCallback(async (action: 'health-check' | 'heartbeat-all') => {
     setFleetBusy(action);
@@ -560,7 +694,6 @@ export default function SystemPage() {
     return [...s].sort();
   }, [enginesList]);
 
-  /** Donut split: chalu vs band vs attention — summary se, fallback live list se. */
   const statusSplit = useMemo(() => {
     const counts: Record<string, number> = { ...(summary?.states ?? {}) };
     if (!summary && enginesList) {
@@ -580,11 +713,23 @@ export default function SystemPage() {
   const loadingEngines = enginesList == null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-0">
+      {/* Ambient background sweep + measurement grid */}
+      <div className="fixed inset-0 z-0 pointer-events-none">
+        <div className="si-sweep" aria-hidden="true" />
+        <div className="si-grid inset-0" />
+      </div>
+
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 pt-6 pb-2">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Service Control Center</h1>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="relative rounded-xl bg-primary/10 p-2">
+              <Activity className="h-5 w-5 text-primary" />
+              <span className={`absolute -right-1 -bottom-1 h-2 w-2 rounded-full ${live ? 'animate-pulse bg-success ring-2 ring-success/50' : 'animate-pulse bg-warning ring-2 ring-warning/50'}`} />
+            </div>
+            <h1 className="text-3xl font-bold tracking-tight">Service Control Center</h1>
+          </div>
           <p className="text-sm text-muted-foreground">
             {enginesList
               ? `${totalEngines} engines · ${summary?.healths?.HEALTHY || 0} healthy · ${summary?.healths?.DEGRADED || 0} degraded · ${summary?.healths?.UNHEALTHY || 0} unhealthy`
@@ -593,9 +738,9 @@ export default function SystemPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge className={
-            overallState === 'HEALTHY' ? 'bg-success/10 text-success' :
-            overallState === 'DEGRADED' ? 'bg-warning/10 text-warning' :
-            overallState === 'ERROR' ? 'bg-destructive/10 text-destructive' :
+            overallState === 'HEALTHY' ? 'bg-success/10 text-success border-success/20' :
+            overallState === 'DEGRADED' ? 'bg-warning/10 text-warning border-warning/20' :
+            overallState === 'ERROR' ? 'bg-destructive/10 text-destructive border-destructive/20' :
             'bg-muted text-muted-foreground'
           }>
             {overallState}
@@ -609,27 +754,24 @@ export default function SystemPage() {
             Heartbeat all
           </Button>
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="relative flex h-2 w-2" title="Auto-refresh on">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
-            </span>
-            Auto-refreshing
+            <LiveDot live={live} />
+            {live ? 'Live · WebSocket' : 'REST fallback'}
           </span>
           <Button size="sm" variant="ghost" onClick={refreshAll} title="Refresh now">
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
       </div>
-      {fleetMsg && <p className="text-xs text-muted-foreground">{fleetMsg}</p>}
+      {fleetMsg && <p className="relative z-10 text-xs text-muted-foreground">{fleetMsg}</p>}
 
       {/* Diagnostics */}
       {hasPollErrors && (
-        <div className="flex items-start justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs">
+        <div className="relative z-10 flex items-start justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-xs">
           <div className="min-w-0 space-y-0.5">
             <div className="flex items-center gap-1.5 font-medium text-destructive">
-              <AlertCircle className="h-3.5 w-3.5" /> One or more control-plane requests are failing
+              <AlertCircle className="h-3.5 w-3.5" /> Control plane requests failing
             </div>
-            {[['engines', enginesError], ['summary', summaryError], ['trading broker', tradingError], ['market data', marketDataError]]
+            {[['control plane', liveError]]
               .filter(([, e]) => !!e)
               .map(([name, e]) => (
                 <div key={name as string} className="truncate text-muted-foreground">
@@ -644,63 +786,61 @@ export default function SystemPage() {
       )}
 
       {/* Summary cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card className="card-accent-green group shadow-soft transition-all duration-200 hover:-translate-y-1 hover:shadow-soft-lg">
+      <div className="relative z-10 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card className="relative overflow-hidden border-border/60 bg-card/60 backdrop-blur-md shadow-soft group transition-all duration-300 hover:-translate-y-1 hover:shadow-soft-lg">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">Total Engines</span>
-              <span className="rounded-xl bg-primary/10 p-2 transition-transform duration-200 group-hover:scale-110">
+              <div className="relative rounded-xl bg-primary/10 p-2 transition-transform duration-300 group-hover:scale-110">
                 <Activity className="h-5 w-5 text-primary" />
-              </span>
+                <GlowPill color="#3b82f6" />
+              </div>
             </div>
-            <div className="mt-1 text-2xl font-bold tabular-nums">{totalEngines}</div>
-            <p className="text-xs text-muted-foreground">registered</p>
+            <AnimatedCounter value={totalEngines} label="registered" />
           </CardContent>
         </Card>
-        <Card className="card-accent-teal group shadow-soft transition-all duration-200 hover:-translate-y-1 hover:shadow-soft-lg">
+        <Card className="relative overflow-hidden border-border/60 bg-card/60 backdrop-blur-md shadow-soft group transition-all duration-300 hover:-translate-y-1 hover:shadow-soft-lg">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">Running</span>
-              <span className="rounded-xl bg-success/10 p-2 transition-transform duration-200 group-hover:scale-110">
+              <div className="relative rounded-xl bg-success/10 p-2 transition-transform duration-300 group-hover:scale-110">
                 <CheckCircle2 className="h-5 w-5 text-success" />
-              </span>
+                <GlowPill color="#22c55e" />
+              </div>
             </div>
-            <div className="mt-1 text-2xl font-bold tabular-nums">
-              {(summary?.states?.RUNNING || 0) + (summary?.states?.HEALTHY || 0)}
-            </div>
-            <p className="text-xs text-muted-foreground">active engines</p>
+            <AnimatedCounter value={(summary?.states?.RUNNING || 0) + (summary?.states?.HEALTHY || 0)} label="active engines" color="text-success" />
           </CardContent>
         </Card>
-        <Card className="card-accent-amber group shadow-soft transition-all duration-200 hover:-translate-y-1 hover:shadow-soft-lg">
+        <Card className="relative overflow-hidden border-border/60 bg-card/60 backdrop-blur-md shadow-soft group transition-all duration-300 hover:-translate-y-1 hover:shadow-soft-lg">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Degraded</span>
-              <span className="rounded-xl bg-warning/10 p-2 transition-transform duration-200 group-hover:scale-110">
+              <span className="text-sm text-muted-foreground">Needs attention</span>
+              <div className="relative rounded-xl bg-warning/10 p-2 transition-transform duration-300 group-hover:scale-110">
                 <AlertCircle className="h-5 w-5 text-warning" />
-              </span>
+                <GlowPill color="#f59e0b" />
+              </div>
             </div>
-            <div className="mt-1 text-2xl font-bold tabular-nums">
-              {(summary?.healths?.DEGRADED || 0) + (summary?.healths?.UNHEALTHY || 0)}
-            </div>
-            <p className="text-xs text-muted-foreground">need attention</p>
+            <AnimatedCounter value={(summary?.healths?.DEGRADED || 0) + (summary?.healths?.UNHEALTHY || 0)} label="degraded / unhealthy" color="text-warning" />
           </CardContent>
         </Card>
-        <Card className="card-accent-purple group shadow-soft transition-all duration-200 hover:-translate-y-1 hover:shadow-soft-lg">
+        <Card className="relative overflow-hidden border-border/60 bg-card/60 backdrop-blur-md shadow-soft group transition-all duration-300 hover:-translate-y-1 hover:shadow-soft-lg">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">System Health</span>
-              <span className="rounded-xl bg-purple-500/10 p-2 transition-transform duration-200 group-hover:scale-110">
+              <span className="text-sm text-muted-foreground">System health</span>
+              <div className="relative rounded-xl bg-purple-500/10 p-2 transition-transform duration-300 group-hover:scale-110">
                 <Shield className={`h-5 w-5 ${overallState === 'HEALTHY' ? 'text-success' : 'text-warning'}`} />
-              </span>
+                <GlowPill color="#a855f7" />
+              </div>
             </div>
-            <div className="mt-1 text-2xl font-bold">{overallState}</div>
-            <p className="text-xs text-muted-foreground">overall status</p>
+            <AnimatedCounter value={0} label="overall status" color={overallState === 'HEALTHY' ? 'text-success' : 'text-warning'} />
+            <div className="mt-1 text-xs font-medium capitalize">{overallState}</div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Status overview — single donut: kitne chalu, kitne band */}
-      <Card className="shadow-soft transition-all duration-200 hover:shadow-soft-lg">
+      {/* Status overview — single donut */}
+      <Card className="relative z-10 overflow-hidden border-border/60 bg-card/60 backdrop-blur-md shadow-soft transition-all duration-300 hover:shadow-soft-lg">
+        <div className="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100 pointer-events-none" aria-hidden="true" />
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0 pb-2">
           <div>
             <CardTitle className="text-sm font-medium">Engine Status Overview</CardTitle>
@@ -757,7 +897,7 @@ export default function SystemPage() {
       </Card>
 
       {/* Broker Services */}
-      <div>
+      <div className="relative z-10">
         <h2 className="mb-3 text-lg font-semibold">Broker Services</h2>
         <div className="grid gap-4 md:grid-cols-2">
           <BrokerCard
@@ -785,7 +925,7 @@ export default function SystemPage() {
 
       {/* Engine Categories */}
       {enginesList && (
-        <div>
+        <div className="relative z-10">
           <h2 className="mb-3 text-lg font-semibold">Engine Categories</h2>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7">
             {Object.entries(categoryCounts).map(([cat, count]) => {
@@ -793,8 +933,9 @@ export default function SystemPage() {
               const active = filterCategory === cat;
               return (
                 <button key={cat} type="button" onClick={() => setFilterCategory(active ? 'all' : cat)} title={active ? 'Clear category filter' : `Filter by ${cat}`}>
-                  <Card className={`shadow-soft transition-all duration-200 hover:-translate-y-1 hover:shadow-soft-lg ${active ? 'border-primary ring-1 ring-primary/40' : 'hover:border-primary/50'}`}>
-                    <CardContent className="p-3 text-center">
+                  <Card className={`relative overflow-hidden shadow-soft transition-all duration-300 hover:-translate-y-1 hover:shadow-soft-lg ${active ? 'border-primary ring-1 ring-primary/40' : 'hover:border-primary/50'}`}>
+                    <div className="absolute inset-0 bg-gradient-to-b from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" aria-hidden="true" />
+                    <CardContent className="p-3 text-center relative z-10">
                       <Icon className={`mx-auto mb-1 h-5 w-5 ${CATEGORY_COLORS[cat]}`} />
                       <div className="text-lg font-bold">{count}</div>
                       <div className="text-[10px] uppercase text-muted-foreground">{cat}</div>
@@ -808,18 +949,20 @@ export default function SystemPage() {
       )}
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-2">
+      <div className="relative z-10 flex flex-wrap gap-2">
         <div className="relative min-w-[200px] max-w-sm flex-1">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <div className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none">
+            <Search />
+          </div>
           <Input
             placeholder="Search engines…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-10"
+            className="pl-10 bg-card/50 border-border/60"
           />
         </div>
         <Select value={filterState} onValueChange={setFilterState}>
-          <SelectTrigger className="w-36"><SelectValue placeholder="State" /></SelectTrigger>
+          <SelectTrigger className="w-36 bg-card/50 border-border/60"><SelectValue placeholder="State" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All States</SelectItem>
             {stateOptions.map((s) => (
@@ -828,7 +971,7 @@ export default function SystemPage() {
           </SelectContent>
         </Select>
         <Select value={filterCategory} onValueChange={setFilterCategory}>
-          <SelectTrigger className="w-40"><SelectValue placeholder="Category" /></SelectTrigger>
+          <SelectTrigger className="w-40 bg-card/50 border-border/60"><SelectValue placeholder="Category" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Categories</SelectItem>
             {Object.keys(categoryCounts).map((c) => (
@@ -837,7 +980,7 @@ export default function SystemPage() {
           </SelectContent>
         </Select>
         <Select value={sortBy} onValueChange={setSortBy}>
-          <SelectTrigger className="w-44"><SelectValue placeholder="Sort by" /></SelectTrigger>
+          <SelectTrigger className="w-44 bg-card/50 border-border/60"><SelectValue placeholder="Sort by" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="name">Sort: Name</SelectItem>
             <SelectItem value="health">Sort: Health (worst first)</SelectItem>
@@ -848,39 +991,46 @@ export default function SystemPage() {
         </Select>
       </div>
 
-      {/* Engine Cards */}
-      <div>
+      {/* Engine Cards — rendered one at a time with a staggered rise */}
+      <div className="relative z-10">
         <h2 className="mb-3 text-lg font-semibold">
           All Engines {enginesList && <span className="text-sm font-normal text-muted-foreground">({filteredEngines.length} of {enginesList.length})</span>}
         </h2>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {loadingEngines
             ? Array.from({ length: 8 }).map((_, i) => (
-                <Card key={`skeleton-${i}`} className="shadow-soft">
+                <Card key={`skeleton-${i}`} className="shadow-soft border-border/60 bg-card/60 backdrop-blur-md">
                   <CardContent className="space-y-2 pt-6">
                     <div className="h-4 w-32 animate-pulse rounded bg-muted" />
                     <div className="h-3 w-20 animate-pulse rounded bg-muted" />
                   </CardContent>
                 </Card>
               ))
-            : filteredEngines.map((engine) => (
-                <EngineCard key={engine.engineId} engine={engine} onAction={handleAction} />
+            : filteredEngines.map((engine, i) => (
+                <MemoEngineCard
+                  key={engine.engineId}
+                  engine={engine}
+                  onAction={handleAction}
+                  index={i}
+                  className="ds-rise"
+                  style={{ '--ds-i': String(i) } as React.CSSProperties}
+                />
               ))}
         </div>
       </div>
 
-      {!enginesList && enginesError && (
-        <div className="py-8 text-center text-muted-foreground">
-          404 or unreachable — {enginesError}. Retrying automatically…
+      {!enginesList && liveError && (
+        <div className="relative z-10 py-8 text-center text-muted-foreground">
+          404 or unreachable — {liveError}. Retrying automatically…
         </div>
       )}
-      {!enginesList && !enginesError && (
-        <div className="py-8 text-center text-muted-foreground">
+      {!enginesList && !liveError && (
+        <div className="relative z-10 py-8 text-center text-muted-foreground">
           Loading engine list…
         </div>
       )}
       {enginesList && filteredEngines.length === 0 && (
-        <div className="py-8 text-center text-muted-foreground">
+        <div className="relative z-10 py-8 text-center text-muted-foreground">
           No engines match the current filters.
         </div>
       )}

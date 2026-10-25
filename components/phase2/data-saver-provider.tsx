@@ -10,26 +10,42 @@ import {
   useMemo,
 } from 'react'
 import { getCached } from '@/lib/request-cache'
+import { realtimeClient } from '@/lib/realtime-ws'
 
 /**
- * Shared Data Saver data provider — the SINGLE polling loop for the whole
- * Data Saver workspace. Polls the canonical `/api/data-saver/dashboard`
- * endpoint (one centralized shape, single-flight backend) every POLL_MS and
- * hands the snapshot to ANY consumer (dashboard, topbar status indicators,
- * etc.) via `useDataSaver()`.
+ * Shared Data Saver data provider — the SINGLE data loop for the whole Data
+ * Saver workspace. It feeds the dashboard from BOTH transports, so the page is
+ * always fed by whichever one is alive:
+ *
+ *   1. WEBSOCKET (fast lane, primary)  — the ONE shared `/ws/realtime` socket
+ *      (WS#3). The backend owns a `dashboard` snapshot channel: it pushes the
+ *      authoritative live document the instant a client subscribes, re-pushes
+ *      when the state actually changes, and re-sends fast telemetry on a 6s
+ *      cadence. The provider shallow-merges every frame into the latest
+ *      snapshot, so counters and states update the moment the backend knows.
+ *
+ *   2. REST (fallback + slow-sync)     — polls the canonical
+ *      `/api/data-saver/dashboard` envelope (full detail: events trail, alerts,
+ *      storage categories, quality window, states cards). Cadence adapts: 10s
+ *      when the socket is down, 25s when WS frames are flowing (the socket is
+ *      carrying the live values; REST only re-syncs the heavy lists).
  *
  * Guarantees:
- *  - EXACTLY ONE polling loop per mounted provider (no per-card loops).
+ *  - EXACTLY ONE REST polling loop + ONE snapshot subscription per mounted
+ *    provider (no per-card loops).
  *  - One in-flight request per resource: overlapping calls (interval +
  *    visibility-refresh + manual refresh) share a single fetch through the
  *    request cache — never stacked duplicates.
- *  - Last-good-data is ALWAYS preserved: an API failure never replaces the
- *    rendered values with null/—/0.
- *  - Tab-hidden -> polling pauses; returning to a visible tab -> ONE
- *    controlled refresh (never a second timer).
+ *  - Last-good-data is ALWAYS preserved: an API failure or a dropped socket
+ *    never replaces the rendered values with null/—/0.
+ *  - A WS frame never blanks a REST value: null fields in the live document
+ *    are skipped (the backend sends null only for "not measured here").
+ *  - Tab-hidden -> polling pauses + merges stop; returning to a visible tab ->
+ *    ONE controlled refresh (never a second timer).
  *  - No `window.location.reload`.
  */
 const POLL_MS = 10000
+const POLL_WS_LIVE_MS = 25000 // REST slow-sync while WS frames are flowing
 const POLL_BACKOFF_MAX_MS = 45000
 const DASH_MAX_AGE_MS = 12000
 const DASH_SWR_MS = 30000
@@ -39,6 +55,8 @@ const DASH_SWR_MS = 30000
 // Past this the request is aborted and treated as a normal failure with
 // backoff — last-good-data stays on screen.
 const DASH_FETCH_TIMEOUT_MS = 15000
+/** A WS frame younger than this keeps the transport flagged "live". */
+const WS_FRESH_MS = 15000
 
 export interface DataSaverStatus {
   wsConnected: boolean
@@ -49,6 +67,8 @@ export interface DataSaverStatus {
   sessionActive: boolean
   internetOk: boolean
 }
+
+export type DataSaverTransport = 'live' | 'poll'
 
 interface DataSaverContextValue extends DataSaverStatus {
   data: any | null
@@ -63,6 +83,12 @@ interface DataSaverContextValue extends DataSaverStatus {
   paused: boolean
   setPaused: (paused: boolean) => void
   refresh: () => void
+  /** which transport delivered the newest data: 'live' (WS#3) or 'poll' (REST) */
+  transport: DataSaverTransport
+  /** ISO timestamp of the newest WS push (null while REST-only) */
+  liveUpdatedAt: string | null
+  /** the shared /ws/realtime socket state (DISCONNECTED…CONNECTED/ERROR) */
+  socketState: string
 }
 
 const DataSaverContext = createContext<DataSaverContextValue>({
@@ -83,9 +109,39 @@ const DataSaverContext = createContext<DataSaverContextValue>({
   internetOk: false,
   setPaused: () => {},
   refresh: () => {},
+  transport: 'poll',
+  liveUpdatedAt: null,
+  socketState: 'DISCONNECTED',
 })
 
 const DASH_KEY = 'data-saver/dashboard'
+
+/**
+ * Shallow-merge the WS live document (``live``) OVER the REST snapshot
+ * (``rest``). Per top-level key: when both sides are plain objects the REST
+ * value wins for fields the live document does not know (it carries the heavy
+ * detail), and the live fields override the same-named ones. Null live values
+ * are skipped entirely — "not measured here" must never blank a measurement.
+ */
+function mergeLiveFrame(rest: any | null, live: any | null): any {
+  const base: any = rest && typeof rest === 'object' ? rest : {}
+  if (!live || typeof live !== 'object') return base
+  const out: any = { ...base }
+  for (const [key, value] of Object.entries(live)) {
+    if (key === 'generatedAt') {
+      out.updatedAt = value as string
+      continue
+    }
+    if (value == null) continue
+    if (value && typeof value === 'object' && !Array.isArray(value)
+      && base[key] && typeof base[key] === 'object' && !Array.isArray(base[key])) {
+      out[key] = { ...base[key], ...value }
+    } else {
+      out[key] = value
+    }
+  }
+  return out
+}
 
 export function DataSaverProvider({
   children,
@@ -100,13 +156,36 @@ export function DataSaverProvider({
   const [loading, setLoading] = useState(true)
   const [paused, setPausedState] = useState(initialPaused)
   const [consecutiveFailures, setConsecutiveFailures] = useState(0)
+  const [transport, setTransport] = useState<DataSaverTransport>('poll')
+  const [liveUpdatedAt, setLiveUpdatedAt] = useState<string | null>(null)
+  const [socketState, setSocketState] = useState<string>('DISCONNECTED')
 
   const mountedRef = useRef(true)
   const pausedRef = useRef(paused)
   const inflightRef = useRef<AbortController | null>(null)
   const hasDataRef = useRef(false)
   const consecutiveFailuresRef = useRef(0)
+  /** Latest REST envelope (full detail, its own freshness). */
+  const restRef = useRef<any | null>(null)
+  /** Latest WS#3 `dashboard` live document (its own freshness). */
+  const liveRef = useRef<any | null>(null)
+  const lastWsFrameAtRef = useRef(0)
+  /** A live frame older than this is dropped so a dead socket never shadows
+   *  fresher REST values. */
+  const WS_LIVE_TTL_MS = 60000
   pausedRef.current = paused
+
+  /** Recompute the rendered snapshot: REST as base, fresh live frame on top. */
+  const publish = useCallback(() => {
+    if (!mountedRef.current || pausedRef.current) return
+    const liveFresh = lastWsFrameAtRef.current > 0
+      && Date.now() - lastWsFrameAtRef.current < WS_LIVE_TTL_MS
+    if (!liveFresh) liveRef.current = null
+    const merged = mergeLiveFrame(restRef.current, liveRef.current)
+    if (merged == null) return
+    hasDataRef.current = true
+    setData(merged)
+  }, [])
 
   useEffect(() => {
     consecutiveFailuresRef.current = consecutiveFailures
@@ -214,13 +293,13 @@ export function DataSaverProvider({
     if (controller.signal.aborted || res.aborted) return
 
     if (res.data != null) {
-      hasDataRef.current = true
-      setData(res.data)
+      restRef.current = res.data
       setError(false)
       setErrorReason(null)
       consecutiveFailuresRef.current = 0
       setConsecutiveFailures(0)
       setLoading(false)
+      publish()
       return
     }
 
@@ -243,7 +322,79 @@ export function DataSaverProvider({
     } else {
       console.warn(`[DASHBOARD] refresh failed: status=${res.status} (throttled, #${nextFailures})`)
     }
-  }, [])
+  }, [publish])
+
+  // ------------------------------------------------------------------ //
+  // WS live lane — subscribe once to the `dashboard` snapshot channel.
+  // Frames shallow-merge into the rendered snapshot on arrival; the REST
+  // loop keeps running as the fallback + slow-sync (heavy lists). Same
+  // driver-store pattern as `lib/data-center-store.ts` (no per-tick React
+  // re-render at market rate — the document changes at state boundaries
+  // plus a 6s telemetry re-push).
+  // ------------------------------------------------------------------ //
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    let frameOff: (() => void) | null = null
+    let stateOff: (() => void) | null = null
+    let unsubscribed = false
+
+    const subscribe = () => {
+      void realtimeClient.subscribe([{ channel: 'dashboard' }]).catch(() => {})
+    }
+
+    frameOff = realtimeClient.onFrame((frame) => {
+      if (unsubscribed || pausedRef.current) return
+      if (frame.type !== 'dashboard.snapshot') return
+      const body: any = frame.data
+      if (!body || typeof body !== 'object') return
+      // `_state_snapshot_frame` nests the channel document under `payload`
+      // (the broadcast bridge nests under `data` — accept both, never invent).
+      const doc: any = body.payload ?? body.data ?? null
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return
+      lastWsFrameAtRef.current = Date.now()
+      liveRef.current = doc
+      setTransport('live')
+      setLiveUpdatedAt(String(body.generatedAt ?? doc.generatedAt ?? new Date().toISOString()))
+      publish()
+    })
+
+    stateOff = realtimeClient.onStateChange((state) => {
+      if (unsubscribed) return
+      setSocketState(state)
+      if (state === 'CONNECTED') {
+        // A fresh socket needs a fresh subscription (the client also replays
+        // its own tracked subs — harmless duplicate ack).
+        subscribe()
+      } else {
+        setTransport('poll')
+        setLiveUpdatedAt(null)
+      }
+    })
+
+    // Subscription is queued: when the socket is not open yet the client
+    // stores it and subscribes as soon as the shared socket opens.
+    subscribe()
+
+    // Mark the transport poll when no frame has arrived for a while.
+    const freshness = setInterval(() => {
+      if (unsubscribed) return
+      const connected = realtimeClient.getState() === 'CONNECTED'
+      setSocketState(realtimeClient.getState())
+      if (connected && lastWsFrameAtRef.current > 0) {
+        const live = Date.now() - lastWsFrameAtRef.current < WS_FRESH_MS
+        setTransport(live ? 'live' : 'poll')
+        if (!live) setLiveUpdatedAt(null)
+      }
+    }, 5000)
+
+    return () => {
+      unsubscribed = true
+      frameOff?.()
+      stateOff?.()
+      clearInterval(freshness)
+      void realtimeClient.unsubscribe([{ channel: 'dashboard' }]).catch(() => {})
+    }
+  }, [publish])
 
   // Visibility: pause when hidden, do ONE controlled refresh when visible.
   const userPausedRef = useRef(initialPaused)
@@ -281,10 +432,12 @@ export function DataSaverProvider({
       // Exponential backoff: 10s, 15s, 22s, 34s ... capped at 45s.
       // Gives backend breathing room after repeated 502s instead of
       // hammering every 10s and flooding console.errors.
-      const delay =
-        failures === 0
-          ? POLL_MS
-          : Math.min(POLL_BACKOFF_MAX_MS, Math.round(POLL_MS * Math.pow(1.5, failures)))
+      // When WS frames are flowing the REST sync deliberately slows to 25s —
+      // the socket is carrying the live values, REST only re-syncs lists.
+      const wsLive = lastWsFrameAtRef.current > 0
+        && Date.now() - lastWsFrameAtRef.current < WS_FRESH_MS * 3
+      const base = failures === 0 ? (wsLive ? POLL_WS_LIVE_MS : POLL_MS) : null
+      const delay = base ?? Math.min(POLL_BACKOFF_MAX_MS, Math.round(POLL_MS * Math.pow(1.5, failures)))
       // Small jitter to de-sync multiple tabs
       const jitter = Math.round(Math.random() * 800)
       timeoutId = setTimeout(async () => {
@@ -327,7 +480,7 @@ export function DataSaverProvider({
       schedulerRunning: Boolean(sched.running),
       schedulerState: String(sched.state ?? 'UNKNOWN'),
       sessionActive: Boolean(sess.active),
-      internetOk: Boolean(ws.internetOk),
+      internetOk: Boolean(ws.internetOk ?? (d.net && d.net.internetOk)),
     }
   }, [data])
 
@@ -343,9 +496,12 @@ export function DataSaverProvider({
       paused,
       setPaused,
       refresh,
+      transport,
+      liveUpdatedAt,
+      socketState,
       ...status,
     }),
-    [data, error, errorReason, loading, paused, consecutiveFailures, setPaused, refresh, status],
+    [data, error, errorReason, loading, paused, consecutiveFailures, setPaused, refresh, transport, liveUpdatedAt, socketState, status],
   )
 
   return <DataSaverContext.Provider value={value}>{children}</DataSaverContext.Provider>

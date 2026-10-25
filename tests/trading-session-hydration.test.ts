@@ -26,7 +26,7 @@ const ROUTE = read('app/api/auth/trading-token/route.ts');
 const OPERATOR = read('lib/backend-operator.ts');
 const REALTIME_ROUTE = read('app/api/realtime/token/route.ts');
 const SERVICE = read('lib/terminal-service.ts');
-const TRADE = read('components/orders/trade/trade-page.tsx');
+const TRADE = read('components/trading/trade-page.tsx');
 const HISTORY = read('components/orders/history/history-page.tsx');
 
 test('the JWT handoff is cookie-gated before it mints anything', () => {
@@ -82,7 +82,7 @@ test('both session-gated pages hydrate and fall back honestly', () => {
   assert.match(TRADE, /<AuthGate terminal=\{terminal\} onAuthenticated=\{\(\) => setLoggedIn\(true\)\} \/>/);
   // While the hydration is in flight the precheck says so, instead of
   // flashing a LOCKED verdict on every load.
-  assert.match(TRADE, /'Connecting trading session…'/);
+  assert.match(TRADE, /Connecting trading session/);
   // History: cancel/modify re-enable themselves once the session is hydrated.
   assert.match(HISTORY, /ensureTerminalAuth\(\)/);
   assert.match(HISTORY, /disabled=\{!loggedIn \|\| Boolean\(busy\[r\.orderId\]\?\.cancelling/);

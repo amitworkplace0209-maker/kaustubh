@@ -148,11 +148,48 @@ class _Coll:
         return len(rows)
 
     def aggregate(self, pipeline, *a, **k):
+        facet = None
+        for stage in pipeline:
+            if isinstance(stage, dict) and "$facet" in stage:
+                facet = stage["$facet"]
+                break
         by_cat: dict = {}
         for r in self.rows:
             by_cat.setdefault(r.get("category") or "SYSTEM", 0)
             by_cat[r.get("category") or "SYSTEM"] += 1
-        return _Rows([{"_id": k, "n": v} for k, v in by_cat.items()])
+        if facet is None:
+            return _Rows([{"_id": k, "n": v} for k, v in by_cat.items()])
+
+        counts = {
+            "total": len(self.rows),
+            "active": sum(1 for r in self.rows if r.get("status") in ("active", "acknowledged")),
+            "open": sum(1 for r in self.rows if r.get("status") == "active"),
+            "acknowledged": sum(1 for r in self.rows if r.get("status") == "acknowledged"),
+            "resolved": sum(1 for r in self.rows if r.get("status") == "resolved"),
+            "critical": sum(1 for r in self.rows if r.get("status") in ("active", "acknowledged")
+                            and r.get("severity") == "critical"),
+            "warning": sum(1 for r in self.rows if r.get("status") in ("active", "acknowledged")
+                           and r.get("severity") == "warning"),
+            "today": len(self.rows),
+            "unread": sum(1 for r in self.rows if r.get("read") is False),
+            "read": sum(1 for r in self.rows if r.get("read") is True),
+            "important": sum(1 for r in self.rows if r.get("importance") == "high"),
+            "warnings": sum(1 for r in self.rows if r.get("read") is False
+                            and r.get("severity") == "warning"),
+            "highUnread": sum(1 for r in self.rows if r.get("read") is False
+                              and r.get("importance") == "high"),
+        }
+        last = None
+        if self.rows:
+            last = max(
+                self.rows,
+                key=lambda r: _ts(r.get("created_at")),
+            )
+        return _Rows([{
+            "counts": [counts] if self.rows else [],
+            "categories": [{"_id": k, "n": v} for k, v in by_cat.items()],
+            "last": [last] if last else [],
+        }])
 
     def find(self, *q, **k):
         query = q[0] if q else {}
@@ -254,6 +291,8 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(nc, "get_db", return_value=db),
             mock.patch("services.settings_service.get_setting",
                        new=mock.AsyncMock(return_value=True)),
+            mock.patch("services.settings_service.get_settings_many",
+                       new=mock.AsyncMock(return_value={})),
             mock.patch("services.notification_service._category_enabled",
                        new=mock.AsyncMock(return_value=True)),
             mock.patch.object(nc, "_publish_frame", new=mock.AsyncMock()),
@@ -415,6 +454,8 @@ class RetentionExpiryTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(nc, "_publish_state_counts", new=mock.AsyncMock()),
             mock.patch("services.settings_service.get_setting",
                        new=mock.AsyncMock(return_value=True)),
+            mock.patch("services.settings_service.get_settings_many",
+                       new=mock.AsyncMock(return_value={})),
         ]
         self._started = []
         for p in self.stack:

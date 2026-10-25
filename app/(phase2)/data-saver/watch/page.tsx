@@ -1,6 +1,6 @@
 'use client';
-import MarketWatchLivePage from '@/components/market-watch/market-watch-live';
+import WatchLivePage from '@/components/phase2/watch-live';
 
 export default function DataSaverWatchPage() {
-  return <MarketWatchLivePage />;
+  return <WatchLivePage />;
 }

@@ -81,7 +81,7 @@ function RemainingCountdown({ remaining, duration }: { remaining: number | null;
   const pct = duration ? Math.max(0, Math.min(100, (left / Math.max(1, duration)) * 100)) : null;
   return (
     <span className="block">
-      <span className={cn('font-mono text-lg font-bold tabular-nums', left < 300 ? 'text-rose-300' : left < 900 ? 'text-amber-300' : 'text-emerald-300')}>{fmtDuration(left)}</span>
+      <span className={cn('font-mono text-lg font-bold tabular-nums', left < 300 ? 'text-rose-700' : left < 900 ? 'text-amber-700' : 'text-emerald-700')}>{fmtDuration(left)}</span>
       {pct != null && (
         <span className="mt-1 block h-2 overflow-hidden rounded-full bg-muted">
           <span className={cn('block h-full rounded-full bg-gradient-to-r transition-all', left < 300 ? 'from-rose-500 to-rose-400' : left < 900 ? 'from-amber-500 to-amber-400' : 'from-emerald-500 to-emerald-400')} style={{ width: `${pct}%` }} />
@@ -118,23 +118,23 @@ function OnlineDot() {
   const swActive = typeof navigator !== 'undefined' && !!navigator.serviceWorker?.controller;
   return (
     <span className="flex flex-wrap items-center gap-1.5">
-      <Badge variant="outline" className={online ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-rose-500/40 bg-rose-500/10 text-rose-300'}>
+      <Badge variant="outline" className={online ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700' : 'border-rose-500/40 bg-rose-500/10 text-rose-700'}>
         <span className={cn('mr-1.5 inline-block h-1.5 w-1.5 rounded-full', online ? 'animate-pulse bg-emerald-400' : 'bg-rose-400')} />
         {online ? 'ONLINE' : 'OFFLINE'}
       </Badge>
-      <Badge variant="outline" className={swActive ? 'border-emerald-500/30 text-emerald-300' : ''}>SW {swActive ? 'active' : '—'}</Badge>
+      <Badge variant="outline" className={swActive ? 'border-emerald-500/30 text-emerald-700' : ''}>SW {swActive ? 'active' : '—'}</Badge>
     </span>
   );
 }
 
 type Accent = 'sky' | 'emerald' | 'amber' | 'violet' | 'rose' | 'cyan';
 const ACCENT: Record<Accent, { bar: string; chip: string; value: string }> = {
-  sky: { bar: 'bg-sky-400', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg shadow-sky-500/25', value: 'text-sky-300' },
-  emerald: { bar: 'bg-emerald-400', chip: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/25', value: 'text-emerald-300' },
-  amber: { bar: 'bg-amber-400', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25', value: 'text-amber-300' },
-  violet: { bar: 'bg-violet-400', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/25', value: 'text-violet-300' },
-  rose: { bar: 'bg-rose-400', chip: 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg shadow-rose-500/25', value: 'text-rose-300' },
-  cyan: { bar: 'bg-cyan-400', chip: 'bg-gradient-to-br from-cyan-500 to-sky-600 text-white shadow-lg shadow-cyan-500/25', value: 'text-cyan-300' },
+  sky: { bar: 'bg-sky-400', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg shadow-sky-500/25', value: 'text-sky-700' },
+  emerald: { bar: 'bg-emerald-400', chip: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/25', value: 'text-emerald-700' },
+  amber: { bar: 'bg-amber-400', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25', value: 'text-amber-700' },
+  violet: { bar: 'bg-violet-400', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/25', value: 'text-violet-700' },
+  rose: { bar: 'bg-rose-400', chip: 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg shadow-rose-500/25', value: 'text-rose-700' },
+  cyan: { bar: 'bg-cyan-400', chip: 'bg-gradient-to-br from-cyan-500 to-sky-600 text-white shadow-lg shadow-cyan-500/25', value: 'text-cyan-700' },
 };
 
 function Kpi({ icon: Icon, label, value, sub, accent, loading }: {
@@ -185,7 +185,10 @@ export default function SessionManagerSessionPage() {
     const h = (Array.isArray(hist.data) ? hist.data : (Array.isArray(data.sessionHistory) ? data.sessionHistory : [])) as any[];
     const qq = q.trim().toLowerCase();
     if (!qq) return h;
-    return h.filter((r: any) => String(r.mode ?? '').toLowerCase().includes(qq) || String(r.broker ?? '').toLowerCase().includes(qq) || String(r.logout_reason ?? '').toLowerCase().includes(qq));
+    return h.filter((r: any) => String(r.event ?? '').toLowerCase().includes(qq)
+      || String(r.message ?? '').toLowerCase().includes(qq)
+      || String(r.details ?? '').toLowerCase().includes(qq)
+      || String(r.status ?? '').toLowerCase().includes(qq));
   }, [hist.data, data.sessionHistory, q]);
 
   const active = Boolean(life.active);
@@ -259,11 +262,11 @@ export default function SessionManagerSessionPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge className={active ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-200' : 'border border-rose-500/40 bg-rose-500/10 text-rose-200'}>
+            <Badge className={active ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-800' : 'border border-rose-500/40 bg-rose-500/10 text-rose-800'}>
               <span className={cn('mr-1.5 inline-block h-1.5 w-1.5 rounded-full', active ? 'animate-pulse bg-emerald-400' : 'bg-rose-400')} />
               {String(life.lifecycleState ?? life.state ?? (sess.data ? 'NO SESSION' : '…'))}
             </Badge>
-            <Badge variant="outline" className={wsLive ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : ''}>
+            <Badge variant="outline" className={wsLive ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700' : ''}>
               {wsLive ? <Wifi className="mr-1 h-3 w-3" /> : <WifiOff className="mr-1 h-3 w-3" />} {String(ws.state ?? '—')}
             </Badge>
             <OnlineDot />
@@ -281,7 +284,7 @@ export default function SessionManagerSessionPage() {
       </div>
 
       {sess.error && (
-        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-700">
           <span className="min-w-0">Session load failed: {sess.error} — retry karo, koi fake data nahi dikhayenge.</span>
           <Button size="sm" variant="outline" className="ml-auto shrink-0" onClick={() => sess.refresh()}>Retry</Button>
         </div>
@@ -293,7 +296,7 @@ export default function SessionManagerSessionPage() {
         <Kpi accent="emerald" icon={ShieldCheck} label="Lifecycle" value={loading ? '…' : String(life.lifecycleState ?? life.state ?? '—')} sub={life.stateMessage ?? (active ? 'active owner session' : undefined)} loading={loading} />
         <Kpi accent="amber" icon={Clock} label="Remaining" value={loading ? '…' : <RemainingCountdown remaining={remaining} duration={duration} />} sub={id.loginSource ? `owner ${id.loginSource}` : undefined} loading={loading} />
         <Kpi accent="violet" icon={Layers} label="Terminals" value={loading ? '…' : fmtNum(terminals.length)} sub="independent per terminal" loading={loading} />
-        <Kpi accent="cyan" icon={HistoryIcon} label="History" value={loading ? '…' : fmtNum(historyRows.length)} sub={hist.error ? 'ledger unavailable' : 'completed sessions'} loading={loading} />
+        <Kpi accent="cyan" icon={HistoryIcon} label="History" value={loading ? '…' : fmtNum(historyRows.length)} sub={hist.error ? 'ledger unavailable' : 'event ledger (DB + live)'} loading={loading} />
         <Kpi accent="rose" icon={Activity} label="Events" value={loading ? '…' : fmtNum(events.length)} sub={wsLive ? 'ws live' : `ws ${String(ws.state ?? 'down')}`} loading={loading} />
       </div>
 
@@ -305,7 +308,7 @@ export default function SessionManagerSessionPage() {
               <span className="rounded-lg bg-gradient-to-br from-sky-500 to-blue-600 p-1.5 text-white shadow"><KeyRound className="h-3.5 w-3.5" /></span>
               Session identity · real
               <Button size="sm" variant="ghost" className="ml-auto h-6 gap-1 px-2 text-[11px]" onClick={() => void copyId()}>
-                {copied ? <CheckCircle2 className="h-3 w-3 text-emerald-300" /> : <Copy className="h-3 w-3" />} {copied ? 'Copied' : 'Copy ID'}
+                {copied ? <CheckCircle2 className="h-3 w-3 text-emerald-700" /> : <Copy className="h-3 w-3" />} {copied ? 'Copied' : 'Copy ID'}
               </Button>
             </CardTitle>
           </CardHeader>
@@ -321,7 +324,7 @@ export default function SessionManagerSessionPage() {
                 ['Last auth error', data.lastAuthError ? `${data.lastAuthError} (${fmtTs(data.lastAuthErrorAt)})` : null],
                 ['Last REST error', data.lastRestError ?? null],
               ] as [string, unknown][]).filter(([, v]) => v != null && v !== '').map(([k, v]) => (
-                <div key={k} className="flex items-center justify-between gap-3 rounded-lg border-b border-border/40 px-2 py-1.5 transition-colors hover:bg-white/[0.03]">
+                <div key={k} className="flex items-center justify-between gap-3 rounded-lg border-b border-border/40 px-2 py-1.5 transition-colors hover:bg-sky-500/[0.06]">
                   <span className="shrink-0 text-muted-foreground">{k}</span>
                   <span className="min-w-0 truncate text-right font-mono" title={String(v)}>{String(v)}</span>
                 </div>
@@ -342,13 +345,13 @@ export default function SessionManagerSessionPage() {
               {loading ? <div className="h-16 animate-pulse rounded-lg bg-muted/60" /> : (
                 <>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge variant="outline" className={wsLive ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-300'}>
+                    <Badge variant="outline" className={wsLive ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-800' : 'border-amber-500/40 bg-amber-500/10 text-amber-700'}>
                       <span className={cn('mr-1.5 inline-block h-1.5 w-1.5 rounded-full', wsLive && 'animate-pulse bg-emerald-400')} />{String(ws.state ?? 'DISCONNECTED')}
                     </Badge>
                     <Badge variant="outline" className="tabular-nums">reconnects {fmtNum(ws.reconnectCount)}</Badge>
                     <Badge variant="outline">routing {String(routing.state ?? '—')} · {String(routing.owner ?? '')}</Badge>
                   </div>
-                  <div className="space-y-1 rounded-xl border border-border/50 bg-white/[0.02] p-2.5 text-[11px] text-muted-foreground">
+                  <div className="space-y-1 rounded-xl border border-border/50 bg-black/[0.03] p-2.5 text-[11px] text-muted-foreground">
                     <p>connected <AgeTicker ts={ws.connectedAt} /></p>
                     <p>disconnected <AgeTicker ts={ws.disconnectedAt} prefix={ws.disconnectReason ?? undefined} /></p>
                     <p>last message <AgeTicker ts={ws.lastMessageAt} /></p>
@@ -365,14 +368,14 @@ export default function SessionManagerSessionPage() {
                 <span className="rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-600 p-1.5 text-white shadow"><MonitorSmartphone className="h-3.5 w-3.5" /></span>
                 PWA · App & alerts
                 {alerts.filter((a) => a.severity !== 'info').length > 0 && (
-                  <Badge className="ml-auto border border-amber-500/40 bg-amber-500/15 text-amber-200 tabular-nums">{alerts.filter((a) => a.severity !== 'info').length} alerts</Badge>
+                  <Badge className="ml-auto border border-amber-500/40 bg-amber-500/15 text-amber-800 tabular-nums">{alerts.filter((a) => a.severity !== 'info').length} alerts</Badge>
                 )}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2.5 pt-3 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 {installed ? (
-                  <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-300"><Download className="mr-1 h-3 w-3" /> Installed · standalone</Badge>
+                  <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700"><Download className="mr-1 h-3 w-3" /> Installed · standalone</Badge>
                 ) : canInstall ? (
                   <Button size="sm" onClick={() => void promptInstall()} className="bg-gradient-to-r from-violet-500 to-fuchsia-500 shadow-md"><Download className="mr-1.5 h-3.5 w-3.5" /> Install app now</Button>
                 ) : (
@@ -380,10 +383,10 @@ export default function SessionManagerSessionPage() {
                 )}
                 <span className="ml-auto"><OnlineDot /></span>
               </div>
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/50 bg-white/[0.02] p-2.5">
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/50 bg-black/[0.03] p-2.5">
                 <Bell className="h-3.5 w-3.5 text-muted-foreground" />
                 {permission === 'granted'
-                  ? <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-300">Browser alerts ON — critical popup ayega</Badge>
+                  ? <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700">Browser alerts ON — critical popup ayega</Badge>
                   : permission === 'denied'
                     ? <span className="text-[11px] text-muted-foreground">Notifications blocked — site settings se allow karo.</span>
                     : permission === 'unsupported'
@@ -397,7 +400,7 @@ export default function SessionManagerSessionPage() {
                     <span className="min-w-0 flex-1 truncate font-medium">{a.title} <span className="font-normal text-muted-foreground">· {a.detail}</span></span>
                   </div>
                 ))}
-                {!alerts.length && !loading && <p className="flex items-center gap-1.5 text-emerald-300"><CheckCircle2 className="h-3.5 w-3.5" /> All clear — koi session alert nahi.</p>}
+                {!alerts.length && !loading && <p className="flex items-center gap-1.5 text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5" /> All clear — koi session alert nahi.</p>}
                 {loading && <div className="h-8 animate-pulse rounded-lg bg-muted/60" />}
               </div>
             </CardContent>
@@ -431,14 +434,14 @@ export default function SessionManagerSessionPage() {
                 {loading ? (
                   [0, 1, 2].map((i) => <tr key={i} className="border-b border-border/40"><td colSpan={8} className="px-3 py-2"><div className="h-8 animate-pulse rounded bg-muted/60" /></td></tr>)
                 ) : filteredTerms.map(([term, r]: [string, any]) => (
-                  <tr key={term} className="border-b border-border/40 transition-colors hover:bg-white/[0.03]">
+                  <tr key={term} className="border-b border-border/40 transition-colors hover:bg-sky-500/[0.06]">
                     <td className="px-3 py-2 font-semibold">{term}</td>
                     <td className="px-3 py-2">{r.broker_id ?? '—'}</td>
                     <td className="max-w-[180px] truncate px-3 py-2 font-mono" title={r.session_id ?? r.session_ref}>{r.session_id ?? r.session_ref ?? '—'}</td>
                     <td className="px-3 py-2"><Badge variant="outline" className={TONE[String(r.session_status ?? '').toUpperCase()] ?? ''}>{r.session_status ?? '—'}</Badge></td>
                     <td className="whitespace-nowrap px-3 py-2 font-mono">{fmtTs(r.created_at)}</td>
                     <td className="whitespace-nowrap px-3 py-2 font-mono">{fmtTs(r.expires_at)}</td>
-                    <td className="px-3 py-2"><Badge variant="outline" className={r.connection_status === 'CONNECTED' ? 'border-emerald-500/30 text-emerald-300' : ''}>{String(r.connection_status ?? '—')}</Badge></td>
+                    <td className="px-3 py-2"><Badge variant="outline" className={r.connection_status === 'CONNECTED' ? 'border-emerald-500/30 text-emerald-700' : ''}>{String(r.connection_status ?? '—')}</Badge></td>
                     <td className="max-w-[220px] truncate px-3 py-2 text-muted-foreground" title={r.state_message}>{r.state_message ?? '—'}</td>
                   </tr>
                 ))}
@@ -453,38 +456,43 @@ export default function SessionManagerSessionPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="overflow-hidden shadow-soft">
           <CardHeader className="bg-gradient-to-r from-cyan-500/10 to-sky-500/5 pb-2">
-            <CardTitle className="flex items-center gap-2 text-xs">
+            <CardTitle className="flex flex-wrap items-center gap-2 text-xs">
               <span className="rounded-lg bg-gradient-to-br from-cyan-500 to-sky-600 p-1.5 text-white shadow"><HistoryIcon className="h-3.5 w-3.5" /></span>
-              Session history · ledger
+              Session event ledger · DB + live
               <Badge variant="outline" className="ml-auto tabular-nums">{fmtNum(historyRows.length)}</Badge>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            <div className="max-h-72 overflow-auto">
+            <div className="max-h-80 overflow-auto">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-muted/80 text-left text-muted-foreground backdrop-blur">
                   <tr>
-                    <th className="px-3 py-2">Login</th><th className="px-3 py-2">Logout</th><th className="px-3 py-2">Duration</th>
-                    <th className="px-3 py-2">Reason</th><th className="px-3 py-2">Mode</th><th className="px-3 py-2">Broker</th>
+                    <th className="px-3 py-2">Time (IST)</th><th className="px-3 py-2">Event</th><th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Message</th><th className="px-3 py-2">Src</th>
                   </tr>
                 </thead>
                 <tbody>
                   {!late || (!hist.data && !hist.error && !data.sessionHistory) ? (
-                    [0, 1, 2, 3].map((i) => <tr key={i} className="border-b border-border/40"><td colSpan={6} className="px-3 py-2"><div className="h-7 animate-pulse rounded bg-muted/60" /></td></tr>)
-                  ) : historyRows.map((h: any, i: number) => (
-                    <tr key={i} className="border-b border-border/40 transition-colors hover:bg-white/[0.03]">
-                      <td className="whitespace-nowrap px-3 py-1.5 font-mono">{fmtTs(h.login_time ?? h.ts)}</td>
-                      <td className="whitespace-nowrap px-3 py-1.5 font-mono">{fmtTs(h.logout_time)}</td>
-                      <td className="px-3 py-1.5 font-mono tabular-nums">{fmtDuration(h.session_duration)}</td>
-                      <td className="max-w-[160px] truncate px-3 py-1.5" title={h.logout_reason ?? h.message}>{h.logout_reason ?? h.message ?? '—'}</td>
-                      <td className="px-3 py-1.5"><Badge variant="outline" className="font-mono text-[10px]">{h.mode ?? '—'}</Badge></td>
-                      <td className="px-3 py-1.5">{h.broker ?? '—'}</td>
-                    </tr>
-                  ))}
-                  {late && (hist.error && !data.sessionHistory) ? (
-                    <tr><td colSpan={6} className="px-3 py-6 text-center text-rose-300">History unavailable: {hist.error}</td></tr>
+                    [0, 1, 2, 3].map((i) => <tr key={i} className="border-b border-border/40"><td colSpan={5} className="px-3 py-2"><div className="h-7 animate-pulse rounded bg-muted/60" /></td></tr>)
+                  ) : historyRows.map((row: any, i: number) => {
+                    const ev = String(row.event ?? row.message ?? 'event');
+                    const failed = /fail|error|expired/i.test(ev) || String(row.status ?? '').toLowerCase() === 'error';
+                    const ok = /success|ready|login|active/i.test(ev) || String(row.status ?? '').toLowerCase() === 'ok';
+                    const src = row.persisted === false ? 'memory' : 'DB ledger';
+                    return (
+                      <tr key={row.event_id ?? i} className="border-b border-border/40 transition-colors hover:bg-cyan-500/[0.05]">
+                        <td className="whitespace-nowrap px-3 py-1.5 font-mono">{fmtTs(row.ts ?? row.at)}</td>
+                        <td className="px-3 py-1.5"><Badge variant="outline" className={cn('max-w-[180px] truncate font-mono text-[10px] font-semibold', failed ? 'border-rose-500/40 bg-rose-500/10 text-rose-700' : ok ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700' : 'border-sky-500/40 bg-sky-500/10 text-sky-700')} title={ev}>{ev}</Badge></td>
+                        <td className="px-3 py-1.5"><Badge variant="outline" className={cn('text-[10px]', failed ? 'border-rose-500/30 text-rose-700' : ok ? 'border-emerald-500/30 text-emerald-700' : '')}>{String(row.status ?? 'info')}</Badge></td>
+                        <td className="max-w-[220px] truncate px-3 py-1.5" title={row.details || row.message}>{row.message ?? row.details ?? '—'}</td>
+                        <td className="px-3 py-1.5"><Badge variant="outline" className={cn('text-[10px]', src === 'DB ledger' ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-700' : 'border-border bg-muted/60 text-muted-foreground')}>{src}</Badge></td>
+                      </tr>
+                    );
+                  })}
+                  {late && hist.error && !data.sessionHistory ? (
+                    <tr><td colSpan={5} className="px-3 py-6 text-center text-rose-700">Ledger unavailable: {hist.error}</td></tr>
                   ) : late && !historyRows.length && (hist.data || data.sessionHistory) ? (
-                    <tr><td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">No completed sessions yet.</td></tr>
+                    <tr><td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">Ledger khali hai — naya session event aayega to yahan real rahega.</td></tr>
                   ) : null}
                 </tbody>
               </table>
@@ -506,9 +514,9 @@ export default function SessionManagerSessionPage() {
             ) : (
               <div className="max-h-72 space-y-1 overflow-auto">
                 {events.slice(0, 10).map((e: any, i: number) => (
-                  <div key={i} className="flex items-center gap-2 rounded-lg border border-border/40 bg-white/[0.02] px-2 py-1.5 text-[11px]">
+                  <div key={i} className="flex items-center gap-2 rounded-lg border border-border/40 bg-black/[0.03] px-2 py-1.5 text-[11px]">
                     <span className={cn('h-2 w-2 shrink-0 rounded-full', String(e.event ?? '').includes('FAIL') || String(e.event ?? '').includes('ERROR') ? 'bg-rose-400' : String(e.event ?? '').includes('SUCCESS') || String(e.event ?? '').includes('READY') ? 'bg-emerald-400' : 'bg-sky-400')} />
-                    <span className="shrink-0 font-mono font-semibold text-emerald-300">{String(e.event ?? 'event').slice(0, 24)}</span>
+                    <span className="shrink-0 font-mono font-semibold text-emerald-700">{String(e.event ?? 'event').slice(0, 24)}</span>
                     <span className="min-w-0 flex-1 truncate text-muted-foreground">{e.message ?? '—'}</span>
                     <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{fmtTs(e.at ?? e.ts)}</span>
                   </div>

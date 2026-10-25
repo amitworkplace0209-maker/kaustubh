@@ -449,6 +449,11 @@ class DBWriterEngine(EngineBase):
             os.environ.get("DBW_REGISTRY_CACHE_TTL_MS", "1000") or 1000
         ) / 1000.0
         self._trading_date_cache: tuple[str, float] = ("", 0.0)
+        # The most recent real SAVE/DROP decision (the last tick evaluated on
+        # the hot path). Bounded to ONE row in memory; the aggregated reasons
+        # carry the history, this only names the latest outcome with its
+        # symbol/token so the UI can show what literally just happened.
+        self._last_decision: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -1164,6 +1169,17 @@ class DBWriterEngine(EngineBase):
         code = decision["reasonCode"]
         self._count_reason(code)
         classifications = tuple(decision.get("classifications") or ())
+        # Track the latest REAL decision for the status surface (never a
+        # placeholder: at/epoch is the wall clock of this very evaluation).
+        self._last_decision = {
+            "at": time.time(),
+            "persist": bool(decision["persist"]),
+            "reasonCode": code,
+            "classification": decision["classification"],
+            "symbol": decision.get("symbol"),
+            "token": decision.get("token"),
+            "overlapping": bool(decision.get("overlapping")),
+        }
 
         if not decision["persist"]:
             if code == DropReason.NOT_ALLOWED_SOURCE:
@@ -1731,6 +1747,179 @@ class DBWriterEngine(EngineBase):
         return self.tick_persistence_settings()
 
     # ------------------------------------------------------------------ #
+    # Storage report — day-wise + all-time, real MongoDB numbers          #
+    # ------------------------------------------------------------------ #
+
+    #: Explicit data-plane collections this engine writes. The all-time view
+    #: reports exactly this list (one live collStats each); anything else in
+    #: the database is not DB-Writer storage and is never silently added.
+    _STORAGE_COLLECTIONS = (
+        "ticks",
+        "market_ticks",
+        "market_candles_1m",
+        "market_candles_2m",
+        "market_candles_5m",
+        "market_candles_10m",
+        "market_candles_30m",
+        "market_watch_decisions",
+        "market_watch_daily_report",
+        "market_watch_universe",
+        "market_watch_universe_history",
+        "market_watch_review_decisions",
+        "market_watch_weekly_reports",
+        "market_watch_weekly_crossings",
+        "market_watch_weekly_screen",
+        "daily_summaries",
+    )
+
+    async def storage_report(self, days: int = 30, date: str = "") -> dict[str, Any]:
+        """Storage view for the DB Writer storage page: day-wise + all-time.
+
+        - ``allTime``: one live ``collStats`` run per data-plane collection
+          this engine writes, plus grand totals.
+        - ``days``: the IST daily ledgers the tick pipeline upserts into
+          ``daily_summaries`` (date / totalTicks / totalWrites /
+          subscribedStocks), newest first, bounded by ``days``.
+        - ``day`` (optional ``date=YYYY-MM-DD`` IST business date): that
+          day's ``daily_summaries`` row + a REAL count of ``ticks`` documents
+          whose ``receivedAt`` — a genuine UTC datetime this engine wrote on
+          every tick — falls inside that IST calendar day.
+
+        Day-scoped numbers are produced ONLY where the persisted documents
+        carry a real timestamp field (``ticks.receivedAt``); everything else is
+        reported from the persisted daily ledger or honestly left out. Nothing
+        here is fabricated.
+
+        Returns ``{"ok": False, "error": ...}`` when MongoDB is unreachable so
+        the caller reports storage unavailability, not a server bug.
+        """
+        from datetime import datetime, timedelta
+
+        from core.timezones import IST, UTC, iso_ist
+        from database.connection import get_db, is_mongo_connected
+
+        days = max(1, min(365, int(days)))
+        date = str(date or "").strip()
+
+        day_window: tuple[datetime, datetime] | None = None
+        if date:
+            try:
+                year, month, day_num = (int(v) for v in date.split("-"))
+                day_start = datetime(year, month, day_num, tzinfo=IST)
+                day_window = (day_start, day_start + timedelta(days=1))
+            except (ValueError, TypeError):
+                return {"ok": False, "error": "date must be YYYY-MM-DD (IST business date)"}
+
+        try:
+            db = get_db()
+        except Exception as exc:
+            return {"ok": False, "error": f"mongodb unavailable: {exc}"}
+        if not is_mongo_connected():
+            return {"ok": False, "error": "MongoDB not connected"}
+
+        # -- all-time: live collStats per owned collection --------------- #
+        collections: list[dict[str, Any]] = []
+        total_docs = 0
+        total_bytes = 0
+        for name in self._STORAGE_COLLECTIONS:
+            try:
+                stats = await db.command("collStats", name)
+                documents = int(stats.get("count", 0) or 0)
+                size_bytes = int(stats.get("size", 0) or 0)
+                collections.append({
+                    "name": name,
+                    "ok": True,
+                    "documents": documents,
+                    "sizeBytes": size_bytes,
+                    "sizeMB": round(size_bytes / (1024 * 1024), 3),
+                    "storageBytes": int(stats.get("storageSize", 0) or 0),
+                    "avgObjBytes": int(stats.get("avgObjSize", 0) or 0),
+                    "indexes": int(stats.get("nindexes", 0) or 0),
+                })
+                total_docs += documents
+                total_bytes += size_bytes
+            except Exception as exc:
+                logger.warning("storage_report: collStats %s failed: %s", name, exc)
+                collections.append({"name": name, "ok": False, "error": str(exc)[:200]})
+        collections.sort(key=lambda c: c.get("sizeBytes", 0), reverse=True)
+
+        # -- day-wise ledger: real rows persisted by _write_batch -------- #
+        ledger_days: list[dict[str, Any]] = []
+        try:
+            cursor = (
+                db.daily_summaries.find({}, {"_id": 0})
+                .sort("date", -1)
+                .limit(days)
+            )
+            async for row in cursor:
+                ledger_days.append({
+                    "date": row.get("date"),
+                    "totalTicks": int(row.get("totalTicks", 0) or 0),
+                    "totalWrites": int(row.get("totalWrites", 0) or 0),
+                    "subscribedStocks": row.get("subscribedStocks"),
+                    "updatedAt": iso_ist(row.get("updatedAt")),
+                })
+        except Exception as exc:
+            logger.warning("storage_report: daily_summaries read failed: %s", exc)
+
+        # -- single-day drill-down (real counts by receivedAt) ----------- #
+        day: dict[str, Any] | None = None
+        if day_window is not None:
+            day_start, day_end = day_window
+            ledger_row: dict[str, Any] | None = None
+            try:
+                row = await db.daily_summaries.find_one({"date": date}, {"_id": 0})
+                if row:
+                    ledger_row = {
+                        "date": row.get("date"),
+                        "totalTicks": int(row.get("totalTicks", 0) or 0),
+                        "totalWrites": int(row.get("totalWrites", 0) or 0),
+                        "subscribedStocks": row.get("subscribedStocks"),
+                        "updatedAt": iso_ist(row.get("updatedAt")),
+                    }
+            except Exception as exc:
+                logger.warning("storage_report: day ledger %s failed: %s", date, exc)
+            try:
+                # ticks documents carry receivedAt (UTC datetime written by
+                # this engine); the IST day maps to an exact UTC window.
+                ticks_day = await db.ticks.count_documents({
+                    "receivedAt": {"$gte": day_start, "$lt": day_end},
+                })
+            except Exception as exc:
+                logger.warning("storage_report: day tick count %s failed: %s", date, exc)
+                ticks_day = None
+            day = {
+                "date": date,
+                "startedAtUtc": day_start.astimezone(UTC).isoformat(),
+                "endedAtUtc": day_end.astimezone(UTC).isoformat(),
+                "timeZone": "Asia/Kolkata",
+                "timestampField": "ticks.receivedAt",
+                "ledger": ledger_row,
+                "ticksDocuments": ticks_day,
+                "countsAvailable": ticks_day is not None,
+            }
+
+        return {
+            "ok": True,
+            "owner": "db_writer_engine",
+            "authority": "sole_tick_persistence_authority",
+            "generatedAt": iso_ist(datetime.now(IST)),
+            "timeZone": "Asia/Kolkata",
+            "allTime": {
+                "collections": collections,
+                "summary": {
+                    "collections": len(collections),
+                    "documents": total_docs,
+                    "sizeBytes": total_bytes,
+                    "sizeMB": round(total_bytes / (1024 * 1024), 2),
+                },
+            },
+            "days": ledger_days,
+            "daysRequested": days,
+            "day": day,
+        }
+
+    # ------------------------------------------------------------------ #
     # Metrics / status
     # ------------------------------------------------------------------ #
     def _refresh_metrics(self) -> None:
@@ -1853,6 +2042,17 @@ class DBWriterEngine(EngineBase):
             # Data-loss accounting (core correctness property)
             base["dataLossAccounting"] = self._data_loss_accounting(stats)
 
+            # Bounded real flush ledger (per-flush written/failed/duration,
+            # most recent first) — new, from the actual write path.
+            try:
+                base["flushHistory"] = tick_buffer.flush_history()
+            except Exception:
+                base["flushHistory"] = []
+
+            # The latest real SAVE/DROP decision (may be absent when the
+            # pipeline has never evaluated a tick this process).
+            base["lastDecision"] = self._last_decision
+
             # Per-instrument snapshot (from tick_buffer's latest_ticks)
             try:
                 latest = tick_buffer.get_latest_ticks()
@@ -1887,6 +2087,7 @@ class DBWriterEngine(EngineBase):
             base["dataLossAccounting"] = None
             base["instruments"] = {}
             base["audit"] = None
+            base["flushHistory"] = []
         base["lastFlushResult"] = self._last_flush_result
         # Market Watch document pipeline (candles / decisions / EOD report).
         try:

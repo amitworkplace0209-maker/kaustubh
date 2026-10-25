@@ -11,8 +11,10 @@
 // backend's 15s heartbeat snapshot frames, so it converges instantly
 // without a full page refresh.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getScheduleEventsUrl } from '@/lib/api';
+import { useEffect, useState, useRef } from 'react';
+import {
+  subscribeScheduleEvents, subscribeScheduleState,
+} from '@/lib/schedule-sse';
 
 /** Every SSE payload from the scheduler carries these fields. */
 export interface ScheduleEvent {
@@ -54,78 +56,66 @@ export function useScheduleEvents(enabled = true): UseScheduleEventsResult {
   const [recentEvents, setRecentEvents] = useState<ScheduleEvent[]>([]);
   const [scheduleStates, setScheduleStates] = useState<Map<string, ScheduleState>>(new Map());
 
-  const esRef = useRef<EventSource | null>(null);
+  /** Read inside the frame listener without resubscribing on toggle. */
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
 
-  const connect = useCallback(() => {
-    if (esRef.current) esRef.current.close();
-    const es = new EventSource(getScheduleEventsUrl());
-    esRef.current = es;
-
-    es.onopen = () => setConnected(true);
-    es.onerror = () => {
-      setConnected(false);
-      es.close();
-      setTimeout(() => { if (enabledRef.current) connect(); }, 3000);
-    };
-    es.onmessage = (event) => {
-      if (!event.data || event.data === ': heartbeat') return;
-      try {
-        const ev = JSON.parse(event.data) as ScheduleEvent;
-        if (!ev?.event) return;
-
-        const now = Date.now();
-        setLastEventAt(now);
-
-        // Push to recent events ring buffer.
-        setRecentEvents((prev) => {
-          const next = [ev, ...prev].slice(0, MAX_EVENTS);
-          return next;
-        });
-
-        // Update per-schedule state machine.
-        if (ev.scheduleId) {
-          setScheduleStates((prev) => {
-            const next = new Map(prev);
-            const sid = ev.scheduleId!;
-            const existing = next.get(sid);
-            const status = eventToStatus(ev.event);
-
-            // Only overwrite if the event is "newer" or same direction.
-            if (!existing || now >= existing.lastEventTs) {
-              const state: ScheduleState = {
-                scheduleId: sid,
-                scheduleName: ev.scheduleName ?? existing?.scheduleName ?? null,
-                status,
-                lastEvent: ev,
-                lastEventTs: now,
-                packageReady: ev.event === 'PACKAGE_READY' ? ev : existing?.packageReady,
-              };
-              next.set(sid, state);
-            }
-            // Cap map size.
-            while (next.size > MAX_STATES) {
-              const oldest = next.keys().next().value;
-              if (oldest == null) break;
-              next.delete(oldest);
-            }
-            return next;
-          });
-        }
-      } catch { /* malformed frame — ignore */ }
-    };
-  }, []);
-
   useEffect(() => {
     if (!enabled) return;
-    connect();
+    // ONE schedule-events stream for the whole browser session — the shared
+    // module owns the EventSource + reconnect; this hook only consumes frames.
+    const offState = subscribeScheduleState((s) => setConnected(Boolean(s.connected)));
+    const offEvents = subscribeScheduleEvents((frame) => {
+      if (!enabledRef.current) return;
+      const ev = frame as ScheduleEvent;
+      if (!ev?.event) return;
+
+      const now = Date.now();
+      setLastEventAt(now);
+
+      // Push to recent events ring buffer.
+      setRecentEvents((prev) => {
+        const next = [ev, ...prev].slice(0, MAX_EVENTS);
+        return next;
+      });
+
+      // Update per-schedule state machine.
+      if (ev.scheduleId) {
+        setScheduleStates((prev) => {
+          const next = new Map(prev);
+          const sid = ev.scheduleId!;
+          const existing = next.get(sid);
+          const status = eventToStatus(ev.event);
+
+          // Only overwrite if the event is "newer" or same direction.
+          if (!existing || now >= existing.lastEventTs) {
+            const state: ScheduleState = {
+              scheduleId: sid,
+              scheduleName: ev.scheduleName ?? existing?.scheduleName ?? null,
+              status,
+              lastEvent: ev,
+              lastEventTs: now,
+              packageReady: ev.event === 'PACKAGE_READY' ? ev : existing?.packageReady,
+            };
+            next.set(sid, state);
+          }
+          // Cap map size.
+          while (next.size > MAX_STATES) {
+            const oldest = next.keys().next().value;
+            if (oldest == null) break;
+            next.delete(oldest);
+          }
+          return next;
+        });
+      }
+    });
+
     return () => {
-      esRef.current?.close();
-      esRef.current = null;
+      offState();
+      offEvents();
       setConnected(false);
     };
-  }, [enabled, connect]);
+  }, [enabled]);
 
   return { connected, lastEventAt, recentEvents, scheduleStates };
 }

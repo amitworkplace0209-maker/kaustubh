@@ -40,7 +40,7 @@ WEDNESDAY_1000 = _ist(2026, 10, 21, 10, 0)
 
 class _FakeSessionManager:
     def __init__(self):
-        self.snapshot = mock.Mock(return_value={"session_id": "sess-1"})
+        self.snapshot = mock.Mock(return_value={"session_id": "sess-1", "active": True})
         self.apply_daily_subscription_intent = mock.AsyncMock(return_value={"active": 2})
 
 
@@ -50,16 +50,26 @@ class _FakeWsEngine:
 
 
 def _scan(
-    selected: list[str], *, candidates: int = 2400, errors: list[str] | None = None,
+    selected: list[str],
+    *,
+    candidates: int = 2400,
+    priced: int | None = None,
+    margin_requested: int | None = None,
+    margin_resolved: int | None = None,
+    margin_unavailable: int = 0,
+    errors: list[str] | None = None,
 ) -> ScanResult:
+    priced = candidates if priced is None else priced
     return ScanResult(
         week_id="2026-W43",
         target_week_id="2026-W44",
         started_at=100.0,
         finished_at=110.0,
         candidates=candidates,
-        priced=candidates,
-        margin_resolved=candidates,
+        priced=priced,
+        margin_requested=priced if margin_requested is None else margin_requested,
+        margin_resolved=priced if margin_resolved is None else margin_resolved,
+        margin_unavailable=margin_unavailable,
         selected=[{"symbol": s, "token": str(i + 1)} for i, s in enumerate(selected)],
         errors=list(errors or []),
         seeded=True,
@@ -182,6 +192,64 @@ class FridayScanRunTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertGreater(engine._friday_scan_retry_at, 0)
 
+    async def test_zero_prices_is_a_retryable_scan_error(self):
+        engine = _engine()
+        scan = _scan([], priced=0, margin_resolved=0)
+
+        with mock.patch("services.market_watch_engine.now_ist", return_value=FRIDAY_1530), \
+             mock.patch("services.market_watch_weekly_scan.run_scan",
+                        new=mock.AsyncMock(return_value=scan)), \
+             mock.patch("services.market_watch_universe.lock_universe",
+                        new=mock.AsyncMock()) as lock:
+            result = await engine.run_friday_scan(triggered_by="auto")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "SCAN_ERROR")
+        self.assertIn("price resolution failed", result["detail"])
+        lock.assert_not_awaited()
+        self.assertEqual(engine._friday_scan_done_for, "")
+        self.assertGreater(engine._friday_scan_retry_at, 0)
+
+    async def test_all_margin_unavailable_is_a_retryable_scan_error(self):
+        engine = _engine()
+        scan = _scan([], margin_resolved=0, margin_unavailable=2400)
+
+        with mock.patch("services.market_watch_engine.now_ist", return_value=FRIDAY_1530), \
+             mock.patch("services.market_watch_weekly_scan.run_scan",
+                        new=mock.AsyncMock(return_value=scan)), \
+             mock.patch("services.market_watch_universe.lock_universe",
+                        new=mock.AsyncMock()) as lock:
+            result = await engine.run_friday_scan(triggered_by="auto")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "SCAN_ERROR")
+        self.assertIn("margin resolution returned no authoritative", result["detail"])
+        lock.assert_not_awaited()
+        self.assertEqual(engine._friday_scan_done_for, "")
+        self.assertGreater(engine._friday_scan_retry_at, 0)
+
+    async def test_all_priced_above_cap_is_not_a_margin_outage(self):
+        engine = _engine()
+        # Every stock that got a price is above the ₹800 cap, so the scan never
+        # asks the broker for margin. Zero survivors is a legitimate answer,
+        # not an outage.
+        scan = _scan(
+            [], priced=24, margin_requested=0, margin_resolved=0,
+            margin_unavailable=0,
+        )
+
+        with mock.patch("services.market_watch_engine.now_ist", return_value=FRIDAY_1530), \
+             mock.patch("services.market_watch_weekly_scan.run_scan",
+                        new=mock.AsyncMock(return_value=scan)), \
+             mock.patch("services.market_watch_universe.lock_universe",
+                        new=mock.AsyncMock()) as lock:
+            result = await engine.run_friday_scan(triggered_by="auto")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "NO_SYMBOLS_SELECTED")
+        lock.assert_not_awaited()
+        self.assertEqual(engine._friday_scan_done_for, "2026-W43")
+
     async def test_zero_survivors_keep_the_previous_universe(self):
         engine = _engine()
         scan = _scan([], candidates=2400)
@@ -252,6 +320,8 @@ class FridayScanRunTest(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch("services.market_watch_engine.now_ist", return_value=FRIDAY_1530), \
              mock.patch("services.market_calendar.is_trading_day", return_value=True), \
+             mock.patch("services.session.session_manager.get_session_manager",
+                        return_value=_FakeSessionManager()), \
              mock.patch.object(engine, "_run_friday_scan_auto", new=_hold):
             await engine._friday_scan_tick(cfg)
             await asyncio.sleep(0)
@@ -298,6 +368,17 @@ class FridayScanRunTest(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch("services.market_watch_engine.now_ist", return_value=FRIDAY_1530), \
              mock.patch("services.market_calendar.is_trading_day", return_value=False), \
+             mock.patch.object(engine, "_run_friday_scan_auto", new=auto):
+            await engine._friday_scan_tick(cfg)
+            await asyncio.sleep(0)
+        auto.assert_not_awaited()
+
+        logged_out = _FakeSessionManager()
+        logged_out.snapshot = mock.Mock(return_value={"session_id": "sess-1", "active": False})
+        with mock.patch("services.market_watch_engine.now_ist", return_value=FRIDAY_1530), \
+             mock.patch("services.market_calendar.is_trading_day", return_value=True), \
+             mock.patch("services.session.session_manager.get_session_manager",
+                        return_value=logged_out), \
              mock.patch.object(engine, "_run_friday_scan_auto", new=auto):
             await engine._friday_scan_tick(cfg)
             await asyncio.sleep(0)
@@ -437,6 +518,157 @@ class FridayScanStatusTest(unittest.IsolatedAsyncioTestCase):
             friday.margin_multiplier_threshold,
             normal.margin_multiplier_threshold,
         )
+
+
+class PriceSourceRecoveryTest(unittest.IsolatedAsyncioTestCase):
+    """A recovery scan can price from stored closes without touching the SDK.
+
+    The quote phase and the margin phase share one broker client. When the
+    quote endpoint disconnects, concurrent quote calls can leave that client
+    unusable and the margin phase then times out. The Friday 15:25 run keeps
+    live quotes; an operator recovery run may skip them.
+    """
+
+    async def test_price_batch_can_skip_broker_quotes(self):
+        from services import market_watch_weekly_scan as scan
+
+        rows = [{
+            "instrumentToken": "1", "symbol": "AAA", "segment": "nse_cm",
+        }]
+        resolved = [{
+            "ltp": 100.0, "source": "last_close", "status": "STALE",
+        }]
+        fake = mock.AsyncMock(return_value=resolved)
+        with mock.patch("services.last_price.resolve_prices", new=fake):
+            out = await scan._price_batch(rows, allow_broker=False)
+
+        self.assertEqual(out["1"]["source"], "last_close")
+        self.assertEqual(out["1"]["ltp"], 100.0)
+        self.assertFalse(fake.await_args.kwargs["allow_broker"])
+
+
+class IncompleteScreenSeedGuardTest(unittest.IsolatedAsyncioTestCase):
+    """A partial screen must not seed next week's DRAFT either.
+
+    The engine already refuses to LOCK on an incomplete screen. The scan has
+    its own guard because the review UI reads the DRAFT; seeding half the
+    universe would show a list that looks complete but silently omitted every
+    symbol whose margin batch never ran.
+    """
+
+    def setUp(self):
+        from services.market_watch_intraday import (
+            ScreenConfig, ScreenDecision, ScreenResult,
+        )
+
+        self.cfg = ScreenConfig(
+            price_cap=800.0, margin_multiplier_threshold=5.0,
+            require_intraday=True, require_margin=True,
+        )
+        self.screen = ScreenResult(selected=[
+            ScreenDecision(
+                passed=True, reason_code="PASS", reason="ok",
+                token="1", symbol="AAA",
+            ),
+        ])
+        self.seed = mock.AsyncMock(return_value=True)
+        self.persist = mock.Mock()
+        self.resolver = SimpleNamespace(
+            resolve=mock.AsyncMock(return_value={}),
+            publish=mock.Mock(),
+        )
+        self.candidates = mock.AsyncMock(return_value=[{
+            "instrumentToken": "1", "symbol": "AAA", "segment": "nse_cm",
+        }])
+        self.prices = mock.AsyncMock(return_value={
+            "1": {"ltp": 100.0, "source": "broker", "status": "LIVE"},
+        })
+        self.patches = [
+            mock.patch(
+                "services.market_watch_weekly_scan._candidates",
+                new=self.candidates,
+            ),
+            mock.patch(
+                "services.market_watch_weekly_scan._resolve_prices",
+                new=self.prices,
+            ),
+            mock.patch(
+                "services.market_watch_weekly_scan._screen_config",
+                return_value=self.cfg,
+            ),
+            mock.patch(
+                "services.market_watch_intraday.screen_records",
+                return_value=self.screen,
+            ),
+            mock.patch(
+                "services.market_watch_weekly_scan._seed_draft",
+                new=self.seed,
+            ),
+            mock.patch(
+                "services.market_watch_weekly_scan._persist",
+                new=self.persist,
+            ),
+            mock.patch(
+                "services.margin_resolver.margin_resolver", self.resolver,
+            ),
+        ]
+        for patch in self.patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    async def _run(self):
+        from services.market_watch_weekly_scan import run_scan
+
+        return await run_scan(
+            week_id="2026-W43",
+            target_week_id="2026-W44",
+            require_margin=True,
+            seed_draft=True,
+        )
+
+    async def test_margin_batch_failure_does_not_seed(self):
+        self.resolver.resolve = mock.AsyncMock(
+            side_effect=RuntimeError("broker outage")
+        )
+        result = await self._run()
+
+        self.assertFalse(result.seeded)
+        self.seed.assert_not_awaited()
+        self.assertTrue(any(
+            error.startswith("margin batch failed")
+            for error in result.errors
+        ))
+
+    async def test_unpriced_screen_does_not_seed(self):
+        self.prices.return_value = {"1": {"ltp": None}}
+        result = await self._run()
+
+        self.assertEqual(result.priced, 0)
+        self.assertFalse(result.seeded)
+        self.seed.assert_not_awaited()
+
+    async def test_zero_margin_answers_does_not_seed(self):
+        result = await self._run()
+
+        self.assertEqual(result.margin_requested, 1)
+        self.assertEqual(result.margin_resolved, 0)
+        self.assertFalse(result.seeded)
+        self.seed.assert_not_awaited()
+
+    async def test_complete_screen_seeds(self):
+        from services.margin_resolver import MarginAnswer
+
+        self.resolver.resolve = mock.AsyncMock(return_value={
+            "1": MarginAnswer(
+                token="1", eligible=True, multiplier=6.0,
+                status="AUTHORITATIVE",
+            ),
+        })
+        result = await self._run()
+
+        self.assertTrue(result.seeded)
+        self.seed.assert_awaited_once()
+        self.assertEqual(result.selected_symbols, ["AAA"])
 
 
 if __name__ == "__main__":  # pragma: no cover

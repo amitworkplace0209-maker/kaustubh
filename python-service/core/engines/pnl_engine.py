@@ -27,12 +27,23 @@ def normalize_position(row: Any, index: int = 0) -> dict:
     fl_sell = int(safe_float(row.get("flSellQty")))
     buy_qty = cf_buy + fl_buy
     sell_qty = cf_sell + fl_sell
+    # Canonical (Dummy / Shoonya) rows carry the quantities under their
+    # canonical names instead of the Kotak CF/FL split.
+    if buy_qty == 0:
+        buy_qty = int(safe_float(row.get("buyQuantity") or row.get("buy_qty")))
+    if sell_qty == 0:
+        sell_qty = int(safe_float(row.get("sellQuantity") or row.get("sell_qty")))
 
     buy_amt = safe_float(row.get("cfBuyAmt")) + safe_float(row.get("buyAmt"))
     sell_amt = safe_float(row.get("cfSellAmt")) + safe_float(row.get("sellAmt"))
 
     buy_avg = (buy_amt / (buy_qty * mult)) if buy_qty > 0 else 0.0
     sell_avg = (sell_amt / (sell_qty * mult)) if sell_qty > 0 else 0.0
+    # Canonical rows already carry the per-share average price.
+    if buy_avg == 0 and buy_qty > 0:
+        buy_avg = safe_float(row.get("averageBuyPrice") or row.get("buy_avg"))
+    if sell_avg == 0 and sell_qty > 0:
+        sell_avg = safe_float(row.get("averageSellPrice") or row.get("sell_avg"))
 
     net_qty = int(safe_float(row.get("qty") or row.get("netQuantity") or row.get("net_qty")))
     if net_qty == 0:
@@ -54,8 +65,14 @@ def normalize_position(row: Any, index: int = 0) -> dict:
     else:
         unrealized = safe_float(row.get("unrealised") or row.get("unrealized") or row.get("unrealizedPnl"))
 
-    charges = safe_float(row.get("estimated_charges") or row.get("charges") or row.get("brokerage"))
-    charges_known = bool(row.get("estimated_charges") is not None or row.get("charges") is not None)
+    charges = safe_float(
+        row.get("estimated_charges") or row.get("charges")
+        or row.get("brokerage") or row.get("estimatedCharges")
+    )
+    charges_known = bool(
+        row.get("estimated_charges") is not None or row.get("charges") is not None
+        or row.get("brokerage") is not None or row.get("estimatedCharges") is not None
+    )
 
     gross = round(realized + unrealized, 2)
     net = round(gross - charges, 2) if charges_known else gross

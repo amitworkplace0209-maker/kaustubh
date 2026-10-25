@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFrontendRealtime } from '@/components/frontend-realtime-provider';
+import { normalizeEngineStatusPayload, type EngineStatusMap } from '@/lib/engine-status';
 
 /**
  * Engine control-plane hooks fed by WebSocket #2 (Backend ⇄ Frontend) through
@@ -17,35 +18,67 @@ import { useFrontendRealtime } from '@/components/frontend-realtime-provider';
  * arrives it wins — the fallback is never polled on an interval.
  */
 
-export type EngineStatusMap = Record<string, any>;
+export type { EngineStatusMap };
 
 export const ENGINES_CHANNEL = 'engines';
 
-export function useEngines(): {
+export function useEngines(
+  fallbackPath: string | null = '/api/services/engines',
+): {
   engines: EngineStatusMap;
   updatedAt: number | null;
   connected: boolean;
+  source: 'api' | 'realtime' | null;
 } {
   const { subscribe, onFrame, connected } = useFrontendRealtime();
   const [engines, setEngines] = useState<EngineStatusMap>({});
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [source, setSource] = useState<'api' | 'realtime' | null>(null);
+  const realtimeRef = useRef(false);
 
   useEffect(() => {
     void subscribe([{ channel: ENGINES_CHANNEL }]).catch(() => {});
   }, [subscribe]);
 
+  // One-shot REST fallback. WS#2 intentionally pauses outside the market
+  // window (`WAITING_FOR_MARKET_WINDOW`), so without this the map stayed empty
+  // and the trade page rendered "0/4 engines" while four engines were actually
+  // running. The realtime snapshot always wins once it arrives.
+  useEffect(() => {
+    if (!fallbackPath) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(fallbackPath, { cache: 'no-store', credentials: 'same-origin' });
+        const body = await res.json().catch(() => null);
+        if (cancelled || realtimeRef.current || !res.ok || !body?.ok) return;
+        const next = normalizeEngineStatusPayload(body.data);
+        if (!next) return;
+        setEngines(next);
+        setUpdatedAt(Date.now());
+        setSource('api');
+      } catch {
+        /* honest empty state — the page renders unknown, never a fake count */
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [fallbackPath]);
+
   useEffect(() => {
     const off = onFrame((frame) => {
       if (frame.type !== 'engine.status') return;
-      const next = frame.data?.engines;
-      if (!next || typeof next !== 'object') return;
-      setEngines(next as EngineStatusMap);
+      const next = normalizeEngineStatusPayload(frame.data?.engines);
+      if (!next) return;
+      realtimeRef.current = true;
+      setEngines(next);
       setUpdatedAt(Date.now());
+      setSource('realtime');
     });
     return off;
   }, [onFrame]);
 
-  return { engines, updatedAt, connected };
+  return { engines, updatedAt, connected, source };
 }
 
 /**

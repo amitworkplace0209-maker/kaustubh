@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
 import {
   Wallet, TrendingUp, TrendingDown, Briefcase, Layers, RefreshCw, IndianRupee,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { getTradingDashboard } from '@/lib/api';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 import { useTradingMode } from '@/lib/settings-store';
 
 function safeNum(n: any): number {
@@ -20,28 +21,30 @@ function fmtINR(n: number): string {
 
 export default function PortfolioPage() {
   const mode = useTradingMode();
-  const [holdings, setHoldings] = useState<any[]>([]);
-  const [positions, setPositions] = useState<any[]>([]);
-  const [funds, setFunds] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
 
-  const fetch = useCallback(async () => {
-    try {
-      const res = await getTradingDashboard();
-      const s = res?.sections;
-      setHoldings(Array.isArray(s?.holdings?.data) ? s.holdings.data : []);
-      setPositions(Array.isArray(s?.positions?.data) ? s.positions.data : []);
-      setFunds(s?.funds?.data ?? null);
-    } finally {
-      setLoading(false);
-    }
-  }, [mode]);
+  // One terminal-aware envelope over the WebSocket (funds / positions /
+  // holdings / orders). REST is only the fallback while the socket is down.
+  const portfolio = useRealtimeChannel<Record<string, any>>('portfolio', {
+    fallback: async () => ((await getTradingDashboard()) ?? {}) as Record<string, any>,
+    fallbackKey: 'portfolio',
+    fallbackMs: 10000,
+  });
 
-  useEffect(() => {
-    fetch();
-    const interval = setInterval(fetch, 10000);
-    return () => clearInterval(interval);
-  }, [fetch]);
+  const sections = portfolio.data?.sections;
+
+  const holdings = useMemo(() => {
+    const rows = sections?.holdings?.data;
+    return Array.isArray(rows) ? rows : [];
+  }, [sections]);
+
+  const positions = useMemo(() => {
+    const rows = sections?.positions?.data;
+    return Array.isArray(rows) ? rows : [];
+  }, [sections]);
+
+  const funds = sections?.funds?.data ?? null;
+
+  const loading = portfolio.loading;
 
   const holdingsValue = useMemo(
     () => holdings.reduce((s, h) => {
@@ -73,7 +76,7 @@ export default function PortfolioPage() {
           <h1 className="text-3xl font-bold tracking-tight">Portfolio</h1>
           <p className="text-sm text-muted-foreground">Live holdings, positions and funds from your broker</p>
         </div>
-        <Button size="sm" variant="ghost" onClick={fetch}><RefreshCw className="h-4 w-4" /></Button>
+        <Button size="sm" variant="ghost" onClick={portfolio.refresh}><RefreshCw className="h-4 w-4" /></Button>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

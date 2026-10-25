@@ -1,7 +1,7 @@
 // Canonical KAUSTUBH application registry.
 //
-// Single source of truth for the four application experiences:
-//   Trading Terminal, Data Saver, Services, Khumbha AI
+// Single source of truth for the application experiences:
+//   Trading Terminal, Data Saver, Services
 //
 // This module must stay free of imports from the theme engine (lib/phase2-theme)
 // to avoid a runtime import cycle. The theme engine imports the AppId type only.
@@ -11,10 +11,9 @@ import {
   CandlestickChart,
   Database,
   Server,
-  BrainCircuit,
 } from 'lucide-react';
 
-export type AppId = 'trading' | 'data-saver' | 'services' | 'khumbha-ai';
+export type AppId = 'trading' | 'data-saver' | 'services';
 
 export interface KaustubhApp {
   id: AppId;
@@ -74,18 +73,6 @@ export const KAUSTUBH_APPS: KaustubhApp[] = [
     manifest: '/manifest-services.json',
     pwaName: 'KAUSTUBH Services',
   },
-  {
-    id: 'khumbha-ai',
-    name: 'Khumbha AI',
-    shortName: 'Khumbha AI',
-    brand: 'KHUMBHA AI',
-    description: 'Models, datasets, training, inference and agents',
-    icon: BrainCircuit,
-    monogram: 'KA',
-    defaultRoute: '/ai/dashboard',
-    manifest: '/manifest-ai.json',
-    pwaName: 'KAUSTUBH Khumbha AI',
-  },
 ];
 
 const APP_BY_ID = Object.fromEntries(KAUSTUBH_APPS.map((a) => [a.id, a])) as Record<AppId, KaustubhApp>;
@@ -99,7 +86,6 @@ export function getAppByPath(pathname: string): AppId {
   if (pathname.startsWith('/trading')) return 'trading';
   if (pathname.startsWith('/data-saver')) return 'data-saver';
   if (pathname.startsWith('/services')) return 'services';
-  if (pathname.startsWith('/ai')) return 'khumbha-ai';
   return 'trading';
 }
 
@@ -112,5 +98,4 @@ export const APP_DEFAULT_PRESET: Record<AppId, string> = {
   trading: 'emerald',
   'data-saver': 'saffron',
   services: 'ocean',
-  'khumbha-ai': 'purple',
 };

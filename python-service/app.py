@@ -93,6 +93,7 @@ from api.scheduled_downloads import (
     stop_scheduled_downloads_checker,
 )
 from api.schedule_events import router as schedule_events_router
+from services.event_scheduler import start_event_scheduler, stop_event_scheduler
 from api.quality import router as quality_router
 from api.websocket import router as websocket_router
 from api.insights import router as insights_router
@@ -112,6 +113,7 @@ from api.database_monitoring import router as database_monitoring_router
 from api.session_manager import router as session_manager_router
 from api.risk_engine import router as risk_engine_router
 from api.order_engine import router as order_engine_router
+from api.local_connect import router as local_connect_router
 
 # Configure logging
 logging.basicConfig(
@@ -135,6 +137,10 @@ logger.addHandler(_console)
 
 # Holds the running retention-cleanup asyncio task (cancel on shutdown).
 _cleanup_task_holder: dict = {"task": None}
+
+_mongo_prewarm_task_holder: dict = {"task": None}
+
+_dash_prewarm_task_holder: dict = {"task": None}
 
 # Holds the notification-center retention asyncio task (cancel on shutdown).
 _ncenter_task_holder: dict = {"task": None}
@@ -635,6 +641,7 @@ async def lifespan(app: FastAPI):
         ("tick buffer", tick_buffer.start),
         ("export worker", start_export_worker),
         ("downloads checker", start_scheduled_downloads_checker),
+        ("event scheduler", start_event_scheduler),
         ("scheduler", start_scheduler),
     ):
         try:
@@ -755,8 +762,11 @@ async def lifespan(app: FastAPI):
         ]:
             registry.register(eng)
 
-        # Start engines that should auto-start
-        for eng in [feature_engine, search_engine, watchlist_engine, market_watch_engine, market_coach, storage_engine, db_writer_engine, notification_engine, audit_engine, session_manager_engine, connection_manager_engine, websocket_engine]:
+        # Start engines that should auto-start. The Risk Engine is stateless
+        # per-request, but it is a first-class registry entry: leaving it in
+        # REGISTERED/UNKNOWN made the trade page count it as unavailable even
+        # though every order passes through it.
+        for eng in [feature_engine, search_engine, risk_engine, watchlist_engine, market_watch_engine, market_coach, storage_engine, db_writer_engine, notification_engine, audit_engine, session_manager_engine, connection_manager_engine, websocket_engine]:
             try:
                 await eng.start()
             except Exception as exc:
@@ -833,6 +843,25 @@ async def lifespan(app: FastAPI):
         logger.warning("Instrument master preload failed (non-critical): %s", exc)
 
     _startup_report()
+
+    # Prewarm the Mongo collection-stats cache in the background (Data Center /
+    # dashboard "DB" cards). The first build walks every collection and takes
+    # tens of seconds on a remote cluster — paid here, off the request path, so
+    # the first dashboard request finds a warm cache instead of timing out.
+    try:
+        from api.system import prewarm_mongo_stats
+        _mongo_prewarm_task_holder["task"] = asyncio.create_task(prewarm_mongo_stats())
+    except Exception as exc:
+        logger.warning("Mongo stats prewarm not started (non-critical): %s", exc)
+
+    # Prewarm the Data Saver dashboard aggregation (default 168h key) in the
+    # background too — the first intra-day dashboard request otherwise pays
+    # the full cold build against the frontend's polling budget.
+    try:
+        from api.system import prewarm_system_dashboard
+        _dash_prewarm_task_holder["task"] = asyncio.create_task(prewarm_system_dashboard())
+    except Exception as exc:
+        logger.warning("System dashboard prewarm not started (non-critical): %s", exc)
 
     # Start the 7-day WebSocket history retention cleanup (backend side).
     # It complements the MongoDB TTL index and guarantees old history is
@@ -932,6 +961,20 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Storage budget guard not started: %s", exc)
 
+    # AUTO-LOGIN for the active terminal. Each terminal obtains its session
+    # the only way it can: Kotak via TOTP+MPIN (fully automatic), Dummy via the
+    # managed paper session, Shoonya by restoring the stored OAuth session (the
+    # Noren SDK has no password login, so the very first Shoonya session needs
+    # the operator's one-time browser handshake — afterwards it is automatic).
+    # A failure here never blocks the startup: the terminal simply reports
+    # "not connected" until the operator acts.
+    try:
+        from services.auto_login import auto_login_active_terminal
+
+        asyncio.create_task(auto_login_active_terminal(source="startup"))
+    except Exception as exc:
+        logger.warning("auto-login could not be scheduled: %s", exc)
+
     yield
 
     logger.info("KAUSTUBH FastAPI backend shutting down...")
@@ -969,6 +1012,22 @@ async def lifespan(app: FastAPI):
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(asyncio.shield(_task), timeout=3)
     _cleanup_task_holder["task"] = None
+
+    # Stop the Mongo stats prewarm task if it is still starting up.
+    _task = _mongo_prewarm_task_holder.get("task")
+    if _task is not None and not _task.done():
+        _task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait_for(asyncio.shield(_task), timeout=2)
+    _mongo_prewarm_task_holder["task"] = None
+
+    # Stop the dashboard prewarm task if it is still starting up.
+    _task = _dash_prewarm_task_holder.get("task")
+    if _task is not None and not _task.done():
+        _task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait_for(asyncio.shield(_task), timeout=2)
+    _dash_prewarm_task_holder["task"] = None
 
     # Stop the Atlas daily cleanup scheduler.
     try:
@@ -1042,6 +1101,7 @@ async def lifespan(app: FastAPI):
     for name, stop in (
         ("downloads checker", stop_scheduled_downloads_checker),
         ("export worker", stop_export_worker),
+        ("event scheduler", stop_event_scheduler),
         ("scheduler", stop_scheduler),
     ):
         try:
@@ -1150,6 +1210,47 @@ class IstTimestampMiddleware:
 
 
 app.add_middleware(IstTimestampMiddleware)
+
+
+# ---------------------------------------------------------------------------
+# Frontend proxy path aliases — WebSocket engine + unified event scheduler
+# ---------------------------------------------------------------------------
+# The Next frontend calls `/api/phase2/websocket-engine/*` (and the same
+# shape for the unified `/api/phase2/sched-events/*` router). In this Next
+# version's dev server the catch-all route handlers under `app/api/**/[...path]`
+# are never matched (verified on BOTH the custom `server.mjs` and plain
+# `next dev`: every catch-all request falls through to the afterFiles rewrite
+# `/api/:path*` → this backend). The canonical backend paths differ from the
+# frontend ones, so the passthrough 404s at the router. This middleware
+# rewrites the ASGI scope path in place — same process, same method, same
+# query/body, one source of engine truth per table entry.
+class WsEnginePathAliasMiddleware:
+    # (frontend prefix, canonical backend prefix)
+    PREFIXES = (
+        ("/api/phase2/websocket-engine", "/api/services/websocket"),
+        ("/api/phase2/sched-events", "/api/sched-events"),
+    )
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            path = scope.get("path", "")
+            for frontend, canonical in self.PREFIXES:
+                if path == frontend or path.startswith(frontend + "/"):
+                    rewritten = canonical + path[len(frontend):]
+                    scope = dict(scope)
+                    scope["path"] = rewritten
+                    try:
+                        scope["raw_path"] = rewritten.encode()
+                    except Exception:  # noqa: BLE001 — raw_path is best-effort
+                        pass
+                    break
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(WsEnginePathAliasMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -1293,7 +1394,22 @@ app.include_router(database_monitoring_router)
 app.include_router(session_manager_router)
 app.include_router(risk_engine_router)
 app.include_router(order_engine_router)
+app.include_router(local_connect_router)
 app.include_router(trade_instruments_router)
+
+
+def _register_late_routers() -> None:
+    """Routers registered last (no import cycle): depend on runtime services."""
+    try:
+        from api.sched_events import router as sched_events_router
+
+        app.include_router(sched_events_router)
+        logger.info("sched-events router registered")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("sched-events router registration failed: %r", exc)
+
+
+_register_late_routers()
 
 
 if __name__ == "__main__":

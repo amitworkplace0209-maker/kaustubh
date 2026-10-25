@@ -39,7 +39,21 @@ CHILD_LOG = DIR / "watchdog_child.log"
 CHECK_EVERY = 5            # probe interval (s)
 PROBE_TIMEOUT = 4          # single health request timeout (s)
 KILL_AFTER_FAILS = 3       # consecutive failed probes before killing
-GRACE_AFTER_START = 45     # don't kill during startup/slow-feed warmup (s)
+# Grace period before the watchdog may kill a backend it just started.
+#
+# It was 45 s, which is SHORTER than a cold start on this machine: the app
+# binds the port first, then the lifespan boots MongoDB, the instrument master
+# (2 685 instruments), the session manager, the tick buffer and every engine
+# before `/health` answers — measured at ~100-140 s on a warm MongoDB and
+# longer with a cold cache. A 45 s grace therefore turned every cold start
+# into a kill-and-restart loop: the watchdog killed a backend that was still
+# booting, the operator was left with a permanently dead backend, and every
+# page (the trade page included) answered "Internal Server Error".
+#
+# 240 s covers a full cold start with margin. The watchdog still reacts to the
+# real failure mode it exists for — a process that is alive but has lost its
+# listener — because that case is detected long after the grace period.
+GRACE_AFTER_START = 240    # don't kill during startup/slow-feed warmup (s)
 CRASH_LOOP_WINDOW = 20     # a child alive shorter than this counts as a crash
 CRASH_LOOP_MAX = 3         # repeated quick exits trigger a longer backoff
 LONG_BACKOFF = 20          # extra sleep after repeated startup crashes
@@ -148,6 +162,16 @@ class Watchdog:
             if rc is None:
                 return "ok"
             self.child = None
+            # The launcher exits 0 (and 2) when a healthy backend already owns
+            # the port — "BACKEND ALREADY RUNNING ... refusing to start a
+            # duplicate instance". Re-launching in that case is an infinite
+            # loop: every relaunch exits immediately, forever, while the
+            # healthy instance keeps serving. So the health probe decides
+            # first: if something healthy is serving, ADOPT it.
+            if health_ok():
+                self.adopted = True
+                log(f"child exited rc={rc} but a healthy backend is serving -> adopting it")
+                return "ok"
             self.quick_exits += 1
             log(f"backend exited rc={rc}")
             time.sleep(3)

@@ -72,6 +72,7 @@ class ScanResult:
     finished_at: float = 0.0
     candidates: int = 0
     priced: int = 0
+    margin_requested: int = 0
     margin_resolved: int = 0
     margin_unavailable: int = 0
     selected: list[dict[str, Any]] = field(default_factory=list)
@@ -95,6 +96,7 @@ class ScanResult:
             "durationSeconds": round(max(0.0, self.finished_at - self.started_at), 2),
             "candidates": self.candidates,
             "priced": self.priced,
+            "marginRequested": self.margin_requested,
             "marginResolved": self.margin_resolved,
             "marginUnavailable": self.margin_unavailable,
             "selectedCount": len(self.selected),
@@ -112,7 +114,8 @@ class ScanResult:
         return (
             f"{len(self.selected)} of {self.candidates} candidates passed for "
             f"{self.target_week_id} "
-            f"(price {self.priced}, margin {self.margin_resolved} answered, "
+            f"(price {self.priced}, margin asked {self.margin_requested}, "
+            f"{self.margin_resolved} answered, "
             f"{self.margin_unavailable} unanswered)"
         )
 
@@ -186,8 +189,16 @@ async def _candidates(limit: Optional[int] = None) -> list[dict[str, Any]]:
 # Prices
 # --------------------------------------------------------------------------- #
 
-async def _price_batch(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Resolve a real LTP per candidate through the canonical price chain."""
+async def _price_batch(
+    rows: list[dict[str, Any]], *, allow_broker: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """Resolve a real LTP per candidate through the canonical price chain.
+
+    ``allow_broker=False`` is the recovery path for a broker quote endpoint
+    that is disconnecting: it uses the stored candle close instead of
+    corrupting the same SDK client the margin phase needs. The default stays
+    True so the Friday 15:25 run prices from live quotes.
+    """
     out: dict[str, dict[str, Any]] = {}
     if not rows:
         return out
@@ -199,7 +210,7 @@ async def _price_batch(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
                 {"token": r["instrumentToken"], "symbol": r["symbol"],
                  "segment": r["segment"]}
                 for r in rows
-            ]),
+            ], allow_broker=allow_broker, include_ohlc=False),
             timeout=PRICE_BATCH_TIMEOUT,
         )
     except Exception as exc:
@@ -216,12 +227,12 @@ async def _price_batch(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 async def _resolve_prices(
-    rows: list[dict[str, Any]],
+    rows: list[dict[str, Any]], *, allow_broker: bool = True,
 ) -> dict[str, dict[str, Any]]:
     prices: dict[str, dict[str, Any]] = {}
     for start in range(0, len(rows), PRICE_BATCH):
         chunk = rows[start:start + PRICE_BATCH]
-        prices.update(await _price_batch(chunk))
+        prices.update(await _price_batch(chunk, allow_broker=allow_broker))
     return prices
 
 
@@ -253,6 +264,7 @@ async def run_scan(
     dry_run: bool = False,
     seed_draft: bool = True,
     require_margin: Optional[bool] = None,
+    allow_broker: bool = True,
 ) -> ScanResult:
     """Run one weekly screen and (optionally) seed next week's draft.
 
@@ -260,6 +272,9 @@ async def run_scan(
     ``target_week_id`` is the week the survivors are meant for.
     ``require_margin=True`` forces the broker-margin rule on for this run; the
     Friday scan sets it so the 5x requirement is never silently disabled.
+    ``allow_broker=False`` prices from stored candle closes instead of asking
+    the broker for quotes. It is an operator recovery switch for a quote
+    endpoint that is disconnecting; the Friday 15:25 run keeps live quotes.
     """
     from services.market_watch_crossings import week_id_for
     from services.market_watch_intraday import screen_records
@@ -289,7 +304,7 @@ async def run_scan(
         return result
 
     # ---- 2. real prices ------------------------------------------------- #
-    prices = await _resolve_prices(candidates)
+    prices = await _resolve_prices(candidates, allow_broker=allow_broker)
     priced_rows: list[dict[str, Any]] = []
     for row in candidates:
         price = prices.get(row["instrumentToken"]) or {}
@@ -311,10 +326,16 @@ async def run_scan(
                                 "priceStatus": "UNAVAILABLE"})
 
     # ---- 3. broker margin + intraday facts ------------------------------ #
+    # A stock already above the price cap can never survive the screen, so do
+    # not spend a broker margin round-trip on it. That keeps the Friday scan's
+    # margin load proportional to the actual eligible price band rather than
+    # the entire NSE master.
     margin_rows = [
         {"instrumentToken": r["instrumentToken"], "ltp": r["ltp"]}
-        for r in priced_rows if r.get("ltp")
+        for r in priced_rows
+        if r.get("ltp") and float(r["ltp"]) < cfg.price_cap
     ]
+    result.margin_requested = len(margin_rows)
     answers: dict[str, Any] = {}
     if margin_rows:
         for start in range(0, len(margin_rows), MARGIN_BATCH):
@@ -323,7 +344,12 @@ async def run_scan(
                 answers.update(await margin_resolver.resolve(
                     chunk, threshold=cfg.margin_multiplier_threshold))
             except Exception as exc:
+                # Do not continue into the next batch: a rate-limited or
+                # logged-out broker will reject every remaining call too, and
+                # the resulting partial answers must never be screened as if
+                # they were the whole universe.
                 result.errors.append(f"margin batch failed: {exc}")
+                break
     result.margin_resolved = sum(
         1 for a in answers.values() if a.status == "AUTHORITATIVE")
     result.margin_unavailable = sum(
@@ -370,7 +396,18 @@ async def run_scan(
     result.reason_counts = dict(screened.reason_counts)
 
     # ---- 5. seed next week's draft --------------------------------------- #
-    if seed_draft and not dry_run:
+    # A partial screen must not become next week's DRAFT either. The engine
+    # already refuses to LOCK on these conditions; without this guard the UI
+    # would still show a misleading "review" list built from half the universe.
+    incomplete = any(
+        str(err).startswith(("candidate load failed", "margin batch failed"))
+        for err in result.errors
+    )
+    if result.candidates > 0 and result.priced == 0:
+        incomplete = True
+    if result.margin_requested > 0 and result.margin_resolved == 0:
+        incomplete = True
+    if seed_draft and not dry_run and not incomplete:
         try:
             result.seeded = await _seed_draft(target_week_id, result.selected_symbols, week_id)
         except Exception as exc:

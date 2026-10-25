@@ -6,6 +6,7 @@ funds and settlement. All market reads use the broker-free market calendar.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -13,12 +14,35 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import dummy_extras as dex
+from services import read_cache
 
 logger = logging.getLogger("app")
 router = APIRouter(prefix="/api/dummy", tags=["dummy-terminal"])
 
+#: The combined state poll is read-only; a short cache makes repeated polls
+#: from several mounted panels share ONE Mongo read instead of queuing a new
+#: one per panel. Every paper-engine write invalidates the key. The UI polls
+#: every 2-3 s, so a 2 s bound adds no visible staleness beyond that cadence.
+_STATE_CACHE_TTL_S = 2.0
+_STATE_DOC_KEYS = (
+    "demo_account", "demo_positions", "demo_orders",
+    dex.KEY_NOTIFICATIONS, dex.KEY_TARGETS, dex.KEY_ALERTS,
+)
 
-async def _ensure_session() -> dict:
+#: Read-only endpoints need the active daily session, but not fresh counters.
+#: Caching that existence check for a few seconds removes one Atlas round trip
+#: from every positions/notifications/prefs/report poll. Write paths call
+#: ``_ensure_session(refresh_counters=True)`` and never read this entry.
+_SESSION_READ_CACHE_KEY = "dummy:session-read"
+_SESSION_READ_CACHE_TTL_S = 3.0
+
+
+async def _ensure_session_uncached(refresh_counters: bool) -> dict:
+    from services.dummy_session import ensure_dummy_session
+    return await ensure_dummy_session(refresh_counters=refresh_counters)
+
+
+async def _ensure_session(refresh_counters: bool = True) -> dict:
     """Idempotent open of the current Dummy daily session (09:00 IST reset).
 
     Every Dummy terminal read/write flows through this so the operational
@@ -27,8 +51,16 @@ async def _ensure_session() -> dict:
     the engine's own store fallback) instead of 500-ing the whole terminal.
     """
     try:
-        from services.dummy_session import ensure_dummy_session
-        return await ensure_dummy_session()
+        if refresh_counters:
+            # A write path may have changed the session document; the next
+            # read must observe it immediately.
+            read_cache.invalidate(_SESSION_READ_CACHE_KEY)
+            return await _ensure_session_uncached(True)
+        return await read_cache.get(
+            _SESSION_READ_CACHE_KEY,
+            lambda: _ensure_session_uncached(False),
+            ttl=_SESSION_READ_CACHE_TTL_S,
+        )
     except Exception as exc:
         logger.warning("dummy session ensure skipped: %s", exc)
         return {}
@@ -258,47 +290,107 @@ async def dummy_suggestion_delete(suggestion_id: str):
 
 
 # ---- combined state ----------------------------------------------------------
-@router.get("/state")
-async def dummy_state():
-    from api.demo import get_dummy_account, get_dummy_orders, get_dummy_positions, position_visible_in_positions
+async def _build_dummy_state() -> dict:
+    """Build the combined snapshot from a SINGLE settings read.
 
-    session = await _ensure_session()
-    from services.dummy_session import session_snapshot
+    The old implementation made ~15 sequential Atlas round trips (session
+    ensure + account + positions + orders + notifications + risk, where risk
+    re-read account/positions/orders/alerts/targets). It now reads the six
+    documents it needs in one query and derives risk + session counters from
+    those same rows. Read-only: the session is not written on a GET.
+    """
+    from api.demo import (
+        _positions_trading_today,
+        _ROLLOVER_PRODUCTS,
+        get_dummy_account,
+        get_dummy_positions,
+        position_visible_in_positions,
+    )
+    from services.dummy_session import _session_summary, session_date_for, session_snapshot
 
-    account = await get_dummy_account()
-    # Positions read: CASH longs settle into Holdings, never into Positions;
-    # zero-net rows are closed-by-trade leftovers and belong to the closed
-    # trail only (one order in exactly one place).
-    positions = [p for p in await get_dummy_positions()
-                 if position_visible_in_positions(p) and int(p.get("netQuantity") or 0) != 0]
-    orders = await get_dummy_orders()
-    notifications = await dex.list_notifications()
-    risk = await dex.risk_summary()
-    now_utc = dex._now_utc().isoformat()
+    # The session existence check and the six-document state read are
+    # independent. Run them together: on Atlas each round trip is expensive and
+    # the old sequential pair doubled every poll. If the session loader had to
+    # create/reset the operational store, the concurrent read may predate that
+    # write, so re-read once in that (once-per-day) case.
+    session, docs = await asyncio.gather(
+        _ensure_session(refresh_counters=False),
+        dex.get_settings_many(list(_STATE_DOC_KEYS)),
+    )
+    session_day = session_date_for(dex._now_utc())
+    if session and str(session.get("trading_date") or "") != session_day:
+        docs = await dex.get_settings_many(list(_STATE_DOC_KEYS))
+
+    account = docs.get("demo_account")
+    if not isinstance(account, dict):
+        # First run after a wipe: create the default account (one write).
+        account = await get_dummy_account()
+
+    raw_positions = docs.get("demo_positions")
+    positions = raw_positions if isinstance(raw_positions, list) else []
+    today = _positions_trading_today()
+    needs_roll = any(
+        str(p.get("tradingDate") or today) < today
+        and int(p.get("netQuantity") or 0) != 0
+        and str(p.get("product") or "MIS").upper() in _ROLLOVER_PRODUCTS
+        for p in positions
+    )
+    needs_stamp = any(not p.get("tradingDate") for p in positions)
+    ghosts = any(int(p.get("netQuantity") or 0) == 0 for p in positions)
+    if needs_roll or needs_stamp or ghosts:
+        # Rare maintenance path (day rollover / legacy rows): reuse the
+        # canonical writer so the same rules apply everywhere.
+        positions = await get_dummy_positions()
+
+    # CASH longs settle into Holdings, never into Positions; zero-net rows are
+    # closed-by-trade leftovers and belong to the closed trail only.
+    positions = [
+        p for p in positions
+        if position_visible_in_positions(p) and int(p.get("netQuantity") or 0) != 0
+    ]
+    orders = docs.get("demo_orders") or []
+    notification_items = dex.filter_today_notifications(docs.get(dex.KEY_NOTIFICATIONS) or [])
+    targets = docs.get(dex.KEY_TARGETS) or []
+    alerts = docs.get(dex.KEY_ALERTS) or []
+
     return {
         "ok": True,
         "terminal": "dummy",
         "account": account,
         "positions": positions,
         "orders": orders,
-        "risk": risk,
+        "risk": dex.risk_from_components(account, positions, orders, alerts, targets),
         "market": dex.market_snapshot(),
-        "unreadNotifications": notifications.get("unread", 0),
-        "targets": await dex.get_targets(),
-        "alerts": await dex.get_alerts(),
-        "nowUtc": now_utc,
-        "session": await session_snapshot(session),
+        "unreadNotifications": sum(1 for n in notification_items if not n.get("read")),
+        "targets": targets,
+        "alerts": alerts,
+        "nowUtc": dex._now_utc().isoformat(),
+        "session": await session_snapshot(
+            session,
+            _session_summary(session, account, positions, orders, notification_items),
+        ),
     }
+
+
+@router.get("/state")
+async def dummy_state():
+    return await read_cache.get("dummy:state", _build_dummy_state, ttl=_STATE_CACHE_TTL_S)
 
 
 # ---- daily session lifecycle ---------------------------------------------------
 @router.get("/session")
 async def dummy_session():
-    from services.dummy_session import current_session
+    from services.dummy_session import session_snapshot
 
-    await _ensure_session()
-    snap = await current_session()
-    return {"ok": True, "session": snap, "istNow": dex._now_ist().isoformat()}
+    # ``_ensure_session`` already returns the current document (including the
+    # throttled counter patch). Calling ``current_session`` re-ran ensure and
+    # re-read the same document for no additional information.
+    session = await _ensure_session()
+    return {
+        "ok": True,
+        "session": await session_snapshot(session),
+        "istNow": dex._now_ist().isoformat(),
+    }
 
 
 @router.post("/session/reset")
@@ -318,25 +410,29 @@ async def dummy_session_reset(body: dict):
 # ---- portfolio / holdings / risk / history -----------------------------------
 @router.get("/portfolio")
 async def dummy_portfolio():
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **await dex.portfolio_summary()}
 
 
 @router.get("/holdings")
 async def dummy_holdings():
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **await dex.holdings_summary()}
 
 
 @router.get("/risk")
 async def dummy_risk():
-    await _ensure_session()
-    return {"ok": True, **await dex.risk_summary()}
+    # Risk is already part of the authoritative state snapshot. Serving it from
+    # the same short-TTL single-flight cache avoids a second, independent read
+    # of account/positions/orders/alerts/targets when the Risk page (or a
+    # consumer panel) polls alongside ``/state``.
+    state = await read_cache.get("dummy:state", _build_dummy_state, ttl=_STATE_CACHE_TTL_S)
+    return {"ok": True, **state["risk"]}
 
 
 @router.get("/history")
 async def dummy_history(days: int = 7):
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **await dex.history_series(days)}
 
 
@@ -352,20 +448,20 @@ async def dummy_retention(cutoffDays: int = 7):
 # ---- market session / calendar ------------------------------------------------
 @router.get("/market-session")
 async def dummy_market_session():
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **dex.market_snapshot()}
 
 
 @router.get("/calendar")
 async def dummy_calendar():
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **dex.calendar_payload()}
 
 
 # ---- baskets ------------------------------------------------------------------
 @router.get("/baskets")
 async def dummy_baskets():
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, "data": await dex.get_baskets()}
 
 
@@ -463,7 +559,7 @@ async def dummy_target_delete(target_id: str):
 # ---- notifications ---------------------------------------------------------------
 @router.get("/notifications")
 async def dummy_notifications(category: str = "", limit: int = 100):
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **await dex.list_notifications(category, limit)}
 
 
@@ -539,7 +635,7 @@ async def dummy_order_modify(body: ModifyOrder):
 # ---- order preview (server-side charges / margin estimate) --------------------------
 @router.post("/preview")
 async def dummy_preview(body: PreviewOrder):
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     from api.demo import _calculate_charges, get_dummy_account
 
     quantity = max(1, int(body.quantity or 0))
@@ -583,16 +679,24 @@ async def dummy_positions(date: str = ""):
     """Today's positions page: open (post-rollover) + closed scoped to one
     trading date. ``date`` defaults to today (IST, 08:30 cutoff); pass an
     explicit YYYY-MM-DD to read history."""
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     from api.demo import _positions_trading_today, get_dummy_positions, position_visible_in_positions
 
     day = (date or "").strip() or _positions_trading_today()
-    open_positions = [p for p in await get_dummy_positions() if position_visible_in_positions(p)]
+    # The open book and the closed trail are independent reads. Run them
+    # together: on Atlas this removes one full round trip from every poll of
+    # the Positions page. The session ensure above stays sequential because it
+    # may reset the operational store at the date boundary.
+    raw_positions, closed = await asyncio.gather(
+        get_dummy_positions(),
+        dex.list_closed_positions(limit=200, date=day),
+    )
+    open_positions = [p for p in raw_positions if position_visible_in_positions(p)]
     return {
         "ok": True,
         "tradingDate": day,
         "open": [p for p in open_positions if p.get("netQuantity", 0) != 0],
-        "closed": await dex.list_closed_positions(limit=200, date=day),
+        "closed": closed,
     }
 
 
@@ -602,14 +706,14 @@ async def dummy_reports(range: str = "daily", limit: int = 60):
     """Day-wise P&L table (realized, charges, net, orders, turnover) with
     weekly/monthly aggregation. Daily rows come from the closed-session
     archive (frozen book) plus today's live book — all persisted in MongoDB."""
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **await dex.build_pnl_reports(range, limit)}
 
 
 # ---- broker comparison (read-only) ---------------------------------------------------
 @router.get("/comparison")
 async def dummy_comparison():
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **await dex.build_terminal_comparison()}
 
 
@@ -622,7 +726,7 @@ async def dummy_audit(category: str = "", limit: int = 100):
 # ---- watchlists (multi-list, terminal-scoped) ----------------------------------------
 @router.get("/watchlists")
 async def dummy_watchlists():
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, **await dex.list_watchlists()}
 
 
@@ -679,7 +783,7 @@ async def dummy_watchlist_remove_symbol(watchlist_id: str, body: WatchlistSymbol
 # ---- calendar events (terminal-scoped, layered over the market calendar) --------------
 @router.get("/calendar-events")
 async def dummy_calendar_events(date_from: str = "", date_to: str = ""):
-    await _ensure_session()
+    await _ensure_session(refresh_counters=False)
     return {"ok": True, "data": await dex.list_calendar_events(date_from, date_to)}
 
 

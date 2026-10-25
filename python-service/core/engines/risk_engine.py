@@ -183,10 +183,35 @@ class RiskEngine(EngineBase):
         trigger_price: Any = "0",
         expected_ltp: float = 0.0,
         max_order_value: float | None = None,
+        phase: str = "execute",
     ) -> RiskDecision:
+        """Validate an order intent against the active risk policy.
+
+        ``phase`` selects what this call is allowed to MUTATE:
+
+        ``"preview"``
+            A read-only pre-check (the UI asking "would this order pass?").
+            Every policy check still runs and the duplicate-suppression window
+            is still READ, so the verdict stays honest — but this call never
+            writes to the duplicate ring. A preview must not change the
+            outcome of the order that follows it: it used to, because the
+            preview itself was recorded as an order intent, so the real
+            placement seconds later was rejected as "duplicate order (same
+            intent within suppression window)". The trade page could therefore
+            never place an order in the same terminal — the UI's own safety
+            check poisoned the execution path.
+
+        ``"execute"``
+            A real order attempt (Order Engine → place / modify). This is the
+            default and the only phase that records the intent in the
+            duplicate-suppression ring.
+        """
         ok = False
         reasons: list[str] = []
         checks: dict[str, bool] = {}
+
+        # Unknown phases fail safe to "execute" (the stricter behaviour).
+        is_preview = str(phase).lower() in ("preview", "precheck", "dry_run")
 
         caps = capabilities_for(terminal)
 
@@ -235,14 +260,26 @@ class RiskEngine(EngineBase):
             reasons.append(f"quantity {qty} exceeds per-symbol limit {_MAX_QTY_PER_SYMBOL}")
 
         # 7) Duplicate-order suppression (same intent within the silo window).
+        #    The ring records EXECUTION attempts only: a preview reads it (so
+        #    the verdict stays honest) but never writes to it.
         now = time.time()
-        key = (terminal, (symbol or token), tx, product, ot_canon, qty, round(price_v, 2))
+        key = (
+            terminal,
+            (symbol or token),
+            tx,
+            product,
+            ot_canon,
+            qty,
+            round(price_v, 2),
+            round(trigger_v, 2),
+        )
         recent = [o for o in self._recent_orders if now - o["at"] <= _DUPLICATE_ORDER_SILO_SEC]
         if any(o["key"] == key for o in recent):
             reasons.append("duplicate order (same intent within suppression window)")
-        recent.append({"at": now, "key": key})
-        del self._recent_orders[: max(0, len(self._recent_orders) - _recent_orders_max)]
-        self._recent_orders.extend(recent[-200:])
+        if not is_preview:
+            recent.append({"at": now, "key": key})
+            del self._recent_orders[: max(0, len(self._recent_orders) - _recent_orders_max)]
+            self._recent_orders.extend(recent[-200:])
 
         # 8) Margin / available-funds gate (best-effort via the active adapter).
         margin_ok = await self._check_margin(terminal, price=last_price if last_price > 0 else None, qty=qty)

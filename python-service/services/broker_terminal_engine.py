@@ -17,6 +17,7 @@ The engine powers the Broker Terminal pages and the shared
 compatibility alias GET /api/dummy/comparison).
 """
 from __future__ import annotations
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -244,7 +245,11 @@ async def _dummy_row(adapter: Any) -> dict:
         return row
 
     row["connected"] = True
-    account, positions, orders = await get_dummy_account(), await get_dummy_positions(), await get_dummy_orders()
+    account, positions, orders = await asyncio.gather(
+        get_dummy_account(),
+        get_dummy_positions(),
+        get_dummy_orders(),
+    )
     snap = _agg_positions(positions)
     row.update({
         "funds": {

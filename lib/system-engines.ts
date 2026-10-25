@@ -11,7 +11,6 @@
  * (`/api/services/engines*`). Missing values surface as N/A — never invented.
  */
 
-import { useCallback, useEffect, useState } from 'react';
 import {
   Activity, Database, HardDrive, Server, ShoppingCart, Wifi, Zap,
   type LucideIcon,
@@ -272,6 +271,99 @@ export async function saveEngineConfig(
 }
 
 /* ------------------------------------------------------------------ */
+/* Control-plane document (WebSocket `engines` channel)               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The WHOLE control plane in one document.
+ *
+ * The backend pushes this on the `engines` WebSocket channel (every engine +
+ * the registry summary + the broker registry), so the Service Control Center
+ * renders from ONE socket subscription instead of four REST polls.
+ */
+export type EnginesDocument = {
+  /** Engine status keyed by engine id. */
+  engines: Record<string, EngineStatus>;
+  count: number;
+  summary: SystemSummary | null;
+  brokers: {
+    trading: BrokerStatus | null;
+    marketData: BrokerStatus | null;
+    list: BrokerOption[];
+  } | null;
+  generatedAt: string | null;
+};
+
+function asRecord(value: unknown): Record<string, any> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : {};
+}
+
+function asArray(value: unknown): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/**
+ * Normalise the control plane into one shape.
+ *
+ * Accepts both carriers of the same facts:
+ *   * the WebSocket document — `engines` is an OBJECT keyed by engine id;
+ *   * the REST `/overview` payload — `engines` is an ARRAY of statuses.
+ */
+export function normalizeEnginesDocument(raw: unknown): EnginesDocument | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const root = asRecord(raw);
+  const body = asRecord(root.data ?? root);
+
+  const rawEngines = body.engines ?? root.engines;
+  const engines: Record<string, EngineStatus> = {};
+  if (Array.isArray(rawEngines)) {
+    for (const row of rawEngines) {
+      const record = asRecord(row);
+      const id = String(record.engineId ?? '');
+      if (id) engines[id] = record as EngineStatus;
+    }
+  } else {
+    for (const [id, row] of Object.entries(asRecord(rawEngines))) {
+      engines[id] = asRecord(row) as EngineStatus;
+    }
+  }
+
+  const brokersRaw = asRecord(body.brokers ?? root.brokers);
+  const summaryRaw = asRecord(body.summary ?? root.summary);
+
+  return {
+    engines,
+    count: Number(body.count ?? root.count ?? Object.keys(engines).length),
+    summary: Object.keys(summaryRaw).length ? (summaryRaw as SystemSummary) : null,
+    brokers: {
+      trading: (asRecord(brokersRaw.trading) as BrokerStatus) ?? null,
+      marketData: (asRecord(brokersRaw.marketData ?? brokersRaw['market-data']) as BrokerStatus) ?? null,
+      list: asArray(brokersRaw.list) as BrokerOption[],
+    },
+    generatedAt: (body.generatedAt ?? root.generatedAt ?? null) as string | null,
+  };
+}
+
+/**
+ * One-shot REST load of the same control plane (the socket's fallback).
+ *
+ * Hits `/api/services/engines/overview` — ONE request for the engines, the
+ * summary and the broker registry.
+ */
+export async function loadEnginesOverview(): Promise<EnginesDocument> {
+  const res = await fetch(`${ENGINES_API}/overview`, { cache: 'no-store' });
+  const body = await res.json().catch(() => null);
+  if (!res.ok || body?.ok === false) {
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+  const normalized = normalizeEnginesDocument(body?.data ?? body);
+  if (!normalized) throw new Error('malformed control-plane payload');
+  return normalized;
+}
+
+/* ------------------------------------------------------------------ */
 /* Formatting helpers (N/A for missing — never invented)               */
 /* ------------------------------------------------------------------ */
 
@@ -319,44 +411,8 @@ export function isRunningState(state: string): boolean {
 }
 
 /* ------------------------------------------------------------------ */
-/* Polling + action helpers                                            */
+/* Action helpers                                                      */
 /* ------------------------------------------------------------------ */
-
-export function usePoll<T>(
-  path: string | null,
-  intervalMs: number,
-): { data: T | null; error: string | null; refresh: () => void } {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    if (!path) return;
-    try {
-      const res = await fetch(path, { cache: 'no-store' });
-      const body = await res.json().catch(() => null);
-      if (!res.ok || body == null) {
-        setError(body?.error ?? `HTTP ${res.status}`);
-        return;
-      }
-      if (body?.ok === false && body?.data === undefined) {
-        setError(body?.error ?? 'request failed');
-        return;
-      }
-      setData((body.data ?? body) as T);
-      setError(null);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'fetch failed');
-    }
-  }, [path]);
-
-  useEffect(() => {
-    refresh();
-    const timer = setInterval(refresh, intervalMs);
-    return () => clearInterval(timer);
-  }, [refresh, intervalMs]);
-
-  return { data, error, refresh };
-}
 
 export async function postEngineAction(
   path: string,

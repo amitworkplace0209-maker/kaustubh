@@ -154,6 +154,7 @@ class NoGhostRowsTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         import api.demo as demo
+        import services.dummy_session as ds
 
         self.demo = demo
         self.fakedb = FakeDB()
@@ -170,6 +171,9 @@ class NoGhostRowsTest(unittest.IsolatedAsyncioTestCase):
         self._today = mock.patch.object(
             demo, "_positions_trading_today", return_value="2026-10-07")
         self._today.start()
+        # Also patch dummy_session to return the test date for tradingDate stamps
+        self._ds_date = mock.patch.object(ds, "session_date_for", return_value="2026-10-07")
+        self._ds_date.start()
         self.closed_records = []
 
         async def _record(**kw):

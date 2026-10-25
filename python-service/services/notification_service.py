@@ -75,6 +75,48 @@ async def _category_enabled(category: str) -> bool:
         return True
 
 
+def category_gate_keys(categories: list[str] | set[str] | tuple[str, ...]) -> list[str]:
+    """The distinct settings keys that gate these rule categories."""
+    return sorted({_CATEGORY_GATE[c] for c in categories if _CATEGORY_GATE.get(c)})
+
+
+async def category_enabled_many(
+    categories: list[str] | set[str] | tuple[str, ...],
+    values: dict | None = None,
+) -> dict[str, bool]:
+    """Resolve many rule categories to gates with ONE settings read.
+
+    Several rule categories share a settings key (``database`` and
+    ``database:write`` both use ``notif_database_alerts``), so calling
+    ``_category_enabled`` per category repeats the same network round trip.
+    ``values`` lets a caller that already batched these keys reuse that read.
+    """
+    requested = list(categories)
+    by_key: dict[str, list[str]] = {}
+    for category in requested:
+        key = _CATEGORY_GATE.get(category)
+        by_key.setdefault(key or "", []).append(category)
+    wanted = [key for key in by_key if key]
+    if values is None:
+        if not wanted:
+            return {category: True for category in requested}
+        try:
+            from services.settings_service import get_settings_many
+            values = await get_settings_many(wanted)
+        except Exception:
+            values = {}
+    out: dict[str, bool] = {}
+    for key, cats in by_key.items():
+        if not key:
+            for category in cats:
+                out[category] = True
+            continue
+        value = values.get(key)
+        for category in cats:
+            out[category] = bool(value) if value is not None else True
+    return out
+
+
 async def _notify_globals_passes(severity: str) -> dict:
     """Notification engine toggles + severity threshold check."""
     engine = await _notification_globals()

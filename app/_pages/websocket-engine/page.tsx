@@ -1,10 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
-  Activity, AlertTriangle, CheckCircle2, Cpu, Gauge, Layers, MemoryStick,
+  Activity, AlertTriangle, CheckCircle2, Cpu, Database, Gauge, Layers, MemoryStick,
   Pin as PinIcon, Play, Pause, RefreshCw, RotateCw, Rss, Save, ScrollText,
-  Search, Settings2, Trash2, Wifi, WifiOff, Zap,
+  Search, Settings2, ShieldCheck, Trash2, Wifi, WifiOff, Workflow, Zap,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -53,10 +53,10 @@ function tierBadge(level: number | string | undefined | null) {
   const l = Number(level);
   const label = l === 4 ? 'L4' : l === 8 ? 'L8' : l === 16 ? 'L16' : l ? `L${l}` : 'UNSET';
   const tone =
-    label === 'L8' ? 'border-fuchsia-500/40 bg-fuchsia-500/15 text-fuchsia-300'
-    : label === 'L16' ? 'border-purple-500/40 bg-purple-500/15 text-purple-300'
-    : label === 'L4' ? 'border-slate-500/40 bg-slate-500/10 text-slate-300'
-    : 'border-zinc-500/40 bg-zinc-500/10 text-zinc-300';
+    label === 'L8' ? 'border-fuchsia-500/40 bg-fuchsia-500/15 text-fuchsia-700'
+    : label === 'L16' ? 'border-purple-500/40 bg-purple-500/15 text-purple-700'
+    : label === 'L4' ? 'border-slate-500/40 bg-slate-500/10 text-slate-700'
+    : 'border-zinc-500/40 bg-zinc-500/10 text-zinc-700';
   return <Badge variant="outline" className={tone}>{label}</Badge>;
 }
 
@@ -105,13 +105,13 @@ function AgeTicker({ ts }: { ts?: string | number | null }) {
 
 type Accent = 'cyan' | 'emerald' | 'violet' | 'amber' | 'rose' | 'sky' | 'fuchsia' | 'slate';
 const ACCENT: Record<Accent, { bar: string; chip: string; value: string }> = {
-  cyan: { bar: 'bg-cyan-400', chip: 'bg-gradient-to-br from-cyan-500 to-sky-600 text-white shadow-lg shadow-cyan-500/25', value: 'text-cyan-300' },
-  emerald: { bar: 'bg-emerald-400', chip: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/25', value: 'text-emerald-300' },
-  violet: { bar: 'bg-violet-400', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/25', value: 'text-violet-300' },
-  amber: { bar: 'bg-amber-400', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25', value: 'text-amber-300' },
-  rose: { bar: 'bg-rose-400', chip: 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg shadow-rose-500/25', value: 'text-rose-300' },
+  cyan: { bar: 'bg-cyan-400', chip: 'bg-gradient-to-br from-cyan-500 to-sky-600 text-white shadow-lg shadow-cyan-500/25', value: 'text-cyan-700' },
+  emerald: { bar: 'bg-emerald-400', chip: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/25', value: 'text-emerald-700' },
+  violet: { bar: 'bg-violet-400', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/25', value: 'text-violet-700' },
+  amber: { bar: 'bg-amber-400', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25', value: 'text-amber-700' },
+  rose: { bar: 'bg-rose-400', chip: 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg shadow-rose-500/25', value: 'text-rose-700' },
   sky: { bar: 'bg-sky-400', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg shadow-sky-500/25', value: 'text-sky-300' },
-  fuchsia: { bar: 'bg-fuchsia-400', chip: 'bg-gradient-to-br from-fuchsia-500 to-pink-600 text-white shadow-lg shadow-fuchsia-500/25', value: 'text-fuchsia-300' },
+  fuchsia: { bar: 'bg-fuchsia-400', chip: 'bg-gradient-to-br from-fuchsia-500 to-pink-600 text-white shadow-lg shadow-fuchsia-500/25', value: 'text-fuchsia-700' },
   slate: { bar: 'bg-slate-400', chip: 'bg-gradient-to-br from-slate-500 to-zinc-600 text-white shadow-lg shadow-slate-500/25', value: '' },
 };
 
@@ -203,10 +203,10 @@ function OverviewPanel({ status, metrics, resources, owner, connected, loading, 
                 <div key={s} className="flex min-w-0 flex-1 items-center last:flex-none">
                   <div className="flex min-w-0 flex-col items-center gap-1">
                     <span className={cn('flex h-6 w-6 items-center justify-center rounded-full border text-[9px] font-bold',
-                      cur ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200 shadow' : done ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300' : 'border-border text-muted-foreground/50')}>
+                      cur ? 'border-cyan-400 bg-cyan-500/20 text-cyan-700 shadow' : done ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-700' : 'border-border text-muted-foreground/50')}>
                       {i + 1}
                     </span>
-                    <span className={cn('whitespace-nowrap font-mono text-[8px]', cur ? 'font-bold text-cyan-200' : done ? 'text-emerald-300/80' : 'text-muted-foreground/50')}>{s}</span>
+                    <span className={cn('whitespace-nowrap font-mono text-[8px]', cur ? 'font-bold text-cyan-700' : done ? 'text-emerald-700/80' : 'text-muted-foreground/50')}>{s}</span>
                   </div>
                   {i < LIFECYCLE.length - 1 && <span className={cn('mx-0.5 mb-4 h-px w-4 shrink-0 sm:w-8', done ? 'bg-emerald-500/50' : 'bg-border')} />}
                 </div>
@@ -261,14 +261,14 @@ function OverviewPanel({ status, metrics, resources, owner, connected, loading, 
           </CardHeader>
           <CardContent className="pt-3">
             <div className="grid grid-cols-2 gap-2 text-xs">
-              {([['Subscriptions', status?.subscription_count, 'text-violet-300'], ['Desired', status?.desired_subscriptions, ''], ['Consumers', status?.active_consumers, 'text-cyan-300'], ['Routes', status?.active_routes, ''], ['Raw tokens', status?.raw_bucket_tokens, ''], ['Pins', status?.pins, 'text-amber-300'], ['WS id', null, ''], ['Session', null, '']] as const).slice(0, 6).map(([l, v, tone]) => (
-                <div key={l} className="rounded-xl border border-border/50 bg-white/[0.02] px-2.5 py-2">
+              {([['Subscriptions', status?.subscription_count, 'text-violet-700'], ['Desired', status?.desired_subscriptions, ''], ['Consumers', status?.active_consumers, 'text-cyan-700'], ['Routes', status?.active_routes, ''], ['Raw tokens', status?.raw_bucket_tokens, ''], ['Pins', status?.pins, 'text-amber-700'], ['WS id', null, ''], ['Session', null, '']] as const).slice(0, 6).map(([l, v, tone]) => (
+                <div key={l} className="rounded-xl border border-border/50 bg-black/[0.03] px-2.5 py-2">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{l}</p>
                   <p className={cn('font-mono text-base font-bold tabular-nums', tone)}>{fmtNum(v as number | undefined)}</p>
                 </div>
               ))}
             </div>
-            <div className="mt-2 space-y-1 rounded-xl border border-border/50 bg-white/[0.02] p-2.5 text-[11px]">
+            <div className="mt-2 space-y-1 rounded-xl border border-border/50 bg-black/[0.03] p-2.5 text-[11px]">
               <p className="flex justify-between"><span className="text-muted-foreground">WS id</span><span className="truncate font-mono" title={owner?.websocket_id}>{owner?.websocket_id ?? '—'}</span></p>
               <p className="flex justify-between"><span className="text-muted-foreground">Session</span><span className="truncate font-mono" title={owner?.session_id}>{owner?.session_id ?? '—'}</span></p>
               <p className="flex justify-between"><span className="text-muted-foreground">Internet</span><span className="font-mono">{owner?.internet_ok == null ? '—' : owner.internet_ok ? 'OK' : 'DOWN'}</span></p>
@@ -307,10 +307,10 @@ function ConnectionPanel({ owner, connected, onAction, busy, result }: any) {
           </div>
           {result && (
             <p className="text-xs"><span className="text-muted-foreground">{result.action}:</span> {result.ok
-              ? <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-300">OK</Badge>
-              : <Badge variant="outline" className="border-rose-500/40 bg-rose-500/10 text-rose-300">Failed — {result.error}</Badge>}</p>
+              ? <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700">OK</Badge>
+              : <Badge variant="outline" className="border-rose-500/40 bg-rose-500/10 text-rose-700">Failed — {result.error}</Badge>}</p>
           )}
-          <p className="rounded-xl border border-border/50 bg-white/[0.02] p-2.5 font-mono text-[11px] leading-5">
+          <p className="rounded-xl border border-border/50 bg-black/[0.03] p-2.5 font-mono text-[11px] leading-5">
             {owner?.lifecycle_state ?? 'UNKNOWN'} · {owner?.supervisor_state ?? 'UNKNOWN'} · {owner?.feed_state ?? 'UNKNOWN'}
           </p>
         </CardContent>
@@ -385,12 +385,12 @@ function FeedPanel({ live, liveError, loading, onRefresh }: any) {
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-3">
-        {liveError ? <p className="py-4 text-center text-sm text-rose-300">Live feed unavailable: {liveError} <button onClick={onRefresh} className="underline">Retry</button></p>
+        {liveError ? <p className="py-4 text-center text-sm text-rose-700">Live feed unavailable: {liveError} <button onClick={onRefresh} className="underline">Retry</button></p>
         : loading ? <Skeleton rows={5} />
         : rows.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">{q ? `No match for "${q}".` : 'No live ticks yet — connect + subscribe first.'}</p> : (
           <TableShell head={<><TH>Symbol</TH><TH>Token</TH><TH>Feed</TH><TH right>LTP</TH><TH>Rate</TH><TH right>In window</TH><TH>Last tick</TH></>}>
             {rows.map((r: any, i: number) => (
-              <tr key={`${r.exchange_segment}|${r.instrument_token}|${i}`} className="border-t border-border/40 transition-colors hover:bg-white/[0.03]">
+              <tr key={`${r.exchange_segment}|${r.instrument_token}|${i}`} className="border-t border-border/40 transition-colors hover:bg-black/[0.02]">
                 <td className="px-2.5 py-1.5 font-medium">{r.symbol || '—'}</td>
                 <td className="px-2.5 py-1.5 font-mono text-muted-foreground">{r.exchange_segment}|{r.instrument_token}</td>
                 <td className="px-2.5 py-1.5"><span className="flex items-center gap-1">{tierBadge(r.feed_level)}{r.feed_type && <span className="text-[10px] text-muted-foreground">{r.feed_type}</span>}</span></td>
@@ -398,7 +398,7 @@ function FeedPanel({ live, liveError, loading, onRefresh }: any) {
                 <td className="px-2.5 py-1.5">
                   <span className="flex items-center gap-1.5">
                     <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted/70"><span className="block h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-400" style={{ width: `${(Number(r.ticks_per_second ?? 0) / maxTps) * 100}%` }} /></span>
-                    <span className="font-mono tabular-nums text-cyan-300">{Number(r.ticks_per_second ?? 0).toFixed(2)}</span>
+                    <span className="font-mono tabular-nums text-cyan-700">{Number(r.ticks_per_second ?? 0).toFixed(2)}</span>
                   </span>
                 </td>
                 <td className="px-2.5 py-1.5 text-right font-mono tabular-nums">{fmtNum(r.ticks_in_window)}</td>
@@ -449,12 +449,12 @@ function QualityPanel({ quality, qualityError, loading, onRefresh }: any) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 pt-3">
-        {qualityError ? <p className="py-3 text-center text-sm text-rose-300">Quality unavailable: {qualityError} <button onClick={onRefresh} className="underline">Retry</button></p>
+        {qualityError ? <p className="py-3 text-center text-sm text-rose-700">Quality unavailable: {qualityError} <button onClick={onRefresh} className="underline">Retry</button></p>
         : loading ? <Skeleton rows={4} /> : (
           <>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {([['Instruments', overall.instrument_count, ''], ['Msgs/s', overall.messages_per_second, ''], ['Duplicates', overall.duplicate_total, Number(overall.duplicate_total) > 0 ? 'text-amber-300' : ''], ['Seq gaps', overall.sequence_gap_total, Number(overall.sequence_gap_total) > 0 ? 'text-rose-300' : '']] as const).map(([l, v, tone]) => (
-                <div key={l} className="rounded-xl border border-border/50 bg-white/[0.02] px-2.5 py-2">
+              {([['Instruments', overall.instrument_count, ''], ['Msgs/s', overall.messages_per_second, ''], ['Duplicates', overall.duplicate_total, Number(overall.duplicate_total) > 0 ? 'text-amber-700' : ''], ['Seq gaps', overall.sequence_gap_total, Number(overall.sequence_gap_total) > 0 ? 'text-rose-700' : '']] as const).map(([l, v, tone]) => (
+                <div key={l} className="rounded-xl border border-border/50 bg-black/[0.03] px-2.5 py-2">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{l}</p>
                   <p className={cn('font-mono text-base font-bold tabular-nums', tone)}>{fmtNum(v as number | undefined)}</p>
                 </div>
@@ -483,9 +483,9 @@ function QualityPanel({ quality, qualityError, loading, onRefresh }: any) {
             <TableShell head={<><TH>Instrument</TH><TH>Status</TH><TH right>Msgs</TH><TH right>Dup</TH><TH right>Seq gaps</TH><TH>Last feed</TH></>} maxH="max-h-72">
               {rows.length === 0 && <tr><td colSpan={6} className="px-2.5 py-4 text-center text-muted-foreground">No rows match.</td></tr>}
               {rows.slice(0, 200).map((r: any, i: number) => (
-                <tr key={`${r.instrument_key}|${i}`} className="border-t border-border/40 transition-colors hover:bg-white/[0.03]">
+                <tr key={`${r.instrument_key}|${i}`} className="border-t border-border/40 transition-colors hover:bg-black/[0.02]">
                   <td className="px-2.5 py-1.5 font-mono">{r.instrument_key}</td>
-                  <td className="px-2.5 py-1.5"><Badge variant="outline" className={r.status === 'LIVE' ? 'border-emerald-500/40 text-emerald-300' : r.status === 'STALE' ? 'border-amber-500/40 text-amber-300' : r.status === 'NO_FEED' ? 'border-rose-500/40 text-rose-300' : ''}>{r.status}</Badge></td>
+                  <td className="px-2.5 py-1.5"><Badge variant="outline" className={r.status === 'LIVE' ? 'border-emerald-500/40 text-emerald-700' : r.status === 'STALE' ? 'border-amber-500/40 text-amber-700' : r.status === 'NO_FEED' ? 'border-rose-500/40 text-rose-700' : ''}>{r.status}</Badge></td>
                   <td className="px-2.5 py-1.5 text-right font-mono tabular-nums">{fmtNum(r.message_count)}</td>
                   <td className="px-2.5 py-1.5 text-right font-mono tabular-nums">{fmtNum(r.duplicate_count)}</td>
                   <td className="px-2.5 py-1.5 text-right font-mono tabular-nums">{fmtNum(r.sequence_gaps)}</td>
@@ -552,7 +552,7 @@ function SubscriptionsPanel({ subs, loading, onSubscribe, onUnsubscribe }: any) 
         ) : (
           <div className="max-h-96 space-y-1 overflow-auto">
             {rows.map((s: any, i: number) => (
-              <div key={`${s.exchange_segment}|${s.instrument_token}|${i}`} className="flex items-center justify-between gap-2 rounded-lg border border-border/50 bg-white/[0.02] px-3 py-1.5 text-xs">
+              <div key={`${s.exchange_segment}|${s.instrument_token}|${i}`} className="flex items-center justify-between gap-2 rounded-lg border border-border/50 bg-black/[0.03] px-3 py-1.5 text-xs">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="shrink-0 font-mono text-muted-foreground">{s.exchange_segment}</span>
                   <span className="shrink-0 font-mono font-bold">{s.instrument_token}</span>
@@ -604,11 +604,11 @@ function PinsPanel({ pins, loading, onAdd, onRemove }: any) {
         ) : (
           <div className="max-h-80 space-y-1 overflow-auto">
             {rows.map((p: any, i: number) => (
-              <div key={`${p.instrument_key}|${i}`} className="flex items-center justify-between gap-2 rounded-lg border border-border/50 bg-white/[0.02] px-3 py-1.5 text-xs">
+              <div key={`${p.instrument_key}|${i}`} className="flex items-center justify-between gap-2 rounded-lg border border-border/50 bg-black/[0.03] px-3 py-1.5 text-xs">
                 <div className="min-w-0">
                   <span className="font-mono font-bold">{p.instrument_key}</span>
                   <span className="ml-2 text-muted-foreground">{p.symbol || ''}</span>
-                  <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">{p.source}</span>
+                  <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700">{p.source}</span>
                 </div>
                 <Button size="sm" variant="ghost" aria-label="Remove pin" onClick={() => onRemove(p.instrument_key)}><Trash2 className="h-3 w-3 text-rose-400" /></Button>
               </div>
@@ -644,9 +644,9 @@ function ConsumersPanel({ consumers, loading, onToggle }: any) {
           <span className="rounded-lg bg-gradient-to-br from-sky-500 to-blue-600 p-1.5 text-white shadow"><Layers className="h-3.5 w-3.5" /></span>
           Consumers & routes
           <Badge variant="outline" className="tabular-nums">{fmtNum(rows.length)} shown</Badge>
-          {offCount > 0 && <Badge variant="outline" className="border-amber-500/40 text-amber-300 tabular-nums">{offCount} off</Badge>}
+          {offCount > 0 && <Badge variant="outline" className="border-amber-500/40 text-amber-700 tabular-nums">{offCount} off</Badge>}
           <span className="ml-auto flex items-center gap-1.5">
-            <button onClick={() => setOnlyOff((v) => !v)} className={cn('rounded-full border px-2.5 py-1 text-[11px] font-semibold', onlyOff ? 'border-amber-500/50 bg-amber-500/15 text-amber-200' : 'border-border text-muted-foreground')}>Disabled only</button>
+            <button onClick={() => setOnlyOff((v) => !v)} className={cn('rounded-full border px-2.5 py-1 text-[11px] font-semibold', onlyOff ? 'border-amber-500/50 bg-amber-500/15 text-amber-800' : 'border-border text-muted-foreground')}>Disabled only</button>
             <span className="relative">
               <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
               <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter…" className="h-7 w-36 pl-7 text-[11px]" />
@@ -660,7 +660,7 @@ function ConsumersPanel({ consumers, loading, onToggle }: any) {
         ) : (
           <TableShell head={<><TH>Consumer · route</TH><TH>Type</TH><TH>Profile</TH><TH>Priority</TH><TH right>Queue</TH><TH right>Delayed/Drop</TH><TH>On/Off</TH></>} maxH="max-h-[28rem]">
             {rows.map((c: any) => (
-              <tr key={c.consumer_id} className="border-t border-border/40 transition-colors hover:bg-white/[0.03]">
+              <tr key={c.consumer_id} className="border-t border-border/40 transition-colors hover:bg-black/[0.02]">
                 <td className="px-2.5 py-1.5 font-mono">{c.consumer_id} <span className="text-muted-foreground">{c.route_id}</span></td>
                 <td className="px-2.5 py-1.5">{c.consumer_type}</td>
                 <td className="px-2.5 py-1.5 font-mono">{c.profile_id}</td>
@@ -725,7 +725,7 @@ function FieldVerificationPanel({ fv, loading, onRefresh }: any) {
             <TableShell head={<><TH>#</TH><TH>Schema field</TH><TH>Status</TH><TH>Kotak attr</TH><TH>Feed level</TH><TH>D/D</TH></>}>
               {fvRows.length === 0 && <tr><td colSpan={6} className="px-2.5 py-4 text-center text-muted-foreground">No fields match.</td></tr>}
               {fvRows.slice(0, 120).map((r) => (
-                <tr key={r.num} className="border-t border-border/40 transition-colors hover:bg-white/[0.03]">
+                <tr key={r.num} className="border-t border-border/40 transition-colors hover:bg-black/[0.02]">
                   <td className="px-2.5 py-1.5 font-mono tabular-nums">{r.num}</td>
                   <td className="px-2.5 py-1.5 font-medium">{r.field}</td>
                   <td className="px-2.5 py-1.5"><Badge className={statusTone(r.status)}>{statusShort(r.status)}</Badge></td>
@@ -764,7 +764,7 @@ function RawStreamPanel({ rawData, rawTok, setRawTok, loading, onRefresh }: any)
         ) : (
           <TableShell head={<><TH>Symbol</TH><TH>Feed</TH><TH right>LTP</TH><TH right>Vol</TH><TH right>Buy/Sell</TH><TH>Received</TH><TH>Raw ref</TH></>} maxH="max-h-96">
             {(rawData ?? []).map((r: any, i: number) => (
-              <tr key={i} className="border-t border-border/40 transition-colors hover:bg-white/[0.03]">
+              <tr key={i} className="border-t border-border/40 transition-colors hover:bg-black/[0.02]">
                 <td className="px-2.5 py-1.5 font-medium">{r.trading_symbol ?? `${r.exchange_segment}|${r.instrument_token}`}</td>
                 <td className="px-2.5 py-1.5 font-mono">{r.feed_type}{r.feed_level != null ? ` L${r.feed_level}` : ''}</td>
                 <td className="px-2.5 py-1.5 text-right font-mono tabular-nums">{r.fields?.ltp ?? '—'}</td>
@@ -902,7 +902,7 @@ function HistoryPanel({ history, events, loading, onRefreshHistory, onRefreshEve
           ) : (
             <div className="max-h-72 space-y-1 overflow-auto">
               {evFiltered.slice(0, 150).map((r: any, i: number) => (
-                <div key={i} className="flex items-center gap-2 rounded-lg border border-border/40 bg-white/[0.02] px-2 py-1.5 text-[11px]">
+                <div key={i} className="flex items-center gap-2 rounded-lg border border-border/40 bg-black/[0.03] px-2 py-1.5 text-[11px]">
                   <span className={cn('h-2 w-2 shrink-0 rounded-full', r.severity === 'error' ? 'bg-rose-400' : r.severity === 'warn' ? 'bg-amber-400' : 'bg-sky-400')} />
                   <span className="shrink-0 font-mono font-semibold">{r.event_type}</span>
                   <span className="min-w-0 flex-1 truncate text-muted-foreground" title={r.message}>{r.message}</span>
@@ -967,10 +967,235 @@ function ConfigPanel({ config, loading, onRefresh }: any) {
 }
 
 /* ------------------------------------------------------------------ */
+/* REAL-TIME FLOW — pipeline canvas (input → core → output)             */
+/* ------------------------------------------------------------------ */
+function NodeDot({ online, label }: { online: boolean; label: string }) {
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-bold tabular-nums',
+      online ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700' : 'border-rose-500/50 bg-rose-500/10 text-rose-700')}>
+      <span className={cn('h-1.5 w-1.5 rounded-full', online ? 'animate-pulse bg-emerald-500' : 'bg-rose-500')} />
+      {label}
+    </span>
+  );
+}
+
+/** Vertical animated connector — streams only while data actually flows. */
+function VPipe({ active, label, color }: { active: boolean; label?: string; color: string }) {
+  return (
+    <div className="flex flex-col items-center gap-0.5 py-0.5">
+      <span
+        className={cn('ws-pipe h-7 w-2.5 rounded-sm', active ? 'is-flowing' : 'is-idle')}
+        style={{ '--flow-color': color } as CSSProperties}
+      />
+      {active && <span className={cn('ws-packet-drop h-1.5 w-1.5 rounded-full')} style={{ background: color }} />}
+      {label && <span className="font-mono text-[9px] text-muted-foreground" title={label}>{label}</span>}
+    </div>
+  );
+}
+
+/* Tiny radix-free sparkline built from REAL sampled tick rates. */
+function TpsSpark({ samples }: { samples: number[] }) {
+  if (samples.length < 2) return null;
+  const w = 96; const h = 22;
+  const max = Math.max(1, ...samples);
+  const pts = samples.map((v, i) => `${(i / (samples.length - 1)) * w},${h - (v / max) * (h - 2) - 1}`).join(' ');
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0" aria-hidden>
+      <polyline points={pts} fill="none" stroke="url(#tpsGrad)" strokeWidth="2" strokeLinecap="round" />
+      <defs><linearGradient id="tpsGrad" x1="0" x2="1"><stop offset="0%" stopColor="#8b5cf6" /><stop offset="100%" stopColor="#06b6d4" /></linearGradient></defs>
+    </svg>
+  );
+}
+
+function FlowPanel({ flow, flowError, loading, samples, onRefresh }: any) {
+  const inp = flow?.input ?? {};
+  const core = flow?.core ?? {};
+  const out = flow?.output ?? {};
+  const rates = inp.rates ?? {};
+  const mps = Number(rates.messages_per_second ?? 0);
+  const tpsFlow = Number(rates.ticks_per_second ?? 0);
+  const flowing = mps > 0 || tpsFlow > 0;
+  const levels = core.feed_levels ?? {};
+  const qCounts = core.quality_counts ?? {};
+  const lat = core.latency ?? {};
+  const consumers = (out.consumers ?? []) as any[];
+  const stages = core.pipeline_stages ?? {};
+  const stageEntries = Object.entries(stages) as Array<[string, any]>;
+  const life = inp.lifecycle ?? 'UNKNOWN';
+  const online = inp.state === 'CONNECTED' && inp.internet_ok !== false;
+  const tpsAvg5 = Number(rates.ticks_5s_average ?? 0);
+  const mpsAvg5 = Number(rates.messages_5s_average ?? 0);
+
+  return (
+    <div className="space-y-4">
+      {/* STATUS BAR */}
+      <Card className="relative overflow-hidden border shadow-soft">
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-violet-500 via-cyan-500 to-emerald-500" />
+        <CardContent className="flex flex-wrap items-center gap-2.5 p-3.5">
+          <NodeDot online={online} label={online ? 'WS#1 ONLINE — feed channel open' : 'WS#1 OFFLINE — no upstream data'} />
+          <Badge variant="outline" className="border-violet-500/40 bg-violet-500/10 font-mono tabular-nums text-violet-700">msgs {mps.toFixed(1)}/s · 5s avg {mpsAvg5.toFixed(1)}</Badge>
+          <Badge variant="outline" className="border-cyan-500/40 bg-cyan-500/10 font-mono tabular-nums text-cyan-700">ticks {tpsFlow.toFixed(1)}/s · 5s avg {tpsAvg5.toFixed(1)}</Badge>
+          <Badge variant="outline" className="border-sky-500/40 bg-sky-500/10 font-mono tabular-nums text-sky-700">60s msgs {fmtNum(rates.messages_60s_average)}</Badge>
+          <span className="ml-auto flex items-center gap-2" title="tick/s sampled on every refresh (real values)">
+            <TpsSpark samples={samples} />
+            <button onClick={onRefresh} aria-label="Refresh flow" className="text-muted-foreground hover:text-foreground"><RefreshCw className="h-3.5 w-3.5" /></button>
+          </span>
+          {!loading && flowError && <span className="w-full text-xs text-rose-700">Flow unavailable: {flowError}</span>}
+        </CardContent>
+      </Card>
+
+      {/* STAGE 1 — INPUT */}
+      <Card className={cn('overflow-hidden border shadow-soft', online ? 'border-emerald-500/30' : 'border-rose-500/30')}>
+        <CardHeader className={cn('border-b pb-2', online ? 'border-emerald-500/20 bg-emerald-500/[0.06]' : 'border-rose-500/20 bg-rose-500/[0.05]')}>
+          <CardTitle className="flex flex-wrap items-center gap-2 text-xs">
+            <span className={cn('rounded-lg p-1.5', online ? 'bg-emerald-500/10 text-emerald-700' : 'bg-rose-500/10 text-rose-700')}>
+              <Wifi className="h-3.5 w-3.5" />
+            </span>
+            INPUT · broker upstream
+            <NodeDot online={online} label={String(inp.state ?? '—')} />
+            {!loading && flowError && <Badge variant="outline" className="ml-auto border-rose-500/40 text-rose-700">engine unavailable</Badge>}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-x-6 gap-y-1 pt-3 text-xs sm:grid-cols-2">
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">upstream owner</span><span className="font-mono font-semibold">{inp.owner ?? '—'}</span></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">supervisor</span><span className="truncate font-mono">{inp.supervisor ?? '—'}</span></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">lifecycle</span><span className="font-mono">{life}</span></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">feed state</span><span className="font-mono font-semibold">{inp.feed_state ?? '—'}</span></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">internet</span><NodeDot online={inp.internet_ok === true} label={inp.internet_ok == null ? '—' : inp.internet_ok ? 'OK' : 'DOWN'} /></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">session auth</span><span className="truncate font-mono">{[inp.session_broker, inp.session_state].filter(Boolean).join(' · ') || '—'}</span></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">ws id</span><span className="max-w-[140px] truncate font-mono" title={inp.websocket_id ?? ''}>{inp.websocket_id ?? '—'}</span></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">upstream subscribed</span><span className="font-mono tabular-nums">{fmtNum(inp.subscriptions_upstream)}</span></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">last broker message</span><AgeTicker ts={inp.last_message_at} /></p>
+          <p className="flex justify-between gap-2"><span className="text-muted-foreground">last tick</span><AgeTicker ts={inp.last_tick_at} /></p>
+          {inp.disconnect_reason && <p className="sm:col-span-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-1.5 text-[11px]">last disconnect: <span className="font-mono">{inp.disconnect_reason}{inp.disconnect_reason_code ? ` (${inp.disconnect_reason_code})` : ''}</span> · reconnects <span className="font-mono font-bold">{fmtNum(inp.reconnect_count)}</span></p>}
+        </CardContent>
+      </Card>
+
+      <VPipe active={flowing} color="#06b6d4" label={flowing ? `${mps.toFixed(1)} msgs/s in` : 'idle — no inbound frames'} />
+
+      {/* STAGE 2 — CORE */}
+      <Card className="overflow-hidden border-violet-500/30 shadow-soft">
+        <CardHeader className="border-b border-violet-500/20 bg-violet-500/[0.06] pb-2">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-lg bg-violet-500/10 p-1.5 text-violet-700"><ShieldCheck className="h-3.5 w-3.5" /></span>
+            CORE · registry, validation & quality
+            <Badge variant="outline" className="ml-auto tabular-nums text-violet-700">subs {fmtNum(core.subscriptions)} / desired {fmtNum(core.desired)}</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2.5 pt-3">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {([['Subscriptions', core.subscriptions, 'text-violet-700'], ['Desired', core.desired, ''], ['Pins', core.pins, 'text-amber-700'], ['Raw tokens', core.raw_tokens, 'text-slate-700']] as const).map(([l, v, tone]) => (
+              <div key={l} className="rounded-xl border border-border/60 bg-black/[0.02] px-2.5 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{l}</p>
+                <p className={cn('font-mono text-lg font-extrabold tabular-nums', tone)}>{fmtNum(v as number)}</p>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            {(['L4', 'L8', 'L16', 'INDEX'] as const).map((k) => (
+              <div key={k} className="flex items-center justify-between rounded-lg border border-border/60 bg-black/[0.02] px-2.5 py-1.5 text-[11px]">
+                <span className={cn('rounded px-1.5 font-mono font-bold', k === 'L8' ? 'bg-fuchsia-500/15 text-fuchsia-700' : k === 'L16' ? 'bg-purple-500/15 text-purple-700' : k === 'L4' ? 'bg-slate-500/15 text-slate-700' : 'bg-sky-500/15 text-sky-700')}>{k}</span>
+                <span className="font-mono tabular-nums">{fmtNum(Number(levels[k] ?? 0))}</span>
+              </div>
+            ))}
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-black/[0.02] px-2.5 py-1.5 text-[11px]" title="quality snapshot rate">
+              <span className="font-mono font-bold text-cyan-700">q-rate</span>
+              <span className="font-mono tabular-nums">{fmtNum(core.quality_msg_rate)}</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(['LIVE', 'DEGRADED', 'STALE', 'NO_FEED'] as const).map((k) => {
+              const c = Number(qCounts[k] ?? 0);
+              return (
+                <Badge key={k} variant="outline" className={cn('gap-1 tabular-nums font-bold',
+                  k === 'LIVE' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
+                  : k === 'STALE' ? 'border-amber-500/40 bg-amber-500/10 text-amber-700'
+                  : k === 'DEGRADED' ? 'border-yellow-500/40 bg-yellow-500/10 text-yellow-700'
+                  : 'border-slate-500/40 bg-slate-500/10 text-slate-700')}>
+                  {k} {fmtNum(c)}
+                </Badge>
+              );
+            })}
+            <Badge variant="outline" className="tabular-nums text-muted-foreground">p50 {lat.p50_ms != null ? `${Number(lat.p50_ms).toFixed(1)}ms` : '—'}</Badge>
+            <Badge variant="outline" className="tabular-nums text-muted-foreground">p95 {lat.p95_ms != null ? `${Number(lat.p95_ms).toFixed(1)}ms` : '—'}</Badge>
+            <Badge variant="outline" className="tabular-nums text-muted-foreground">dupes {fmtNum(core.duplicate_total)} · invalid {fmtNum(core.invalid_total)}</Badge>
+          </div>
+          {stageEntries.length === 0 && (
+            <p className="rounded-lg border border-border/60 bg-black/[0.02] px-2.5 py-1.5 text-[11px] text-muted-foreground">
+              pipeline hop-latency: <span className="font-mono">awaiting feed samples</span> — stages record real A→G hop measurements only while ticks flow (pipelineLatency semantics, backend-measured).
+            </p>
+          )}
+          {stageEntries.length > 0 && (
+            <div className="space-y-1">
+              {stageEntries.map(([k, v]) => {
+                const pct = Math.max(0, Math.min(100, Number(v?.avg_ms ?? v?.p50_ms ?? v ?? 0)));
+                return (
+                  <div key={k} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-40 shrink-0 truncate font-mono font-semibold">{k}</span>
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted/70">
+                      <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-cyan-500" style={{ width: `${pct}%` }} />
+                    </div>
+                    <span className="w-16 shrink-0 text-right font-mono tabular-nums">{typeof v === 'number' ? `${v.toFixed(1)}ms` : Number(v?.avg_ms ?? 0).toFixed(1)}ms</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <VPipe active={flowing} color="#8b5cf6" label={flowing ? 'validated tick documents out' : 'idle — nothing to route'} />
+
+      {/* STAGE 3 — OUTPUT */}
+      <Card className="overflow-hidden border shadow-soft">
+        <CardHeader className="border-b bg-gradient-to-r from-cyan-500/[0.07] to-emerald-500/[0.05] pb-2">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-lg bg-cyan-500/10 p-1.5 text-cyan-700"><Database className="h-3.5 w-3.5" /></span>
+            OUTPUT · where ticks are served
+            <Badge variant="outline" className="ml-auto tabular-nums">{fmtNum(out.active_routes)} routes · {fmtNum(out.active_consumers)} online consumers</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-3">
+          {loading || consumers.length === 0 ? (
+            loading ? <Skeleton rows={2} /> : <p className="py-4 text-center text-xs text-muted-foreground">No consumers registered — engine abhi kisi ko serve nahi kar raha.</p>
+          ) : (
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              {consumers.map((c: any) => {
+                const cOnline = !!c.online && !!c.enabled;
+                return (
+                  <div key={c.consumer_id} className={cn('rounded-xl border bg-gradient-to-br from-card via-card p-3 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-soft', cOnline ? 'border-emerald-500/30' : 'border-slate-500/30')}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-lg bg-cyan-500/10 p-1.5"><Database className={cn('h-3.5 w-3.5', cOnline ? 'text-cyan-700' : 'text-slate-500')} /></span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs font-bold" title={c.consumer_id}>{c.consumer_id}</span>
+                      <NodeDot online={cOnline} label={cOnline ? 'SERVING' : c.enabled ? 'OFFLINE' : 'DISABLED'} />
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-1.5 text-[11px]">
+                      <div className="rounded-lg border border-border/60 bg-black/[0.02] px-2 py-1"><p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">type · route</p><p className="truncate font-mono">{c.consumer_type} · {c.route_id ?? '—'}</p></div>
+                      <div className="rounded-lg border border-border/60 bg-black/[0.02] px-2 py-1"><p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">profile · priority</p><p className="font-mono">{c.profile_id ?? '—'} · {c.priority ?? '—'}</p></div>
+                      <div className="rounded-lg border border-border/60 bg-black/[0.02] px-2 py-1" title="queue depth right now"><p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">queue</p><p className="font-mono tabular-nums">{fmtNum(c.queue_size)}</p></div>
+                      <div className="rounded-lg border border-border/60 bg-black/[0.02] px-2 py-1" title="backpressure counters"><p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">deferred / dropped</p><p className="font-mono tabular-nums">{fmtNum(c.backpressure_deferred)} / {fmtNum(c.backpressure_dropped)}</p></div>
+                    </div>
+                    {cOnline && flowing && <p className="mt-1.5 text-[10px] text-emerald-700"><span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500 align-middle" />live — documents routing right now</p>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Ye dashboard khud REST/polling se consume karta hai (WS#2 frames se status hota hai) — socket par koi second connection nahi kholti. Consumers registry se hi pata chalta hai backend kisko serve kar raha hai.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* TABS + PAGE                                                         */
 /* ------------------------------------------------------------------ */
 const TABS = [
   { id: 'overview', label: 'Overview', icon: Zap, accent: 'cyan' },
+  { id: 'flow', label: 'Flow', icon: Workflow, accent: 'fuchsia' },
   { id: 'connection', label: 'Connection', icon: RotateCw, accent: 'emerald' },
   { id: 'feed', label: 'Live Feed', icon: Activity, accent: 'emerald' },
   { id: 'quality', label: 'Quality', icon: Gauge, accent: 'amber' },
@@ -1007,11 +1232,26 @@ export default function WebSocketEnginePage() {
   const events = useOneShot<any>(`${WE}/events?limit=100`, tab === 'history');
   const config = useOneShot<any>(`${WE}/config`, tab === 'config');
   const live = useOneShot<any>(`${WE}/live-feed?window_sec=10`, tab === 'feed');
+  // Flow canvas: ONE aggregated call (input/core/output) from the live engine.
+  const flow = useOneShot<any>(`${WE}/flow`, tab === 'flow');
+
+  // Real sampled tick/s history for the flow sparkline — only while Flow tab is
+  // open; every refresh appends one REAL value (capped at 40 samples).
+  const [tpsSamples, setTpsSamples] = useState<number[]>([]);
+  useEffect(() => {
+    if (tab !== 'flow' || !flow.data) return;
+    const tps = Number(flow.data?.input?.rates?.ticks_per_second ?? 0);
+    setTpsSamples((prev) => {
+      const next = [...prev, tps];
+      return next.length > 40 ? next.slice(next.length - 40) : next;
+    });
+  }, [tab, flow.data]);
 
   // throttled cadence: ONLY the open tab, max 1/15s (feed 10s), hidden paused
   useTabCadence(metrics.refresh, tab === 'overview', 15000);
   useTabCadence(resources.refresh, tab === 'overview' || tab === 'resources', 15000);
   useTabCadence(live.refresh, tab === 'feed', 10000);
+  useTabCadence(flow.refresh, tab === 'flow', 6000);
   useTabCadence(quality.refresh, tab === 'quality', 15000);
   useTabCadence(subs.refresh, tab === 'subscriptions', 20000);
   useTabCadence(pins.refresh, tab === 'pins', 20000);
@@ -1119,6 +1359,7 @@ export default function WebSocketEnginePage() {
   const refreshAll = useCallback(() => {
     refreshStatus();
     if (tab === 'overview') { metrics.refresh(); resources.refresh(); }
+    if (tab === 'flow') flow.refresh();
     if (tab === 'feed') live.refresh();
     if (tab === 'quality') quality.refresh();
     if (tab === 'subscriptions') subs.refresh();
@@ -1129,7 +1370,7 @@ export default function WebSocketEnginePage() {
     if (tab === 'resources') resources.refresh();
     if (tab === 'history') { history.refresh(); events.refresh(); }
     if (tab === 'config') config.refresh();
-  }, [refreshStatus, tab, metrics, resources, live, quality, subs, pins, consumers, fv, loadRaw, history, events, config]);
+  }, [refreshStatus, tab, metrics, resources, flow, live, quality, subs, pins, consumers, fv, loadRaw, history, events, config]);
 
   const tabCount = (id: TabId): string | null => {
     if (id === 'subscriptions' && Array.isArray(subs.data)) return fmtNum(subs.data.length);
@@ -1156,13 +1397,13 @@ export default function WebSocketEnginePage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge className={connected ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-200' : 'border border-rose-500/40 bg-gradient-to-r from-rose-500/25 to-rose-500/10 text-rose-200'}>
+            <Badge className={connected ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-800' : 'border border-rose-500/40 bg-gradient-to-r from-rose-500/25 to-rose-500/10 text-rose-800'}>
               <span className={cn('mr-1.5 inline-block h-1.5 w-1.5 rounded-full', connected ? 'animate-pulse bg-emerald-400' : 'bg-rose-400')} />
               {connected ? 'WS#1 CONNECTED' : 'WS#1 OFFLINE'}
             </Badge>
             <Badge variant="outline" className="hidden font-mono text-[10px] sm:inline-flex">schema v{status?.schema_version ?? '—'} · SDK {status?.sdk_version ?? '—'}</Badge>
             <Badge variant="outline" className="tabular-nums">{owner?.feed_state ?? '—'}</Badge>
-            {notice && <Badge variant="outline" className={notice.kind === 'ok' ? 'border-emerald-500/40 text-emerald-300' : 'border-rose-500/40 text-rose-300'}>{notice.text}</Badge>}
+            {notice && <Badge variant="outline" className={notice.kind === 'ok' ? 'border-emerald-500/40 text-emerald-700' : 'border-rose-500/40 text-rose-700'}>{notice.text}</Badge>}
             <IstClock />
             <Button size="sm" onClick={refreshAll} className="gap-1.5 bg-gradient-to-r from-cyan-500 to-violet-500 shadow-md">
               <RefreshCw className="h-3.5 w-3.5" /> Refresh
@@ -1172,7 +1413,7 @@ export default function WebSocketEnginePage() {
       </div>
 
       {statusError && (
-        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-700">
           <span className="min-w-0">Backend engine status unavailable: {statusError}</span>
           <Button size="sm" variant="outline" className="ml-auto shrink-0" onClick={() => refreshStatus()}>Retry</Button>
         </div>
@@ -1192,7 +1433,7 @@ export default function WebSocketEnginePage() {
                 activeTab ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-foreground shadow-sm ring-1 ring-primary/40' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
               )}
             >
-              <t.icon className={cn('h-3.5 w-3.5', activeTab && 'text-cyan-300')} /> {t.label}
+              <t.icon className={cn('h-3.5 w-3.5', activeTab && 'text-cyan-700')} /> {t.label}
               {c != null && <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] tabular-nums">{c}</span>}
             </button>
           );
@@ -1200,6 +1441,7 @@ export default function WebSocketEnginePage() {
       </div>
 
       {tab === 'overview' && <OverviewPanel status={status} metrics={metrics.data} resources={resources.data} owner={owner} connected={connected} loading={statusLoading} onRefresh={() => { refreshStatus(); metrics.refresh(); resources.refresh(); }} />}
+      {tab === 'flow' && <FlowPanel flow={flow.data} flowError={flow.error} loading={flow.loading} samples={tpsSamples} onRefresh={() => flow.refresh()} />}
       {tab === 'connection' && <ConnectionPanel owner={owner} connected={connected} onAction={connAction} busy={busy} result={connResult} />}
       {tab === 'feed' && <FeedPanel live={live.data} liveError={live.error} loading={live.loading} onRefresh={() => live.refresh()} />}
       {tab === 'quality' && <QualityPanel quality={quality.data} qualityError={quality.error} loading={quality.loading} onRefresh={() => quality.refresh()} />}

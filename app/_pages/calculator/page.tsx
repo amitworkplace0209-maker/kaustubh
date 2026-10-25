@@ -24,7 +24,8 @@ import StockSearch from '@/components/orders/stock-search';
 import type { StockResult } from '@/components/orders/stock-search';
 import { ChargeDetails } from '@/components/charges/charge-details';
 import { calculateCharges, CALCULATION_VERSION, type Side } from '@/lib/charge-engine';
-import { getQuote, getTickStreamUrl } from '@/lib/api';
+import { getQuote } from '@/lib/api';
+import { subscribeTicks } from '@/lib/shared-sse';
 import { useAccountMode } from '@/lib/settings-store';
 import { fmtRs } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
@@ -132,35 +133,24 @@ export default function CalculatorPage() {
 
   useEffect(() => {
     if (!stock) return;
-    let es: EventSource | null = null;
-    let reconnect: ReturnType<typeof setTimeout> | null = null;
-    const connect = () => {
+    // One SSE session for the whole app (shared reconnect/coalescing); this
+    // screen re-subscribes only when the selected instrument changes.
+    const stockRef = { current: stock };
+    stockRef.current = stock;
+    return subscribeTicks((raw) => {
+      const t = raw;
       try {
-        es = new EventSource(getTickStreamUrl());
-        es.onmessage = (event) => {
-          try {
-            const t = JSON.parse(event.data);
-            if (t.ltp == null || Number(t.ltp) <= 0) return;
-            const tokMatch = String(t.instrumentToken ?? '') === String(stock.token);
-            const tsymMatch = stock.tradingSymbol &&
-              String(t.tradingSymbol ?? '').toUpperCase() === stock.tradingSymbol.toUpperCase();
-            const symMatch = stock.symbol &&
-              String(t.symbol ?? '').toUpperCase() === stock.symbol.toUpperCase();
-            if (!tokMatch && !tsymMatch && !symMatch) return;
-            setQuote((q) => ({ ...q, ltp: num(t.ltp), status: 'LIVE' }));
-          } catch { /* ignore malformed frame */ }
-        };
-        es.onerror = () => {
-          es?.close(); es = null;
-          setQuote((q) => ({ ...q, status: q.ltp > 0 ? 'STALE' : 'DISCONNECTED' }));
-          reconnect = setTimeout(connect, 3000);
-        };
-      } catch {
-        reconnect = setTimeout(connect, 3000);
-      }
-    };
-    connect();
-    return () => { es?.close(); if (reconnect) clearTimeout(reconnect); };
+        if (t.ltp == null || Number(t.ltp) <= 0) return;
+        const s = stockRef.current;
+        const tokMatch = String(t.instrumentToken ?? '') === String(s.token);
+        const tsymMatch = s.tradingSymbol &&
+          String(t.tradingSymbol ?? '').toUpperCase() === s.tradingSymbol.toUpperCase();
+        const symMatch = s.symbol &&
+          String(t.symbol ?? '').toUpperCase() === s.symbol.toUpperCase();
+        if (!tokMatch && !tsymMatch && !symMatch) return;
+        setQuote((q) => ({ ...q, ltp: num(t.ltp), status: 'LIVE' }));
+      } catch { /* ignore malformed frame */ }
+    });
   }, [stock]);
 
   // Market orders execute at LTP; limit orders use the entered price.

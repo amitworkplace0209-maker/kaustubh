@@ -60,7 +60,7 @@ export interface TerminalContextConfig {
   logoutEndpoint: string;
 }
 
-export type TopbarPhase = 'data-saver' | 'trading' | 'services' | 'khumbha-ai';
+export type TopbarPhase = 'data-saver' | 'trading' | 'services';
 
 export interface ResolvedPageContext {
   phase: TopbarPhase;
@@ -206,6 +206,7 @@ const SERVICES_PAGES: { route: string; page: PageContextConfig }[] = [
   { route: '/services/websocket-engine', page: PAGE('websocket-engine', 'WebSocket Engine', [C('net'), C('api'), C('ws'), T('sched'), T('pipeline')], ['refresh']) },
   { route: '/services/scheduler', page: PAGE('scheduler', 'Scheduler', [C('net'), C('api'), C('sched'), C('db'), T('ws')], ['refresh']) },
   { route: '/services/feature-engine', page: PAGE('feature-engine', 'Feature Engine', [C('net'), C('api'), C('feed'), T('pipeline')], ['refresh']) },
+  { route: '/services/local-connect-engine', page: PAGE('local-connect-engine', 'Local Connect Engine', [C('net'), C('api')], ['refresh']) },
   { route: '/services/connection-manager', page: PAGE('connection-manager', 'Connection Manager', [C('net'), C('api'), C('ws'), T('feed')], ['refresh']) },
   { route: '/services/db-writer', page: PAGE('db-writer', 'DB Writer', [C('net'), C('api'), C('db'), T('pipeline')], ['refresh']) },
   { route: '/services/system-indicators', page: PAGE('system-indicators', 'System Indicators', [C('net'), C('api'), C('cpu'), C('mem'), T('db'), T('ws')], ['refresh']) },
@@ -236,23 +237,10 @@ const TRADING_PAGES: { route: string; page: PageContextConfig }[] = [
   { route: '/trading/audit', page: PAGE('audit', 'Audit Trail', [C('net'), C('api'), C('db')], []) },
 ];
 
-/** KHUMBHA AI — infrastructure focus; no session / market / login surface. */
-const KHUMBHA_PAGES: { route: string; page: PageContextConfig }[] = [
-  { route: '/ai/dashboard', page: PAGE('dashboard', 'Dashboard', [C('net'), C('api'), C('db'), T('ws'), T('sched')], ['refresh']) },
-  { route: '/ai/infrastructure', page: PAGE('infrastructure', 'Infrastructure', [C('net'), C('api'), C('db'), C('ws'), T('sched')], ['refresh']) },
-  { route: '/ai/models', page: PAGE('models', 'Models', [C('net'), C('api'), T('db')], []) },
-  { route: '/ai/datasets', page: PAGE('datasets', 'Datasets', [C('net'), C('api'), C('db')], []) },
-  { route: '/ai/training', page: PAGE('training', 'Training', [C('net'), C('api'), T('db')], []) },
-  { route: '/ai/inference', page: PAGE('inference', 'Inference', [C('net'), C('api'), T('ws')], []) },
-  { route: '/ai/jobs', page: PAGE('jobs', 'Jobs', [C('net'), C('api'), T('sched'), T('db')], []) },
-  { route: '/ai/logs', page: PAGE('logs', 'Logs', [C('net'), C('api'), T('db')], []) },
-];
-
 const PHASE_DEFAULTS: Record<TopbarPhase, PageContextConfig> = {
   'data-saver': PAGE('dashboard', 'Dashboard', [C('net'), C('api'), C('market'), C('ws'), C('db'), T('sched'), T('pipeline'), T('feed'), T('sess')], ['refresh']),
   services: PAGE('system', 'System Status', [C('net'), C('api'), C('db'), C('ws'), T('sched'), T('cpu'), T('mem')], ['refresh']),
   trading: PAGE('dashboard', 'Dashboard', [C('net'), C('market'), C('ws'), C('sess'), T('db'), T('sched'), T('orders')], ['refresh']),
-  'khumbha-ai': PAGE('dashboard', 'Dashboard', [C('net'), C('api'), C('db'), T('ws'), T('sched')], ['refresh']),
 };
 
 // ---------------------------------------------------------------------------
@@ -264,14 +252,13 @@ export function getTopbarPhase(config: Pick<ShellConfig, 'id'>): TopbarPhase {
   if (id.startsWith('trading')) return 'trading';
   if (id === 'data-saver') return 'data-saver';
   if (id === 'services') return 'services';
-  return 'khumbha-ai';
+  return 'data-saver';
 }
 
 const PHASE_TABLES: Record<TopbarPhase, { route: string; page: PageContextConfig }[]> = {
   'data-saver': DATA_SAVER_PAGES,
   services: SERVICES_PAGES,
   trading: TRADING_PAGES,
-  'khumbha-ai': KHUMBHA_PAGES,
 };
 
 export function findPageByPath(pages: { route: string; page: PageContextConfig }[], pathname: string): PageContextConfig | undefined {
@@ -322,8 +309,6 @@ export function getPhaseLabel(phase: TopbarPhase): string {
       return 'DATA SAVER';
     case 'services':
       return 'SERVICES';
-    case 'khumbha-ai':
-      return 'KHUMBHA AI';
   }
 }
 

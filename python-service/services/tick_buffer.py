@@ -19,6 +19,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from typing import Sequence
 from pymongo import InsertOne
 
 from config.settings import settings
@@ -173,6 +174,37 @@ _pipeline_last_failed_write_at: float | None = None
 # unavailable) and accounted as write errors, so the process cannot grow
 # without bound. Historical on-disk tick data is never affected.
 _BUFFER_HARD_CAP = max(50000, int(os.getenv("TICK_BUFFER_HARD_CAP", "100000")))
+
+# Bounded REAL flush ledger: every actual MongoDB bulk write lands here with
+# its own outcome (written / failed / duration), so the DB Writer surface can
+# show per-flush history instead of lifetime totals alone. Bounded so a busy
+# feed can never grow it; nothing is fabricated and an idle pipeline simply
+# stays empty.
+_FLUSH_HISTORY_MAXLEN = 25
+_flush_history: deque[dict] = deque(maxlen=_FLUSH_HISTORY_MAXLEN)
+
+
+def _record_flush_history(written: int, failed: int, batch: int, duration_ms: float, error: str | None = None) -> None:
+    """Append one real flush outcome (called from the actual write path)."""
+    try:
+        _flush_history.append({
+            "at": time.time(),
+            "written": int(written),
+            "failed": int(failed),
+            "batch": int(batch),
+            "durationMs": round(float(duration_ms), 2),
+            "error": (str(error)[:300] if error else None),
+            "bufferAfter": len(_buffer),
+        })
+    except Exception:
+        pass
+
+
+def flush_history() -> list[dict]:
+    """Read the bounded flush ledger, most recent first (API/UI contract)."""
+    with _buffer_lock:
+        rows = list(_flush_history)
+    return rows[::-1]
 
 
 def _prune_window(now: float) -> None:
@@ -427,6 +459,122 @@ def latest_history_summary() -> dict:
         warm = sum(1 for dq in _price_history.values() if len(dq) >= 2)
         total_points = sum(len(dq) for dq in _price_history.values())
     return {"tokens": tokens, "warm": warm, "totalPoints": total_points}
+
+
+#: Windows (seconds) the bulk windowed-move scanner exposes to scans.
+SCAN_MOMENTUM_WINDOWS: tuple[float, ...] = (60.0, 300.0, 600.0)
+_SCAN_WINDOW_LABELS: tuple[str, ...] = ("1m", "5m", "10m")
+
+
+def seed_price_history(token: str, points: list[tuple[float, float]]) -> None:
+    """Seed ``token``'s price history with ``(age_seconds, ltp)`` points.
+
+    A TESTING and RECOVERY helper: ages are measured backwards from *now*
+    (largest age = oldest point). Never called by the live tick path, so it
+    cannot corrupt normal ingest; unit tests use it to pin the window maths
+    without sleeping real time.
+    """
+    now_mono = time.monotonic()
+    rows = sorted(((now_mono - age, time.time() - age, ltp) for age, ltp in points),
+                  key=lambda r: r[0])
+    with _PRICE_HISTORY_LOCK:
+        deque_obj = _price_history.get(str(token))
+        if deque_obj is None:
+            deque_obj = deque(maxlen=_PRICE_HISTORY_MAX)
+            _price_history[str(token)] = deque_obj
+        else:
+            deque_obj.clear()
+        for row in rows:
+            deque_obj.append(row)
+
+
+def history_depth_seconds() -> float | None:
+    """Oldest recorded WS-price age across warm tokens, or ``None``.
+
+    Tells a scan how much real history exists — a fresh backend boot has
+    ``None`` until the first two ticks of some instrument land, and windows
+    longer than this depth honestly report no measurement yet.
+    """
+    now_mono = time.monotonic()
+    with _PRICE_HISTORY_LOCK:
+        deepest = None
+        for pts in _price_history.values():
+            if len(pts) < 2:
+                continue
+            age = now_mono - pts[0][0]
+            if deepest is None or age > deepest:
+                deepest = age
+        return deepest
+
+
+def window_moves(windows: Sequence[float] = SCAN_MOMENTUM_WINDOWS,
+                 tokens: Sequence[str] | None = None) -> dict[str, dict[str, dict]]:
+    """Bulk real windowed price moves for many tokens in ONE locking pass.
+
+    Semantics are the honest "change over the last ``w`` seconds": the base
+    price is the NEWEST recorded tick whose age is at least ``w`` (walking
+    back from the newest point, the first point crossing the window's
+    boundary). This is the true "price ``w`` ago" — unlike a naive scan of
+    the oldest point, which would report a since-boot drift for every short
+    window once history exceeds the window.
+
+    Returns ``{token: {label: {pct, chg, base, baseAgeSec}}}`` where every
+    absent window key means "not measurable yet" (history shorter than the
+    window — never a fabricated near-zero move). Percentages round to 4dp;
+    when the current LTP is unparseable the token is left out entirely.
+    """
+    out: dict[str, dict[str, dict]] = {}
+    now_mono = time.monotonic()
+    limits = [max(float(w), 1.0) for w in windows]
+    # UI contract labels for the standard scan windows (1m/5m/10m); for any
+    # non-standard window count fall back to a generic index label.
+    labels: list[str] = []
+    for idx, _lim in enumerate(limits):
+        labels.append(("1m", "5m", "10m")[idx] if idx < 3 else f"w{idx}")
+    wanted = {str(t) for t in tokens} if tokens else None
+    with _PRICE_HISTORY_LOCK:
+        for token, pts in _price_history.items():
+            if wanted is not None and token not in wanted:
+                continue
+            if len(pts) < 2:
+                continue
+            current = pts[-1][2]
+            try:
+                cur = float(current)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(cur) or cur <= 0:
+                continue
+            found: dict[str, dict] = {}
+            missing = len(limits)
+            # Walk backwards (newest → oldest): ages grow, so the FIRST point
+            # whose age crosses each window boundary is exactly "price w ago".
+            for ts, _wall, ltp in reversed(pts):
+                if missing == 0:
+                    break
+                age = now_mono - ts
+                for idx, lim in enumerate(limits):
+                    key = labels[idx]
+                    if key in found:
+                        continue
+                    if age >= lim:
+                        try:
+                            base = float(ltp)
+                        except (TypeError, ValueError):
+                            base = None  # type: ignore[assignment]
+                        if base is None or not math.isfinite(base) or base <= 0:
+                            continue
+                        pct = round(((cur - base) / base) * 100.0, 4)
+                        found[key] = {
+                            "pct": pct,
+                            "chgRaw": round(cur - base, 4),
+                            "base": base,
+                            "baseAgeSec": round(age, 1),
+                        }
+                        missing -= 1
+            if found:
+                out[token] = found
+    return out
 
 
 def _deliver_to_listeners(tick: dict) -> None:
@@ -817,10 +965,12 @@ async def _write_batch(batch: list[dict]) -> None:
         # task and grows memory without bound. The failed ticks are counted
         # as write errors; real historical data is never touched.
         logger.error("Tick bulk write failed (%d ticks): %s", len(batch), exc)
+        _record_flush_history(0, len(batch), len(batch), (time.monotonic() - start_ms) * 1000.0, str(exc))
         return
 
     _last_flush_at = time.time()
     _last_flush_duration_ms = round((time.monotonic() - start_ms) * 1000, 2)
+    _record_flush_history(written, errors, len(batch), _last_flush_duration_ms)
 
     # Business date is IST (Asia/Kolkata trading day), matching the Data Center
     # history windows. Legacy UTC-keyed docs stay readable; new writes are IST.

@@ -26,9 +26,10 @@ const KNOWN_HOLIDAYS = new Set([
   '2025-04-18', '2025-05-01', '2025-05-12', '2025-06-16', '2025-07-07',
   '2025-08-15', '2025-08-27', '2025-10-02', '2025-10-21', '2025-10-22',
   '2025-11-05', '2025-12-25',
-  '2026-01-26', '2026-03-16', '2026-03-17', '2026-04-03', '2026-04-07',
-  '2026-04-10', '2026-05-01', '2026-05-25', '2026-07-06', '2026-08-15',
-  '2026-10-02', '2026-10-21', '2026-11-05', '2026-12-25',
+  '2026-01-26', '2026-02-16', '2026-03-16', '2026-03-17', '2026-04-03', '2026-04-07',
+  '2026-04-10', '2026-05-01', '2026-05-22', '2026-05-25', '2026-07-06',
+  '2026-08-15', '2026-08-28', '2026-09-16', '2026-10-02', '2026-11-09',
+  '2026-11-10', '2026-11-24', '2026-12-25',
 ]);
 
 function dayClass(d: Date): string {
@@ -86,6 +87,51 @@ test('day_class returns EXCHANGE_HOLIDAY for known holidays', () => {
 test('day_class returns EXCHANGE_HOLIDAY for Republic Day', () => {
   const result = dayClass(new Date('2026-01-26'));
   assert.equal(result, EXCHANGE_HOLIDAY);
+});
+
+test('day_class returns EXCHANGE_HOLIDAY for Maha Shivaratri 2026', () => {
+  const result = dayClass(new Date('2026-02-16'));
+  assert.equal(result, EXCHANGE_HOLIDAY);
+});
+
+test('day_class returns EXCHANGE_HOLIDAY for Buddha Purnima 2026', () => {
+  const result = dayClass(new Date('2026-05-22'));
+  assert.equal(result, EXCHANGE_HOLIDAY);
+});
+
+test('day_class returns EXCHANGE_HOLIDAY for Janmashtami 2026', () => {
+  const result = dayClass(new Date('2026-08-28'));
+  assert.equal(result, EXCHANGE_HOLIDAY);
+});
+
+test('day_class returns EXCHANGE_HOLIDAY for Ganesh Chaturthi 2026', () => {
+  const result = dayClass(new Date('2026-09-16'));
+  assert.equal(result, EXCHANGE_HOLIDAY);
+});
+
+test('day_class returns EXCHANGE_HOLIDAY for Diwali Laxmi Pujan 2026 (observed Nov 9)', () => {
+  const result = dayClass(new Date('2026-11-09'));
+  assert.equal(result, EXCHANGE_HOLIDAY);
+});
+
+test('day_class returns EXCHANGE_HOLIDAY for Diwali Balipratipada 2026', () => {
+  const result = dayClass(new Date('2026-11-10'));
+  assert.equal(result, EXCHANGE_HOLIDAY);
+});
+
+test('day_class returns EXCHANGE_HOLIDAY for Guru Nanak Jayanti 2026', () => {
+  const result = dayClass(new Date('2026-11-24'));
+  assert.equal(result, EXCHANGE_HOLIDAY);
+});
+
+test('day_class returns NORMAL_MARKET_DAY for Oct 21 2026 (NOT a holiday)', () => {
+  const result = dayClass(new Date('2026-10-21'));
+  assert.equal(result, NORMAL_MARKET_DAY);
+});
+
+test('day_class returns NORMAL_MARKET_DAY for Oct 20 2026 (NOT a holiday)', () => {
+  const result = dayClass(new Date('2026-10-20'));
+  assert.equal(result, NORMAL_MARKET_DAY);
 });
 
 test('is_trading_day returns true for normal weekdays', () => {

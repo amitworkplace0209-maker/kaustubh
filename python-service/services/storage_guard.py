@@ -40,10 +40,19 @@ logger = logging.getLogger("storage_guard")
 # the order here is only about which collection gives ground first: the 1m
 # candles dominate storage, hence they are trimmed first.
 PRUNABLE_COLLECTIONS: tuple[str, ...] = (
+    # The 1m candles dominate storage, hence they are trimmed first.
     "market_candles_1m",
     "market_candles_5m",
     "market_candles_10m",
     "market_candles_30m",
+    # The RAW tick store (`ticks`) — 40 MB+ of duplicated market data, and
+    # already in the daily wipe's disposable list. The guard used to prune
+    # only `market_ticks`, so the bulk of the usage stayed and the cluster
+    # crossed its quota with the guard reporting "within budget".
+    "ticks",
+    # The event ledger, oldest day first. It grows without bound otherwise
+    # (200 000+ documents in one session).
+    "system_events",
     "market_ticks",
 )
 
@@ -120,6 +129,86 @@ async def _prune_oldest_day(db, name: str) -> int:
             break
         deleted += int(res.deleted_count or 0)
         if len(ids) < _DELETE_BATCH:
+            break
+    return deleted
+
+
+async def _time_field(coll) -> str | None:
+    """The time field a collection actually carries (for an age-ordered trim).
+
+    The raw tick store and the event ledger have no ``date`` field, so the
+    trim needs the collection's own timestamp to order the oldest documents.
+    """
+    for field in ("ts", "receivedAt", "at", "createdAt", "timestamp", "lastTickAt"):
+        try:
+            doc = await coll.find_one({}, {field: 1})
+        except Exception:
+            return None
+        if doc and doc.get(field) not in (None, ""):
+            return field
+    return None
+
+
+async def _prune_oldest_documents(db, name: str, batch: int = 2_000) -> int:
+    """Delete the OLDEST documents of ``name`` (bounded batch). Returns the count.
+
+    A trading session can hold a single date, so the whole-day delete either
+    removes the live dataset (which the writer refills immediately) or nothing
+    at all. The oldest documents are removed instead, in bounded batches, and
+    they are the most regenerable ones.
+
+    Per-document ``DeleteOne`` ops in one bulk write are used on purpose: while
+    the cluster is write-blocked ("over your space quota"), a single
+    ``delete_many({"_id": {"$in": [...]}})`` is CANCELLED by the server (it
+    reports ``deleted=0`` and removes nothing), while the per-document form
+    goes through.
+    """
+    from pymongo import DeleteOne
+
+    coll = db[name]
+    deleted = 0
+    # The time field the collection actually carries. The tick/event
+    # collections have no `date` field at all, so a date-only trim would find
+    # nothing to delete and the guard could never free their space.
+    time_field = await _time_field(coll)
+    for _ in range(_MAX_BATCHES_PER_COLLECTION):
+        try:
+            # The OLDEST DATE first, then the oldest ticks inside it. This is
+            # the query shape that actually works against the live cluster: a
+            # whole-collection sort on an un-indexed field turns the trim into
+            # a blocking sort of the entire collection.
+            dates = await _distinct_dates(coll)
+            if dates:
+                oldest_day = dates[0]
+                cursor = (
+                    coll.find({"date": oldest_day}, {"_id": 1})
+                    .sort([("lastTickAt", 1)])
+                    .limit(batch)
+                )
+            elif time_field:
+                cursor = (
+                    coll.find({}, {"_id": 1})
+                    .sort([(time_field, 1)])
+                    .limit(batch)
+                )
+            else:
+                break
+            ids = [doc["_id"] async for doc in cursor]
+        except Exception as exc:
+            logger.debug("storage guard: cursor failed on %s: %s", name, exc)
+            break
+        if not ids:
+            break
+        try:
+            res = await coll.bulk_write([DeleteOne({"_id": i}) for i in ids])
+        except Exception as exc:
+            logger.warning("storage guard: delete failed on %s: %s", name, exc)
+            break
+        n = int(getattr(res, "deleted_count", 0) or 0)
+        if n == 0:
+            break
+        deleted += n
+        if len(ids) < batch:
             break
     return deleted
 
@@ -286,8 +375,14 @@ async def run_storage_guard(trigger: str = "schedule") -> dict[str, Any]:
             "oldest regenerable market data", _mb(used), settings.storage_budget_mb,
         )
 
-        # Keep trimming oldest days, round-robin across collections, until the
-        # cluster is back inside budget or there is nothing left to trim.
+        # Keep trimming the OLDEST documents, round-robin across collections,
+        # until the cluster is back inside budget or there is nothing left.
+        #
+        # It is a DOCUMENT-level trim, not a whole-day delete: a trading day can
+        # hold a single date (every tick of the session), so deleting "the
+        # oldest day" either removes the whole live dataset (which the writer
+        # immediately refills) or nothing at all. The oldest documents are
+        # removed in bounded batches instead.
         for _ in range(_MAX_BATCHES_PER_COLLECTION):
             used = await _storage_bytes(db)
             if used is None or used <= budget:
@@ -296,7 +391,7 @@ async def run_storage_guard(trigger: str = "schedule") -> dict[str, Any]:
             for name in PRUNABLE_COLLECTIONS:
                 if used is not None and used <= budget:
                     break
-                removed = await _prune_oldest_day(db, name)
+                removed = await _prune_oldest_documents(db, name)
                 if removed:
                     trimmed_this_pass += removed
                     report["deleted"][name] = report["deleted"].get(name, 0) + removed

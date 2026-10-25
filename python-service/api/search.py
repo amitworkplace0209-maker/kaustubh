@@ -211,6 +211,34 @@ async def _resolve_live_prices(results: list[dict]) -> None:
             row["timestamp"] = price["asOf"]
 
 
+async def _broker_instrument_hits(query: str, limit: int) -> list[dict]:
+    """The ACTIVE broker's own instrument rows for this query (Shoonya)."""
+    try:
+        from services.broker_instruments import search_active_broker
+
+        return await search_active_broker(query, limit)
+    except Exception as exc:  # noqa: BLE001 — a broker search must never break a search
+        logger.debug("[SEARCH] broker instrument search failed: %s", exc)
+        return []
+
+
+def _merge_broker_rows(
+    broker_rows: list[dict], local_rows: list[dict], limit: int
+) -> list[dict]:
+    """Broker rows first, then the local hits that are not already listed."""
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for row in [*broker_rows, *local_rows]:
+        key = str(row.get("symbol") or row.get("tradingSymbol") or "").upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(row)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
 def _run_search(query: str, scopes: list[str], limit: int, cursor: int) -> dict:
     if not query or not query.strip():
         return {
@@ -240,6 +268,13 @@ async def search_get(
     scopes = _scopes(scope)
     payload = _run_search(q, scopes, limit, cursor)
     results = payload.get("results") or []
+    # The ACTIVE broker's own instruments come FIRST: on Shoonya the local
+    # master is Kotak's, and a Kotak token is not a Shoonya token.
+    broker_rows = await _broker_instrument_hits(q, limit)
+    if broker_rows:
+        results = _merge_broker_rows(broker_rows, results, limit)
+        payload["results"] = results
+        payload["total"] = max(int(payload.get("total") or 0), len(results))
     if results:
         # Live-price enrichment and margin resolution are independent broker
         # round-trips — run them together so the dropdown pays one RTT total.

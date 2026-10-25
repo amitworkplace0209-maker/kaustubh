@@ -33,6 +33,8 @@ message and exits 0 instead of killing or duplicating anything.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -108,11 +110,24 @@ def _signal_name(sig) -> str:
 class SingletonServer(uvicorn.Server):
     """uvicorn.Server that owns the port BEFORE the app lifespan runs, and
     reports READY only after the listener is actually bound.
+
+    It also supervises the listener itself: on Windows the asyncio accept
+    coroutine can die with ``WinError 64`` and never recover, which leaves the
+    process alive but deaf. The doctor re-binds the socket in that case (see
+    ``_listener_doctor``).
     """
+
+    #: How often the doctor probes the listener (seconds).
+    listener_doctor_interval_s: float = 2.0
+    #: Consecutive failed probes before the socket is re-bound.
+    listener_doctor_failures: int = 2
+    #: How long a single probe waits for an HTTP response (seconds).
+    listener_doctor_timeout_s: float = 1.5
 
     def __init__(self, *args, guard, **kwargs):
         super().__init__(*args, **kwargs)
         self._guard = guard
+        self._listener_failures = 0
 
     def handle_exit(self, sig, frame):  # type: ignore[override]
         name = _signal_name(sig)
@@ -127,11 +142,12 @@ class SingletonServer(uvicorn.Server):
     # ------------------------------------------------------------------
     # Bind BEFORE lifespan: pass a pre-bound socket that we own.
     # ------------------------------------------------------------------
-    def _prebound_socket(self) -> socket.socket:
+    def _prebound_socket(self, reuseaddr: bool = True) -> socket.socket:
         host, port = self.config.host, self.config.port
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if reuseaddr:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((host, port))
             sock.listen(128)
             LOG.info("Binding to %s:%s (socket owned before lifespan)", host, port)
@@ -159,6 +175,140 @@ class SingletonServer(uvicorn.Server):
         else:
             self._guard.degrade("started before listener bind")
             LOG.error("Application did NOT reach the listening state.")
+
+    # ------------------------------------------------------------------
+    # LISTENER DOCTOR
+    #
+    # On Windows the asyncio Proactor's accept coroutine can die with
+    # ``OSError: [WinError 64] The specified network name is no longer
+    # available``. ``selector_events._accept_connection`` re-raises any OSError
+    # that is not a resource exhaustion, so the accept loop STOPS for good: the
+    # process keeps running, the engines keep logging, the kernel still
+    # completes handshakes (the socket is still listening) — but no request is
+    # ever served again. The whole platform answers "502 Bad Gateway" while
+    # every process looks healthy.
+    #
+    # The doctor detects that state (the listener does not answer HTTP) and
+    # RE-BINDS the socket in place. The application lifespan is NOT re-run, so
+    # no engine is started twice and no state is lost.
+    # ------------------------------------------------------------------
+    async def main_loop(self):  # type: ignore[no-untyped-def]
+        doctor = asyncio.create_task(self._listener_doctor())
+        try:
+            await super().main_loop()
+        finally:
+            doctor.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await doctor
+
+    async def _listener_answers(self, timeout: float | None = None) -> bool:
+        """True when the listener still serves an HTTP response.
+
+        A TCP connect alone cannot tell: with a dead accept loop the kernel
+        still completes the handshake, so the connect succeeds while nothing is
+        ever served. The probe therefore asks for a real HTTP response.
+        """
+        if timeout is None:
+            timeout = self.listener_doctor_timeout_s
+        host = self.config.host or "0.0.0.0"
+        if host in ("0.0.0.0", "::", ""):
+            host = "127.0.0.1"
+        port = int(self.config.port)
+        writer = None
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=timeout
+            )
+            writer.write(
+                b"GET /api/terminal/state HTTP/1.1\r\n"
+                b"Host: localhost\r\nConnection: close\r\n\r\n"
+            )
+            await writer.drain()
+            head = await asyncio.wait_for(reader.read(16), timeout=timeout)
+            return head.startswith(b"HTTP/")
+        except (OSError, asyncio.TimeoutError, ValueError):
+            return False
+        finally:
+            if writer is not None:
+                with contextlib.suppress(Exception):
+                    writer.close()
+                    await writer.wait_closed()
+
+    async def _rebind_listener(self) -> None:
+        """Replace the dead listening socket with a fresh one."""
+        LOG.error(
+            "LISTENER_DEAD — the listening socket stopped accepting on %s:%s; re-binding it",
+            self.config.host, self.config.port,
+        )
+        for srv in list(getattr(self, "servers", [])):
+            with contextlib.suppress(Exception):
+                self.servers.remove(srv)
+            # close() releases the LISTENING socket. wait_closed() must NOT be
+            # awaited unbounded: it waits for every in-flight connection (the
+            # browser's long-lived SSE streams never end), which would hang the
+            # doctor forever. The accepted connections are deliberately left
+            # alone — they are still healthy.
+            with contextlib.suppress(Exception):
+                srv.close()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(srv.wait_closed(), timeout=2.0)
+        # Give the OS a moment to release the port before re-binding it.
+        await asyncio.sleep(0.5)
+
+        last_error: Exception | None = None
+        for _ in range(5):
+            try:
+                # NO SO_REUSEADDR here: on Windows it would let the new socket
+                # bind on top of a port the old (dead) socket still holds, and
+                # the kernel would then hand connections to the dead one.
+                sock = self._prebound_socket(reuseaddr=False)
+            except OSError as exc:  # the port is still held — retry shortly
+                last_error = exc
+                await asyncio.sleep(1.0)
+                continue
+            loop = asyncio.get_running_loop()
+            config = self.config
+
+            def create_protocol(_loop=None):  # type: ignore[no-untyped-def]
+                return config.http_protocol_class(  # type: ignore[call-arg]
+                    config=config,
+                    server_state=self.server_state,
+                    app_state=self.lifespan.state,
+                    _loop=_loop,
+                )
+
+            server = await loop.create_server(
+                create_protocol, sock=sock, ssl=config.ssl, backlog=config.backlog
+            )
+            self.servers.append(server)
+            self._guard.hello()
+            LOG.info(
+                "Application: LISTENING re-bound on %s:%s (instance=%d)",
+                self.config.host, self.config.port, os.getpid(),
+            )
+            return
+        raise last_error or OSError("could not re-bind the listening socket")
+
+    async def _listener_doctor(self) -> None:
+        """Watch the listener and re-bind it when the accept loop dies."""
+        while True:
+            await asyncio.sleep(self.listener_doctor_interval_s)
+            if self.should_exit:
+                return
+            try:
+                if await self._listener_answers():
+                    self._listener_failures = 0
+                    continue
+                self._listener_failures += 1
+                if self._listener_failures < self.listener_doctor_failures:
+                    continue
+                await self._rebind_listener()
+                self._listener_failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception("listener doctor failed — will retry")
+                self._listener_failures = 0
 
 
 def _preflight(host: str, port: int):

@@ -85,6 +85,92 @@ async def status():
     return _ok(_get_engine().status())
 
 
+@router.get("/flow")
+async def flow():
+    """One call describing the REAL WS#1 data pipeline for the flow canvas:
+
+    ``input``  — broker/upstream side: owner websocket state, supervisor,
+                 internet_ok, session auth context, live rates (1s/5s/60s
+                 averages) and counter metrics.
+    ``core``   — engine registry: subscribed vs desired, pins, raw bucket
+                 tokens, feed-level tier counters, quality status mix and
+                 latency percentiles, plus true hop-to-hop pipeline latency
+                 stages (empty until feed data flows — reported honestly).
+    ``output`` — consumers & routes: queue sizes, backpressure
+                 deferred/dropped counters, online/enabled — the exact places
+                 this engine currently SERVES ticks.
+
+    Every value is verbatim live engine state; stages without data report
+    that instead of a fabricated number.
+    """
+    eng = _get_engine()
+    st = eng.status()
+    owner = st.get("owner_status") or {}
+    rate = owner.get("rates") or {}
+    quality = eng.quality_snapshot().get("overall") or {}
+    pipe = pipeline_latency.stats()
+
+    session_broker = None
+    session_state = None
+    try:
+        from services.session.session_manager import session_manager
+        snap = session_manager.snapshot()
+        session_broker = snap.get("broker")
+        session_state = snap.get("state")
+    except Exception as exc:  # noqa: BLE001 — session context is optional
+        logger.debug("flow: session context unavailable: %s", exc)
+
+    return _ok({
+        "connected": st.get("connection_connected"),
+        "input": {
+            "owner": st.get("owner"),
+            "state": owner.get("state"),
+            "supervisor": owner.get("supervisor_state"),
+            "lifecycle": owner.get("lifecycle_state"),
+            "feed_state": owner.get("feed_state"),
+            "internet_ok": owner.get("internet_ok"),
+            "websocket_id": owner.get("websocket_id"),
+            "session_id": owner.get("session_id"),
+            "session_broker": session_broker,
+            "session_state": session_state,
+            "connected_at": owner.get("connected_at"),
+            "disconnected_at": owner.get("disconnected_at"),
+            "reconnect_count": owner.get("reconnect_count"),
+            "disconnect_reason": owner.get("disconnect_reason"),
+            "disconnect_reason_code": owner.get("disconnect_reason_code"),
+            "rates": {k: rate.get(k) for k in (
+                "messages_per_second", "messages_5s_average", "messages_60s_average",
+                "ticks_per_second", "ticks_5s_average", "ticks_60s_average",
+            )},
+            "metrics": owner.get("metrics"),
+            "last_message_at": owner.get("last_message_at"),
+            "last_tick_at": owner.get("last_tick_at"),
+            "subscriptions_upstream": owner.get("subscription_count"),
+        },
+        "core": {
+            "subscriptions": st.get("subscription_count"),
+            "desired": st.get("desired_subscriptions"),
+            "pins": st.get("pins"),
+            "raw_tokens": st.get("raw_bucket_tokens"),
+            "feed_levels": owner.get("feed_levels"),
+            "quality_counts": quality.get("status_counts"),
+            "quality_msg_rate": quality.get("messages_per_second"),
+            "duplicate_total": quality.get("duplicate_total"),
+            "invalid_total": quality.get("invalid_field_total"),
+            "latency": quality.get("latency"),
+            "pipeline_stages": pipe.get("stages"),
+            "pipeline_semantics": pipe.get("semantics"),
+        },
+        "output": {
+            "consumers": eng.consumers() or [],
+            "routes": eng.routes() or [],
+            "active_consumers": st.get("active_consumers"),
+            "active_routes": st.get("active_routes"),
+        },
+        "ram": st.get("ram"),
+    })
+
+
 @router.get("/health")
 async def health():
     return _ok(_get_engine().health())

@@ -206,12 +206,111 @@ def cached_last_close(token: str = "", symbol: str = "") -> dict:
 # 3. on-demand broker quotes (batched, cached)
 # --------------------------------------------------------------------------- #
 
-async def _broker_quotes(refs: list[dict]) -> dict[str, dict]:
-    """One batched LTP+OHLC quote through the real broker session.
+#: Kotak's quote endpoint advertises a 50-symbol maximum but rejects a request
+#: that carries exactly 50 ("Please set the Neo symbol max value to 50"). The
+#: measured working ceiling is 49. A weekly scan asks for the whole NSE
+#: universe, so the resolver MUST chunk or every full-size request fails as a
+#: 400 and the scan silently falls back to old candle closes. The chunk cap is
+#: a broker contract, not a tuning knob.
+_BROKER_QUOTE_CHUNK = 49
+#: Chunks are independent; a small amount of concurrency keeps a 2700-symbol
+#: scan inside its batch timeout without looking like a rate-limit attack.
+_BROKER_QUOTE_CONCURRENCY = 3
 
-    Keyed by token AND symbol so callers can look up either way. Returns ``{}``
-    when no real broker session is active — never a message, never a guess.
+
+async def _shoonya_quotes(refs: list[dict]) -> dict[str, dict]:
+    """Quotes through the ACTIVE broker when that broker is Shoonya.
+
+    The resolver used to be hard-wired to Kotak, so a Shoonya terminal still
+    priced its dropdowns with Kotak's prints. The data must come from the
+    broker the user is actually trading on, so the chain follows the ACTIVE
+    terminal.
     """
+    try:
+        from brokers.manager import active_terminal, get_adapter
+
+        if active_terminal() != "shoonya":
+            return {}
+        adapter = get_adapter("shoonya")
+        if not getattr(adapter, "is_logged_in", False):
+            return {}
+    except Exception:
+        return {}
+
+    token_refs = [
+        {"exchange_segment": str(r.get("segment") or "nse_cm"), "instrument_token": str(r.get("token") or "")}
+        for r in refs
+        if str(r.get("token") or "").isdigit()
+    ]
+    if not token_refs:
+        return {}
+    try:
+        payload = await asyncio.wait_for(
+            adapter.quote(token_refs, "ltp"), timeout=_BROKER_TIMEOUT
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("shoonya quote failed for %d symbols: %s", len(token_refs), exc)
+        return {}
+
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        token = str(row.get("exchange_token") or "")
+        ohlc = row.get("ohlc") or {}
+        ltp = _num(row.get("ltp") if row.get("ltp") is not None else row.get("last_price"))
+        if not token or ltp is None:
+            continue
+        close_raw = _num(ohlc.get("close"))
+        prev_close = close_raw if (close_raw is not None and abs(close_raw - ltp) > 1e-9) else None
+        out[token] = _decorate(
+            {
+                "ltp": ltp,
+                "prevClose": prev_close,
+                "open": ohlc.get("open"),
+                "high": ohlc.get("high"),
+                "low": ohlc.get("low"),
+                "volume": row.get("volume") or ohlc.get("volume"),
+                "asOf": datetime.now(timezone.utc).isoformat(),
+            },
+            status="STALE",
+            source="broker",
+        )
+    return out
+
+
+async def _broker_quotes(
+    refs: list[dict],
+    *,
+    include_ohlc: bool = True,
+) -> dict[str, dict]:
+    """Batched broker quotes through the real broker session.
+
+    Kotak rejects a quote call carrying 50 symbols; 49 is the measured working
+    ceiling. We therefore split the requested refs into 49-symbol chunks and
+    issue a bounded number in parallel. Results are keyed by token so callers
+    can look up either token or symbol. Returns ``{}`` when no real broker
+    session is active — never a message, never a guess.
+
+    ``include_ohlc=False`` skips the second broker round-trip when the caller
+    only needs an LTP (the Friday universe screen). That halves broker traffic
+    for a full-market scan and avoids rate-limit pressure on the margin calls
+    that follow it.
+    """
+    # The quote must come from the broker the user is trading ON. When the
+    # active terminal is Shoonya, Kotak's prints are the wrong broker's data
+    # (and Kotak often has no session at all in that mode).
+    try:
+        from brokers.manager import active_terminal
+
+        if active_terminal() != "kotak":
+            return await _shoonya_quotes(refs)
+    except Exception:
+        pass
+
     try:
         from auth.kotak_client import kotak_session
     except Exception:
@@ -227,18 +326,6 @@ async def _broker_quotes(refs: list[dict]) -> dict[str, dict]:
     if not tokens:
         return {}
 
-    async def _one(quote_type: str):
-        try:
-            return await asyncio.wait_for(
-                kotak_session.async_quote(instrument_tokens=tokens, quote_type=quote_type),
-                timeout=_BROKER_TIMEOUT,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.debug("broker %s quote failed: %s", quote_type, exc)
-            return None
-
-    ltp_res, ohlc_res = await asyncio.gather(_one("ltp"), _one("ohlc"))
-
     def _rows(payload: Any) -> list[dict]:
         if not isinstance(payload, dict):
             return []
@@ -249,9 +336,51 @@ async def _broker_quotes(refs: list[dict]) -> dict[str, dict]:
             return [data]
         return []
 
-    ohlc_by_token = {str(r.get("exchange_token")): r for r in _rows(ohlc_res)}
+    semaphore = asyncio.Semaphore(_BROKER_QUOTE_CONCURRENCY)
+
+    async def _one_chunk(chunk: list[dict]) -> tuple[list[dict], list[dict]]:
+        async with semaphore:
+            async def _one(quote_type: str):
+                try:
+                    return await asyncio.wait_for(
+                        kotak_session.async_quote(instrument_tokens=chunk, quote_type=quote_type),
+                        timeout=_BROKER_TIMEOUT,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.debug(
+                        "broker %s quote failed for %d symbols: %s",
+                        quote_type, len(chunk), exc,
+                    )
+                    return None
+
+            if include_ohlc:
+                ltp_res, ohlc_res = await asyncio.gather(_one("ltp"), _one("ohlc"))
+            else:
+                ltp_res, ohlc_res = await _one("ltp"), None
+        return _rows(ltp_res), _rows(ohlc_res)
+
+    chunks = [
+        tokens[start:start + _BROKER_QUOTE_CHUNK]
+        for start in range(0, len(tokens), _BROKER_QUOTE_CHUNK)
+    ]
+    batches = await asyncio.gather(
+        *(_one_chunk(chunk) for chunk in chunks),
+        return_exceptions=True,
+    )
+
+    ltp_rows: list[dict] = []
+    ohlc_by_token: dict[str, dict] = {}
+    for batch in batches:
+        if isinstance(batch, BaseException):
+            _log.debug("broker quote chunk failed: %s", batch)
+            continue
+        ltp_part, ohlc_part = batch
+        ltp_rows.extend(ltp_part)
+        for row in ohlc_part:
+            ohlc_by_token[str(row.get("exchange_token"))] = row
+
     out: dict[str, dict] = {}
-    for row in _rows(ltp_res):
+    for row in ltp_rows:
         token = str(row.get("exchange_token") or "")
         ohlc = (ohlc_by_token.get(token) or {}).get("ohlc") or row.get("ohlc") or {}
         ltp = _num(row.get("ltp") if row.get("ltp") is not None else row.get("last_price"))
@@ -286,13 +415,15 @@ async def resolve_prices(
     refs: Iterable[dict],
     *,
     allow_broker: bool = True,
+    include_ohlc: bool = True,
 ) -> list[dict]:
     """Resolve a batch of ``{"token", "symbol", "segment"}`` refs.
 
     Returns one result per input ref, in the same order. Resolution order per
     row: tick buffer → broker (batched, only for rows the buffer missed) →
     stored candle close. Values are cached briefly so a dropdown and the
-    order card share one resolution.
+    order card share one resolution. ``include_ohlc=False`` is for callers that
+    only need the LTP and want to spare the broker the second quote round-trip.
     """
     wanted = [
         {
@@ -322,7 +453,9 @@ async def resolve_prices(
 
     broker_rows: dict[str, dict] = {}
     if pending and allow_broker:
-        broker_rows = await _broker_quotes([wanted[i] for i in pending])
+        broker_rows = await _broker_quotes(
+            [wanted[i] for i in pending], include_ohlc=include_ohlc,
+        )
 
     for idx in pending:
         ref = wanted[idx]

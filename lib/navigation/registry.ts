@@ -16,7 +16,6 @@
 import {
   DATA_SAVER_SHELL,
   DUMMY_SHELL,
-  KHUMBHA_AI_SHELL,
   KOTAK_NEO_SHELL,
   SERVICES_SHELL,
   SHOONYA_SHELL,
@@ -37,7 +36,6 @@ const SHELL_BY_APP: Record<AppId, ShellWorkspace> = {
   trading: 'trading',
   'data-saver': 'data-saver',
   services: 'services',
-  'khumbha-ai': 'khumbha-ai',
 };
 
 /** All terminal-specific shell configs (for the cross-phase search index). */
@@ -132,7 +130,7 @@ export function getSearchIndex(): SearchIndexItem[] {
   // Trading terminal pages are shared across the trading app; still surface
   // terminal-specific items even when the common set already covered the route.
   for (const shell of TERMINAL_SHELLS) pushShell('trading', shell);
-  for (const app of ['data-saver', 'services', 'khumbha-ai'] as AppId[]) {
+  for (const app of ['data-saver', 'services'] as AppId[]) {
     pushShell(app, SHELL_BY_APP[app] === 'trading' ? TRADING_SHELL : SHELL_CONFIGS[SHELL_BY_APP[app]]);
   }
   return index;
@@ -153,4 +151,4 @@ export function getBreadcrumb(
   return { app: getAppMeta(app), page: findNavByPath(config.nav, pathname) };
 }
 
-export { DATA_SAVER_SHELL, DUMMY_SHELL, KHUMBHA_AI_SHELL, KOTAK_NEO_SHELL, SERVICES_SHELL, SHOONYA_SHELL, TRADING_SHELL };
+export { DATA_SAVER_SHELL, DUMMY_SHELL, KOTAK_NEO_SHELL, SERVICES_SHELL, SHOONYA_SHELL, TRADING_SHELL };

@@ -31,6 +31,13 @@ HEARTBEAT_INTERVAL_S = 12.0
 # A session is STALE when the client has been idle at least this long.
 STALE_AFTER_S = 60.0
 
+# Delivery-metric windows (real measurements, never estimates): bytes and
+# enqueue→delivery latency are sampled on the actual WS write path and kept as
+# bounded window samples, so aggregates are computed from real recent activity
+# instead of a lifetime average that decays into meaninglessness.
+_METRIC_WINDOW_S = 30.0
+_METRIC_MAX_SAMPLES = 512
+
 # Lifecycle vocabulary (connection-manager.md §23) — explicit transitions.
 CREATED = "CREATED"
 CONNECTING = "CONNECTING"
@@ -88,6 +95,13 @@ class Outbox:
             return
         ftype = str(frame.get("type") or "")
         is_market = ftype.startswith("market.")
+        # Enqueue timestamp for REAL delivery-latency measurement (spec §51).
+        # The writer strips the reserved key before the frame hits the socket,
+        # so it never reaches the client — a missing/stale key simply means the
+        # frame bypassed the outbox (hibernated paths) and contributes bytes
+        # only, never a fabricated latency value.
+        if "_cm_enq" not in frame:
+            frame["_cm_enq"] = time.monotonic()
         if len(self._items) >= self._maxlen:
             if not self._make_room(is_market, critical):
                 return
@@ -151,6 +165,13 @@ class ClientSession:
         self.ticks_sent = 0
         self.frames_sent = 0
 
+        # Real wire-delivery metrics (spec §51): bytes were previously untracked
+        # and delivery latency had no measurement point at all. The gateway
+        # writer samples both here per actual socket write.
+        self._bytes_sent = 0
+        self._bytes_window: deque[tuple[float, int]] = deque()
+        self._latency_window: deque[tuple[float, float]] = deque()
+
         # Lifecycle state machine (real transitions only).
         self._lifecycle: list[dict] = []
         self._transition(CREATED, "session created")
@@ -191,6 +212,11 @@ class ClientSession:
 
     def lifecycle_events(self) -> list[dict]:
         return list(self._lifecycle)
+
+    def transition(self, state: str, reason: str = "") -> None:
+        """Public lifecycle move (the gateway records the REAL disconnect
+        reason here so §29 history rows carry a truthful terminal cause)."""
+        self._transition(state, reason)
 
     def current_state(self) -> str:
         """Derived runtime state (spec §23 vocabulary), computed from real signals.
@@ -249,6 +275,53 @@ class ClientSession:
         self._tasks.clear()
         self._transition(TERMINATED, reason or "session closed")
 
+    def record_delivery(self, nbytes: int, latency_ms: float | None = None) -> None:
+        """Record one REAL wire delivery (called from the gateway writer).
+
+        ``nbytes`` is the exact wire payload length that was handed to the
+        socket; ``latency_ms`` is the enqueue→delivery delay for frames that
+        travelled through the outbox (None for direct frames such as pings).
+        Both feed bounded rolling windows (~``_METRIC_WINDOW_S``) that the
+        control plane aggregates into spec §51's bytes/sec and average
+        delivery latency — previously honest NOT_PROVIDED gaps.
+        """
+        now = time.time()
+        if nbytes > 0:
+            self._bytes_sent += nbytes
+            self._bytes_window.append((now, nbytes))
+            self._trim_window(self._bytes_window, now)
+        if latency_ms is not None and latency_ms >= 0:
+            self._latency_window.append((now, latency_ms))
+            self._trim_window(self._latency_window, now)
+
+    @staticmethod
+    def _trim_window(window: deque, now: float) -> None:
+        while window and (now - window[0][0]) > _METRIC_WINDOW_S:
+            window.popleft()
+        while len(window) > _METRIC_MAX_SAMPLES:
+            window.popleft()
+
+    def bytes_sent_total(self) -> int:
+        return self._bytes_sent
+
+    def bytes_per_sec(self) -> float | None:
+        """Real wire bytes/sec over the recent window, or None when idle."""
+        now = time.time()
+        self._trim_window(self._bytes_window, now)
+        if not self._bytes_window:
+            return None
+        total = sum(n for _, n in self._bytes_window)
+        span = min(_METRIC_WINDOW_S, max(now - self._bytes_window[0][0], 0.25))
+        return round(total / span, 2)
+
+    def avg_delivery_latency_ms(self) -> float | None:
+        """Average enqueue→delivery latency over the recent window, or None."""
+        now = time.time()
+        self._trim_window(self._latency_window, now)
+        if not self._latency_window:
+            return None
+        return round(sum(v for _, v in self._latency_window) / len(self._latency_window), 2)
+
     def stats_dict(self) -> dict:
         return {
             "connectionId": self.connection_id,
@@ -260,4 +333,7 @@ class ClientSession:
             "framesSent": self.frames_sent,
             "droppedMarket": self.outbox.dropped_market,
             "droppedCritical": self.outbox.dropped_critical,
+            "bytesSent": self._bytes_sent,
+            "bytesPerSec": self.bytes_per_sec(),
+            "avgDeliveryLatencyMs": self.avg_delivery_latency_ms(),
         }

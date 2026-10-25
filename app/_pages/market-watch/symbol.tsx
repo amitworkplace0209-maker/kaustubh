@@ -12,7 +12,7 @@ import {
 import { cn } from '@/lib/utils';
 import {
   SymbolDetail, DepthLevel, MWRow, fetchJson, useMarketWatchRealtime, overlayTick,
-  moverFlag, movementTone, toneClass,
+  tickOf, moverFlag, movementTone, toneClass,
 } from './mw-shared';
 
 export default function SymbolTab({ initialSymbol, onPinChange }: {
@@ -25,9 +25,60 @@ export default function SymbolTab({ initialSymbol, onPinChange }: {
   const [error, setError] = useState<string | null>(null);
   const [pinning, setPinning] = useState(false);
   const [searched, setSearched] = useState('');
+  const [suggestions, setSuggestions] = useState<MWRow[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [quickPicks, setQuickPicks] = useState<MWRow[]>([]);
+  const [quickLoading, setQuickLoading] = useState(true);
 
   const { ticks, connectionState, frames } = useMarketWatchRealtime(detail?.token ? [detail.token] : []);
-  const live = useMemo(() => (detail ? { ...detail, record: overlayTick(detail.record, detail.token ? ticks.get(`nse_cm|${detail.token}`) : undefined) } : null), [detail, ticks]);
+  const live = useMemo(
+    () => (detail
+      ? { ...detail, record: overlayTick(detail.record, detail.token ? tickOf(ticks, detail.token) : undefined) }
+      : null),
+    [detail, ticks],
+  );
+
+  /**
+   * Suggestions + quick picks. Only symbols in the active locked universe can
+   * carry live ticks, so this is the honest way to make the page usable: show
+   * the symbols that actually have data instead of silently returning an empty
+   * quote for a symbol the engine is not subscribed to.
+   */
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) { setSuggestions([]); return; }
+    if (detail && q.toUpperCase() === String(detail.symbol ?? '').toUpperCase()) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetchJson<{ items: MWRow[] }>(
+          `/api/market-watch/search?q=${encodeURIComponent(q)}&limit=8`,
+        );
+        if (!cancelled) setSuggestions(res.items ?? []);
+      } catch {
+        if (!cancelled) setSuggestions([]);
+      }
+    }, 220);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query, detail]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchJson<{ items: MWRow[] }>('/api/market-watch/page?section=top_gainers&limit=8');
+        if (!cancelled) setQuickPicks(res.items ?? []);
+      } catch {
+        if (!cancelled) setQuickPicks([]);
+      } finally {
+        if (!cancelled) setQuickLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // The market_watch.pins frame may flip manualPinned after external changes.
   useEffect(() => {
@@ -46,15 +97,20 @@ export default function SymbolTab({ initialSymbol, onPinChange }: {
     if (!q) return;
     setLoading(true);
     setError(null);
+    setSuggestOpen(false);
+    setSuggestions([]);
     try {
       const res = await fetchJson<SymbolDetail>(`/api/market-watch/symbol/${encodeURIComponent(q)}`);
       if (!res.ok) {
+        setDetail(null);
         setError(`Unknown symbol: ${q}`);
         return;
       }
       setDetail(res);
-      setSearched(q);
+      setSearched(res.symbol ?? q);
+      setQuery(res.symbol ?? q);
     } catch (err: any) {
+      setDetail(null);
       setError(err?.message ?? 'Failed to load symbol');
     } finally {
       setLoading(false);
@@ -76,7 +132,7 @@ export default function SymbolTab({ initialSymbol, onPinChange }: {
         await fetchJson('/api/market-watch/pins', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol: detail.record.symbol }),
+          body: JSON.stringify({ symbol: detail.record.symbol ?? detail.symbol }),
         });
       }
       setDetail((d) => (d ? { ...d, manualPinned: !d.manualPinned } : d));
@@ -89,7 +145,7 @@ export default function SymbolTab({ initialSymbol, onPinChange }: {
   }, [detail, onPinChange]);
 
   const rec: MWRow = live?.record ?? ({} as MWRow);
-  const status = rec.status ?? 'PENDING';
+  const status = rec.status ?? live?.state?.status ?? 'PENDING';
   const statusMeta: Record<string, { tone: 'success' | 'warning' | 'danger' | 'info' | 'neutral'; label: string }> = {
     LIVE: { tone: 'success', label: 'LIVE' },
     STALE: { tone: 'warning', label: 'STALE' },
@@ -103,15 +159,57 @@ export default function SymbolTab({ initialSymbol, onPinChange }: {
   const maxSell = live?.depth?.sell?.length ?? 0;
   const depthRows = Math.max(maxBuy, maxSell, 1);
 
+  // Honest coverage explanation instead of an empty-looking page. The engine
+  // only subscribes the locked weekly universe (doc §2/§16), so a symbol
+  // outside it can never show live quote/depth values.
+  const coverageMessage = status === 'LIVE'
+    ? null
+    : rec.locked === false
+      ? `This symbol is not part of the active locked universe. Only locked symbols are subscribed for live ticks, so quote, depth and circuit fields are unavailable.`
+      : status === 'NO_DATA'
+        ? `The broker feed reports no data for this token. Quote and depth stay empty rather than being estimated.`
+        : status === 'STALE'
+          ? `The last tick is older than the freshness threshold. Values below are the backend's last real state, not a fresh quote.`
+          : `The engine has not received a tick for this token yet. Quote and depth will fill in when the feed publishes it.`;
+
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
-        <Input
-          placeholder="Enter symbol or token (e.g. RELIANCE or 2885)"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
-        />
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search a locked-universe symbol or token (e.g. KNACK-EQ or 763839)"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setSuggestOpen(true); }}
+            onFocus={() => setSuggestOpen(true)}
+            onKeyDown={(e) => { if (e.key === 'Enter') load(); if (e.key === 'Escape') setSuggestOpen(false); }}
+            className="pl-9"
+          />
+          {suggestOpen && suggestions.length > 0 && (
+            <div className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-md border bg-card shadow-lg">
+              {suggestions.map((s) => (
+                <button
+                  key={s.token}
+                  type="button"
+                  className="flex w-full items-center justify-between gap-2 border-b px-3 py-1.5 text-left last:border-b-0 hover:bg-accent/50"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setQuery(s.symbol); load(s.symbol); }}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-medium">{s.symbol}</span>
+                    <span className="block truncate text-[10px] text-muted-foreground">{s.name}</span>
+                  </span>
+                  <span className="shrink-0 text-right">
+                    <span className="block font-mono text-xs">{s.ltp != null ? `₹${fmtPrice(s.ltp)}` : '--'}</span>
+                    <span className={cn('block font-mono text-[10px]', changeTone(s.changePercent))}>
+                      {s.changePercent != null ? `${sign(s.changePercent)}${s.changePercent.toFixed(2)}%` : '--'}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <Button size="sm" onClick={() => load()} disabled={loading}>
           {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Load
         </Button>
@@ -119,14 +217,51 @@ export default function SymbolTab({ initialSymbol, onPinChange }: {
 
       {error && <ErrorState message={error} onRetry={() => load()} />}
 
-      {!detail && !loading && !error && (
-        <EmptyState icon={Search} title="No symbol loaded" description="Search any NSE symbol to see its combined quote, depth ladder and circuit." />
+      {!detail && !loading && (
+        <SectionCard
+          title="Quick Picks"
+          icon={Search}
+          headerRight={<Badge variant="outline" className="text-[10px]">active universe</Badge>}
+        >
+          {quickLoading ? (
+            <LoadingState text="Loading symbols…" />
+          ) : quickPicks.length === 0 ? (
+            <EmptyState icon={Search} title="Search a symbol" description="Type a symbol above — suggestions come from the active locked universe." />
+          ) : (
+            <>
+              <p className="mb-2 text-[11px] text-muted-foreground">
+                Top gainers in the locked universe. Only subscribed symbols have live quotes, depth and
+                circuit data, so picking one of these always loads a working detail view.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {quickPicks.map((r) => (
+                  <button
+                    key={r.token}
+                    type="button"
+                    onClick={() => { setQuery(r.symbol); load(r.symbol); }}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] hover:border-primary/50"
+                  >
+                    <span className="font-medium">{r.symbol}</span>
+                    <span className={cn('font-mono', changeTone(r.changePercent))}>
+                      {r.changePercent != null ? `${sign(r.changePercent)}${r.changePercent.toFixed(2)}%` : '--'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </SectionCard>
       )}
 
       {loading && <LoadingState text="Loading symbol detail…" />}
 
       {live && !loading && (
         <>
+          {coverageMessage && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <span className="font-semibold">{rec.symbol ?? searched}</span> — {coverageMessage}
+            </div>
+          )}
           <PageHeader
             title={rec.symbol ?? searched}
             subtitle={rec.name}

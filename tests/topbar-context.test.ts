@@ -25,7 +25,7 @@ const configs = {
   services: { id: 'services', nav: { label: 'SERVICES', groups: [] }, statusLinks: {} } as const,
   tradingKotak: { id: 'trading-kotak', nav: { label: 'KOTAK NEO', groups: [] }, statusLinks: {} } as const,
   tradingDummy: { id: 'trading-dummy', nav: { label: 'DUMMY', groups: [] }, statusLinks: {} } as const,
-  khumbha: { id: 'khumbha-ai', nav: { label: 'KHUMBHA AI', groups: [] }, statusLinks: {} } as const,
+  // khumbha removed (standalone app)
 } as const;
 
 function resolve(config: (typeof configs)[keyof typeof configs], pathname: string, terminal?: string) {
@@ -37,7 +37,6 @@ test('phase resolver maps shell ids to phases', () => {
   assert.equal(getTopbarPhase(configs.services), 'services');
   assert.equal(getTopbarPhase(configs.tradingKotak), 'trading');
   assert.equal(getTopbarPhase(configs.tradingDummy), 'trading');
-  assert.equal(getTopbarPhase(configs.khumbha), 'khumbha-ai');
 });
 
 test('data-saver dashboard carries the full spec cluster', () => {

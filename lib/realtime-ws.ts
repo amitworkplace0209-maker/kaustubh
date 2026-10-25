@@ -12,7 +12,10 @@
  *   WS#3 down (Backend → Frontend)  envelope { type, event_id, timestamp, sequence, channel, symbol, schema_version, data }
  *   WS#4 up   (Frontend → Backend)  { action, request_id, correlation_id, channels | order | order_id | position }
  */
-import { realtimeSocketUrl } from './api-base';
+// Relative + explicit extension: this module is imported directly by the
+// Node test runner (`node --test`), and Node's ESM resolver cannot follow a
+// path alias (`@/lib/...`) or an extensionless specifier.
+import { realtimeSocketUrl } from './api-base.ts';
 
 export type RealtimeLiveState =
   | 'DISCONNECTED'
@@ -32,6 +35,12 @@ export type RealtimeInstrument = {
 export type RealtimeChannelSpec = {
   channel: string;
   instruments?: RealtimeInstrument[];
+  /**
+   * Ask the backend to REBUILD the channel's authoritative document instead
+   * of answering from the snapshot cache. Used by the explicit "Refresh"
+   * action (after a mutation) so the user sees the new state immediately.
+   */
+  force?: boolean;
 };
 
 export type RealtimeEnvelope = {
@@ -468,8 +477,15 @@ export class RealtimeClient {
    *
    *  A spec WITHOUT instruments subscribes to the channel's STATE stream
    *  (e.g. ``market_watch`` ranking/pins/status frames) — it is sent verbatim
-   *  and tracked separately from market-token subscriptions. */
-  async subscribe(specs: RealtimeChannelSpec[], requestId?: string): Promise<RealtimeAck> {
+   *  and tracked separately from market-token subscriptions.
+   *
+   *  ``options.force`` re-sends a channel that is already subscribed, which
+   *  asks the backend to push the channel's authoritative document again. */
+  async subscribe(
+    specs: RealtimeChannelSpec[],
+    requestId?: string,
+    options: { force?: boolean } = {},
+  ): Promise<RealtimeAck> {
     dbg('subscribe() called', JSON.stringify(specs), 'open=', this.isOpen());
     if (!this.isOpen()) {
       const ok = await this.connect();
@@ -487,6 +503,7 @@ export class RealtimeClient {
       }
     }
 
+    const force = options.force === true;
     const stateWanted = new Set<string>();
     const merged = new Map<string, Set<string>>();
     for (const spec of specs) {
@@ -509,11 +526,15 @@ export class RealtimeClient {
     // Only send the delta the backend does not already know about.
     const delta: RealtimeChannelSpec[] = [];
     for (const chan of stateWanted) {
-      if (!this.stateSubscriptions.has(chan)) delta.push({ channel: chan });
+      if (force || !this.stateSubscriptions.has(chan)) {
+        delta.push(force ? { channel: chan, force: true } : { channel: chan });
+      }
     }
     for (const [chan, keys] of merged) {
       const known = this.subscriptions.get(chan);
-      const fresh = Array.from(keys).filter((k) => !known || !known.has(k));
+      const fresh = force
+        ? Array.from(keys)
+        : Array.from(keys).filter((k) => !known || !known.has(k));
       if (fresh.length) {
         delta.push({
           channel: chan,

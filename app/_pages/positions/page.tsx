@@ -28,11 +28,13 @@ import {
 
 import {
 
-  getPositions, squareOffPosition, getSystemStatus, getTickStreamUrl,
+  getPositions, squareOffPosition, getSystemStatus,
 
   getQuote, subscribeInstruments, getOrderHistory, type QuoteResponse,
 
 } from '@/lib/api';
+
+import { subscribeSseState, subscribeTicks } from '@/lib/shared-sse';
 
 import {
 
@@ -67,6 +69,8 @@ import { useToast } from '@/hooks/use-toast';
 import { ChargeDetails } from '@/components/charges/charge-details';
 
 import { useNotificationsPoll } from '@/lib/shared-notifications';
+
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 
 import {
 
@@ -270,31 +274,31 @@ function normalizePosition(raw: any): Position {
 
   const symbol = str(r.sym || r.symbol || r.symbol_name).split('-')[0];
 
-  const tradingSymbol = str(r.trdSym || r.trdSym_clean || r.trading_symbol || r.tradingsymbol);
+  const tradingSymbol = str(r.trdSym || r.trdSym_clean || r.trading_symbol || r.tradingsymbol || r.tradingSymbol);
 
   const companyName = str(r.company_name || r.companyName || r.pDesc);
 
-  const exchange = str(r.exSeg || r.exSeg_clean || r.exchange || r.exchange_segment);
+  const exchange = str(r.exSeg || r.exSeg_clean || r.exchange || r.exchange_segment || r.exchangeSegment);
 
   const product = str(r.prod || r.prod_clean || r.product || r.product_type);
 
   const instrumentToken = str(r.tok || r.instrument_token || r.instrumentToken || r.token);
 
-  const buyQty = num(r.buy_quantity ?? r.buy_qty ?? r.cfBuyQty ?? r.flBuyQty);
+  const buyQty = num(r.buy_quantity ?? r.buy_qty ?? r.cfBuyQty ?? r.flBuyQty ?? r.buyQuantity);
 
-  const sellQty = num(r.sell_quantity ?? r.sell_qty ?? r.cfSellQty ?? r.flSellQty);
+  const sellQty = num(r.sell_quantity ?? r.sell_qty ?? r.cfSellQty ?? r.flSellQty ?? r.sellQuantity);
 
-  const sdkNetQty = num(r.qty ?? r.net_qty ?? r.net_quantity);
+  const sdkNetQty = num(r.qty ?? r.net_qty ?? r.net_quantity ?? r.netQuantity);
 
   const rawNetQty = sdkNetQty !== 0 ? sdkNetQty : (buyQty - sellQty);
 
   const absNetQty = Math.abs(rawNetQty);
 
-  const avgBuy = num(r.buy_avg ?? r.buy_average ?? r.avg_price ?? r.average_price);
+  const avgBuy = num(r.buy_avg ?? r.buy_average ?? r.avg_price ?? r.average_price ?? r.averageBuyPrice);
 
-  const avgSell = num(r.sell_avg ?? r.sell_average);
+  const avgSell = num(r.sell_avg ?? r.sell_average ?? r.averageSellPrice);
 
-  const netAvg = num(r.net_average_price ?? r.avg_price ?? r.average_price);
+  const netAvg = num(r.net_average_price ?? r.avg_price ?? r.average_price ?? r.averagePrice);
 
   const buyValue = num(r.buy_value) || (buyQty * avgBuy);
 
@@ -328,7 +332,7 @@ function normalizePosition(raw: any): Position {
 
   else {
 
-    const pt = str(r.position_type || r.trnsTp || r.side).toUpperCase();
+    const pt = str(r.position_type || r.trnsTp || r.side || r.positionType).toUpperCase();
 
     if (pt === 'LONG' || pt === 'BUY' || pt === 'B') side = 'LONG';
 
@@ -350,9 +354,9 @@ function normalizePosition(raw: any): Position {
 
   else status = 'FLAT';
 
-  const brokerRealized = num(r.realised ?? r.realized ?? r.realized_pnl);
+  const brokerRealized = num(r.realised ?? r.realized ?? r.realized_pnl ?? r.realizedPnl);
 
-  const brokerUnrealized = num(r.unrealised ?? r.unrealized ?? r.unrealized_pnl);
+  const brokerUnrealized = num(r.unrealised ?? r.unrealized ?? r.unrealized_pnl ?? r.unrealizedPnl);
 
   const refId = str(
 
@@ -372,7 +376,7 @@ function normalizePosition(raw: any): Position {
 
   const effectiveLtp = ltpRaw > 0 ? ltpRaw : (lastKnownLtp != null ? lastKnownLtp : 0);
 
-  const chargesRawVal = r.estimated_charges ?? r.charges ?? r.brokerage;
+  const chargesRawVal = r.estimated_charges ?? r.charges ?? r.brokerage ?? r.estimatedCharges;
 
   const chargesKnown =
 
@@ -402,9 +406,9 @@ function normalizePosition(raw: any): Position {
 
     realizedPnl: brokerRealized, unrealizedPnl: brokerUnrealized,
 
-    grossPnl: num(r.gross_pnl), netPnl: num(r.net_pnl),
+    grossPnl: num(r.gross_pnl ?? r.grossPnl), netPnl: num(r.net_pnl ?? r.netPnl),
 
-    marketValue: num(r.market_value), buyValue, sellValue,
+    marketValue: num(r.market_value ?? r.marketValue), buyValue, sellValue,
 
     charges: chargesKnown ? num(chargesRawVal) : 0, chargesKnown,
 
@@ -412,7 +416,7 @@ function normalizePosition(raw: any): Position {
 
     refId, dayPnl,
 
-    positionIndex: num(r.position_index),
+    positionIndex: num(r.position_index ?? r.index),
 
     raw: r,
 
@@ -1942,8 +1946,6 @@ export default function PositionsPage() {
 
   const [nowTick, setNowTick] = useState(() => Date.now());
 
-  const busyRef = useRef(false);
-
   const mountedRef = useRef(true);
 
   const prevModeRef = useRef<AccountMode>(mode);
@@ -1964,7 +1966,7 @@ export default function PositionsPage() {
 
   }, []);
 
-  const applyPositions = useCallback((rawPositions: any[], sysStatus: any) => {
+  const applyPositions = useCallback((rawPositions: any[]) => {
 
     const normalized = rawPositions.map((p: any) => {
 
@@ -1977,8 +1979,6 @@ export default function PositionsPage() {
     if (!mountedRef.current) return;
 
     setPositions(normalized);
-
-    setSystem(sysStatus);
 
     setLastSuccessAt(Date.now());
 
@@ -2094,101 +2094,94 @@ export default function PositionsPage() {
 
   }, []);
 
+  // -------------------------------------------------------------------------
+  // Realtime channels — the socket carries the data; REST is the fallback
+  // -------------------------------------------------------------------------
+
+  const positionsChannel = useRealtimeChannel<Record<string, any>>('positions', {
+    fallback: async () => {
+      const store = getSettingsStore();
+      const currentMode = store.getMode();
+      const res = currentMode === 'demo'
+        ? await TradingService.getPositions()
+        : await getPositions();
+      const data = res?.data ?? (Array.isArray(res) ? res : []);
+      return { positions: Array.isArray(data) ? data : [] };
+    },
+    fallbackKey: 'positions',
+    fallbackMs: pollMs,
+  });
+
+  const systemChannel = useRealtimeChannel('system', {
+    fallback: async () => ({ status: await getSystemStatus() }),
+    fallbackKey: 'system:status',
+    fallbackMs: pollMs,
+  });
+
+  const positionsDoc = positionsChannel.data;
+
+  const docRows = Array.isArray(positionsDoc?.positions) ? (positionsDoc!.positions as any[]) : null;
+
+  const docTerminal = typeof positionsDoc?.terminal === 'string' ? positionsDoc!.terminal : null;
+
+  // The socket always describes the ACTIVE terminal. While a terminal switch
+  // is in flight the document may still belong to the previous terminal — the
+  // REST path wins for that one frame.
+  const acceptedTerminals = mode === 'demo' ? ['dummy'] : ['kotak', 'shoonya'];
+
+  const docMatchesMode = !docTerminal || acceptedTerminals.includes(docTerminal);
+
+  // The document IS the data — apply it whenever it changes.
+  useEffect(() => {
+
+    if (!docRows || !docMatchesMode) return;
+
+    applyPositions(docRows);
+
+    refreshChargeBreakdowns();
+
+    const open = docRows
+
+      .map((p: any) => { try { return normalizePosition(p); } catch { return null; } })
+
+      .filter((p: Position | null): p is Position => Boolean(p));
+
+    ensureLiveQuotes(open.filter((p) => p.status === 'OPEN'));
+
+    const missing = open.filter((p) => p.status === 'OPEN' && p.ltp === 0 && p.instrumentToken);
+
+    if (missing.length > 0) fetchMissingQuotes(missing);
+
+  }, [docRows, docMatchesMode, applyPositions, refreshChargeBreakdowns, ensureLiveQuotes, fetchMissingQuotes]);
+
+  // The system status rides the same socket (`system` channel).
+  const wsSystemStatus = (systemChannel.data?.status ?? null) as any;
+
+  useEffect(() => {
+
+    if (!mountedRef.current) return;
+
+    setSystem(mode === 'demo' ? { demoMode: true } : wsSystemStatus);
+
+  }, [mode, wsSystemStatus]);
+
   const fetchPositions = useCallback(async () => {
-
-    if (busyRef.current) return;
-
-    busyRef.current = true;
 
     if (mountedRef.current) setFetching(true);
 
     try {
 
-      const store = getSettingsStore();
-
-      const currentMode = store.getMode();
-
-      let rawPositions: any[] = [];
-
-      let sysStatus: any = null;
-
-      if (currentMode === 'demo') {
-
-        const posRes = await TradingService.getPositions();
-
-        const data = posRes?.data ?? (Array.isArray(posRes) ? posRes : []);
-
-        if (Array.isArray(data)) rawPositions = data;
-
-        sysStatus = { demoMode: true };
-
-        applyPositions(rawPositions, sysStatus);
-
-      } else {
-
-        const [posRes, sysRes] = await Promise.allSettled([getPositions(), getSystemStatus()]);
-
-        if (posRes.status === 'rejected') {
-
-          const msg = posRes.reason instanceof Error ? posRes.reason.message : 'Failed to fetch positions';
-
-          console.error('[positions] API error:', msg);
-
-          if (mountedRef.current) {
-
-            setFeedError(msg);
-
-            if (sysRes.status === 'fulfilled') setSystem(sysRes.value);
-
-          }
-
-          return;
-
-        }
-
-        const raw = posRes.value;
-
-        const data = raw?.data ?? (Array.isArray(raw) ? raw : []);
-
-        if (Array.isArray(data)) rawPositions = data;
-
-        if (sysRes.status === 'fulfilled') sysStatus = sysRes.value;
-
-        applyPositions(rawPositions, sysStatus);
-
-        const normalizedRaw = rawPositions
-
-          .map((p: any) => { try { return normalizePosition(p); } catch { return null; } })
-
-          .filter((p: Position | null): p is Position => Boolean(p));
-
-        ensureLiveQuotes(normalizedRaw.filter((p) => p.status === 'OPEN'));
-
-        const missing = normalizedRaw
-
-          .filter((p) => p.status === 'OPEN' && p.ltp === 0 && p.instrumentToken);
-
-        if (missing.length > 0) fetchMissingQuotes(missing);
-
-      }
-
-      refreshChargeBreakdowns();
-
-    } catch (err) {
-
-      console.error('[positions] fetch error:', err);
-
-      if (mountedRef.current) setFeedError(err instanceof Error ? err.message : 'Network error');
+      // Ask the backend to re-push the authoritative document. When the socket
+      // is down the hook's REST fallback takes over on its own.
+      positionsChannel.refresh();
 
     } finally {
-
-      busyRef.current = false;
 
       if (mountedRef.current) setFetching(false);
 
     }
 
-  }, [applyPositions, fetchMissingQuotes, ensureLiveQuotes, refreshChargeBreakdowns]);
+  }, [positionsChannel]);
 
   useEffect(() => {
 
@@ -2208,39 +2201,12 @@ export default function PositionsPage() {
 
       subscribedTokensRef.current.clear();
 
+      // The terminal changed — ask the backend for the new terminal's document.
+      positionsChannel.refresh();
+
     }
 
-    fetchPositions();
-
-    const store = getSettingsStore();
-
-    const unsub = store.subscribe(() => fetchPositions());
-
-    return unsub;
-
-  }, [mode, fetchPositions]);
-
-  useEffect(() => {
-
-    const interval = setInterval(() => {
-
-      if (typeof document === 'undefined' || !document.hidden) fetchPositions();
-
-    }, pollMs);
-
-    const onVisible = () => { if (!document.hidden) fetchPositions(); };
-
-    document.addEventListener('visibilitychange', onVisible);
-
-    return () => {
-
-      clearInterval(interval);
-
-      document.removeEventListener('visibilitychange', onVisible);
-
-    };
-
-  }, [fetchPositions, pollMs]);
+  }, [mode, positionsChannel]);
 
   const dayFlipRef = useRef<string>(istDayOf(Date.now()));
 
@@ -2268,13 +2234,9 @@ export default function PositionsPage() {
 
   }, [fetchPositions]);
 
-  // Shared SSE tick stream
+  // Shared SSE tick stream — one browser-wide session via `subscribeTicks`
 
   useEffect(() => {
-
-    let es: EventSource | null = null;
-
-    let reconnectTimeout: NodeJS.Timeout | null = null;
 
     const commitTicks = () => {
 
@@ -2320,75 +2282,38 @@ export default function PositionsPage() {
 
     };
 
-    function connect() {
+    // Shared module owns the EventSource + reconnect; this page only feeds it.
 
-      if (!mountedRef.current) return;
+    const offState = subscribeSseState((s) => setWsConnected(Boolean(s.connected)));
+
+    const offTicks = subscribeTicks((raw) => {
 
       try {
 
-        es = new EventSource(getTickStreamUrl());
+        if (raw?.ltp == null || raw?.ltp === 0) return;
 
-        es.onopen = () => { if (mountedRef.current) setWsConnected(true); };
-
-        es.onmessage = (event) => {
-
-          try {
-
-            const raw = JSON.parse(event.data);
-
-            if (raw?.ltp == null || raw?.ltp === 0) return;
-
-            const tick: Tick = {
-
-              symbol: str(raw.symbol || ''),
-
-              tradingSymbol: str(raw.tradingSymbol || ''),
-
-              instrumentToken: str(raw.instrumentToken || ''),
-
-              ltp: num(raw.ltp),
-
-              change: raw.change ?? null,
-
-              changePercent: raw.changePercent ?? null,
-
-              ts: str(raw.ts || '') || new Date().toISOString(),
-
-              src: 'ws',
-
-            };
-
-            if (mountedRef.current) queueTick(tick);
-
-          } catch { /* ignore malformed frame */ }
-
+        const tick: Tick = {
+          symbol: str(raw.symbol || ''),
+          tradingSymbol: str(raw.tradingSymbol || ''),
+          instrumentToken: str(raw.instrumentToken || ''),
+          ltp: num(raw.ltp),
+          change: raw.change ?? null,
+          changePercent: raw.changePercent ?? null,
+          ts: str(raw.ts || '') || new Date().toISOString(),
+          src: 'ws',
         };
 
-        es.onerror = () => {
+        if (mountedRef.current) queueTick(tick);
 
-          if (mountedRef.current) setWsConnected(false);
+      } catch { /* ignore malformed frame */ }
 
-          es?.close();
-
-          if (mountedRef.current) reconnectTimeout = setTimeout(connect, 3000);
-
-        };
-
-      } catch {
-
-        if (mountedRef.current) reconnectTimeout = setTimeout(connect, 3000);
-
-      }
-
-    }
-
-    connect();
+    });
 
     return () => {
 
-      es?.close();
+      offState();
 
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      offTicks();
 
       if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
 

@@ -340,7 +340,7 @@ function EngineCard({
 
   return (
     <Panel
-      className={cn('ds-rise group flex flex-col p-0', tone === 'ok' ? 'border-success/20' : tone === 'bad' ? 'border-destructive/30' : tone === 'warn' ? 'border-warning/30' : 'border-border/60')}
+      className={cn('ds-rise group flex flex-col p-0 relative transition-all duration-200', tone === 'ok' ? 'border-success/50 ring-1 ring-success/20 shadow-[0_0_20px_-12px_hsl(var(--success)/0.15)] hover:border-success/80 hover:ring-success/40 hover:shadow-[0_0_24px_-10px_hsl(var(--success)/0.25)]' : tone === 'bad' ? 'border-destructive/60 ring-1 ring-destructive/20 shadow-[0_0_20px_-12px_hsl(var(--destructive)/0.15)] hover:border-destructive/90 hover:ring-destructive/40 hover:shadow-[0_0_24px_-10px_hsl(var(--destructive)/0.25)]' : tone === 'warn' ? 'border-warning/50 ring-1 ring-warning/20 shadow-[0_0_20px_-12px_hsl(var(--warning)/0.15)] hover:border-warning/90 hover:ring-warning/40 hover:shadow-[0_0_24px_-10px_hsl(var(--warning)/0.25)]' : 'border-border/60 ring-1 ring-border/10 hover:border-border/80 hover:ring-border/20')}
       style={stagger(index % 12)}
     >
       {/* Category accent rail — the fleet's colour key. */}
@@ -357,7 +357,7 @@ function EngineCard({
         style={{ backgroundImage: `radial-gradient(circle, hsl(var(--${catVar(CatAccent)}) / 0.22), transparent 70%)` }}
       />
 
-      <div className="relative flex items-start gap-2.5 p-3 pb-2">
+      <div className="relative flex items-start gap-1 p-3 pb-2">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-background/70 to-background/20 ring-1 ring-border/60">
           <CategoryIcon className={cn('h-4 w-4', catTextClass(CatAccent))} />
         </span>
@@ -598,7 +598,7 @@ export function EngineFleet({
               </span>
             </div>
 
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
               {list.map((e, i) => (
                 <EngineCard key={e.engineId} engine={e} series={series[e.engineId] ?? []} index={i} />
               ))}

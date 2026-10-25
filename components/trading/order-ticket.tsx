@@ -1,190 +1,321 @@
 'use client';
 
+import { memo } from 'react';
 import { Minus, Plus } from 'lucide-react';
-import type { InstrumentSelection, LiveQuote, TicketState } from '@/components/orders/trade/types';
-import type { TradeCapabilities } from '@/components/orders/trade/capabilities';
-import { VALIDITIES } from '@/components/orders/trade/lifecycle';
 import { cn } from '@/lib/utils';
-import { sign } from '@/components/design-system';
-import { marginPerShare, quantityFromMargin } from '@/lib/order-workspace';
+import { Input } from '@/components/ui/input';
+import { VALIDITIES } from '@/components/orders/trade/lifecycle';
+import type { TradeCapabilities } from '@/components/orders/trade/capabilities';
+import type { InstrumentSelection, LiveQuote, OrderSide, TicketState } from '@/components/orders/trade/types';
 
-const labelCls = 'mb-1 block text-[9px] font-bold uppercase tracking-wider text-muted-foreground';
-const inputCls = 'h-10 w-full rounded-xl border border-border bg-background px-2.5 font-mono text-[15px] font-bold tabular-nums outline-none transition-colors focus:border-primary/60 focus:ring-2 focus:ring-primary/20 disabled:opacity-60';
-const segWrapCls = 'flex gap-1 rounded-xl border border-border/70 bg-muted/40 p-1';
-const segIdleCls = 'flex-1 rounded-lg text-[11px] font-bold uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60';
-const segOnCls = 'flex-1 rounded-lg bg-card text-[11px] font-extrabold uppercase tracking-wide shadow-sm ring-1 ring-border/70';
-
-const fmt = (v: number | null | undefined): string => {
-  if (v == null || !Number.isFinite(v)) return '—';
-  return v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-};
-
-const fmtShort = (v: number | null | undefined): string => {
-  if (v == null || !Number.isFinite(v)) return '—';
-  const a = Math.abs(v);
-  if (a >= 1e7) return `${(v / 1e7).toFixed(2)}Cr`;
-  if (a >= 1e5) return `${(v / 1e5).toFixed(2)}L`;
-  if (a >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
-  return v.toFixed(0);
-};
-
-export function OrderTicket({
-  caps, ticket, onChange, quote, disabled, symbol, lotSize, selection,
-}: {
+export interface OrderTicketCardProps {
   caps: TradeCapabilities;
   ticket: TicketState;
   onChange: (next: TicketState) => void;
   quote: LiveQuote | null;
+  selection: InstrumentSelection;
+  lotSize: number;
+  perShare: number | null;
   disabled?: boolean;
-  symbol?: string;
-  lotSize?: number;
-  selection?: InstrumentSelection | null;
-}) {
-  const set = <K extends keyof TicketState>(key: K, value: TicketState[K]) => onChange({ ...ticket, [key]: value });
+}
 
-  const ltp = quote?.ltp != null ? Number(quote.ltp) : selection?.ltp != null && selection.ltp > 0 ? Number(selection.ltp) : null;
-  const demo = caps.virtualCurrency;
-  const unit = demo ? 'C' : '₹';
-  const lot = Number.isFinite(Number(lotSize)) && Number(lotSize) >= 1 ? Math.round(Number(lotSize)) : 1;
-  const minQty = lot;
-  const setQty = (value: string) => onChange({ ...ticket, quantity: value, amount: '' });
-  const decQty = () => setQty(String(Math.max(minQty, (parseInt(ticket.quantity, 10) || minQty) - lot)));
-  const incQty = () => setQty(String((parseInt(ticket.quantity, 10) || 0) + lot));
+const SIDES: OrderSide[] = ['BUY', 'SELL'];
+
+/**
+ * The order ticket.
+ *
+ * The order types and products it offers come from the BACKEND capability
+ * registry (`caps.orderTypes` / `caps.products`), so the page can never offer
+ * a combination the broker's SDK does not support.
+ */
+export const OrderTicketCard = memo(function OrderTicketCard({
+  caps,
+  ticket,
+  onChange,
+  quote,
+  selection,
+  lotSize,
+  perShare,
+  disabled,
+}: OrderTicketCardProps) {
   const needsPrice = ticket.orderType === 'L' || ticket.orderType === 'SL';
   const needsTrigger = ticket.orderType === 'SL' || ticket.orderType === 'SL-M';
+  const qty = Number(ticket.quantity);
+  const validQty = Number.isInteger(qty) && qty > 0;
 
-  const qtyNum = parseInt(ticket.quantity, 10);
-  const qtyValid = Number.isInteger(qtyNum) && qtyNum >= 1;
-  const refPrice = needsPrice ? Number(ticket.price) || null : ltp;
-  const total = qtyValid && refPrice != null ? qtyNum * refPrice : null;
-
-  const perShare = marginPerShare({ price: refPrice, product: ticket.product, oneQtyMargin: selection?.oneQtyMargin });
-  const amountValue = ticket.amount ?? '';
-  const onAmount = (value: string) => {
-    const next: TicketState = { ...ticket, amount: value };
-    const per = marginPerShare({ price: refPrice, product: ticket.product, oneQtyMargin: selection?.oneQtyMargin });
-    const sized = quantityFromMargin({ marginAmount: Number(value), perShare: per, lotSize });
-    if (sized != null) next.quantity = String(sized);
-    onChange(next);
+  const setQty = (next: number) => {
+    const clamped = Math.max(1, Math.floor(next));
+    onChange({ ...ticket, quantity: String(clamped) });
   };
 
-  const limitPrice = Number(ticket.price);
-  const marketable = needsPrice && ltp != null && limitPrice > 0
-    ? ticket.side === 'BUY' ? ltp <= limitPrice : ltp >= limitPrice
-    : null;
+  const stepQty = (dir: 1 | -1) => {
+    const base = validQty ? qty : 0;
+    setQty(base + dir * lotSize);
+  };
+
+  const setAmount = (value: string) => {
+    const amount = Number(value);
+    if (!Number.isFinite(amount) || amount <= 0 || perShare == null || perShare <= 0) {
+      onChange({ ...ticket, amount: value });
+      return;
+    }
+    const sized = quantityFromMarginSafe(amount, perShare, lotSize);
+    onChange({ ...ticket, amount: value, quantity: sized != null ? String(sized) : ticket.quantity });
+  };
 
   return (
-    <div className="space-y-2">
-      {/* Side */}
-      <div className="grid grid-cols-2 gap-1.5">
-        {(['BUY', 'SELL'] as const).map((side) => (
-          <button key={side} type="button" onClick={() => set('side', side)} disabled={disabled} aria-pressed={ticket.side === side}
-            className={cn('h-11 rounded-xl text-[15px] font-extrabold uppercase tracking-wide transition-all active:scale-[0.99]',
-              ticket.side === side ? side === 'BUY' ? 'bg-success text-success-foreground shadow-[0_2px_10px_-2px_hsl(var(--success)/0.5)]' : 'bg-destructive text-destructive-foreground shadow-[0_2px_10px_-2px_hsl(var(--destructive)/0.5)]' : 'border border-border/60 bg-card text-muted-foreground hover:text-foreground'
-            )}>
-            {side}
-          </button>
-        ))}
+    <div className="space-y-2.5 p-3">
+      {/* side */}
+      <Segmented
+        value={ticket.side}
+        options={SIDES.map((s) => ({ value: s, label: s }))}
+        onChange={(side) => onChange({ ...ticket, side: side as OrderSide })}
+        disabled={disabled}
+        tone="side"
+      />
+
+      {/* order type */}
+      <Field label="Order type">
+        <Segmented
+          value={ticket.orderType}
+          options={caps.orderTypes.map((t) => ({ value: t, label: t }))}
+          onChange={(orderType) => onChange({ ...ticket, orderType })}
+          disabled={disabled}
+        />
+      </Field>
+
+      {/* product + validity */}
+      <div className="grid gap-2.5 sm:grid-cols-2">
+        <Field label="Product">
+          <Segmented
+            value={ticket.product}
+            options={caps.products.map((p) => ({ value: p, label: p }))}
+            onChange={(product) => onChange({ ...ticket, product })}
+            disabled={disabled}
+          />
+        </Field>
+        <Field label="Validity">
+          <Segmented
+            value={ticket.validity}
+            options={VALIDITIES.map((v) => ({ value: v, label: v }))}
+            onChange={(validity) => onChange({ ...ticket, validity })}
+            disabled={disabled}
+          />
+        </Field>
       </div>
 
-      {/* Order type */}
-      <div>
-        <label className={labelCls} htmlFor="order-type">Order type</label>
-        <div className={segWrapCls} role="group" aria-labelledby="order-type">
-          {caps.orderTypes.map((o) => (
-            <button key={o} type="button" id={o === caps.orderTypes[0] ? 'order-type' : undefined} onClick={() => set('orderType', o)} disabled={disabled} aria-pressed={ticket.orderType === o} className={cn('h-8', ticket.orderType === o ? segOnCls : segIdleCls)}>
-              {o}
+      {/* quantity + margin amount */}
+      <div className="grid gap-2.5 sm:grid-cols-2">
+        <Field label={`Quantity${lotSize > 1 ? ` (lot ${lotSize})` : ''}`}>
+          <div className="flex items-stretch overflow-hidden rounded-lg border border-border bg-background">
+            <button
+              type="button"
+              aria-label="Decrease quantity"
+              disabled={disabled || !validQty || qty <= lotSize}
+              onClick={() => stepQty(-1)}
+              className="flex w-11 items-center justify-center border-r border-border text-muted-foreground transition-colors hover:bg-muted disabled:opacity-40"
+            >
+              <Minus className="h-4 w-4" />
             </button>
-          ))}
-        </div>
+            <input
+              aria-label="Quantity"
+              inputMode="numeric"
+              value={ticket.quantity}
+              disabled={disabled}
+              onChange={(e) => onChange({ ...ticket, quantity: e.target.value.replace(/[^\d]/g, '') })}
+              className="h-11 min-w-0 flex-1 bg-transparent px-3 text-center font-mono text-[16px] font-bold tabular-nums outline-none"
+            />
+            <button
+              type="button"
+              aria-label="Increase quantity"
+              disabled={disabled}
+              onClick={() => stepQty(1)}
+              className="flex w-11 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-muted disabled:opacity-40"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
+        </Field>
+
+        <Field
+          label="Margin to commit"
+          hint={
+            perShare != null && perShare > 0
+              ? `${ticket.product} ≈ ${perShare.toFixed(2)} per share`
+              : 'Per-share margin unknown'
+          }
+        >
+          <Input
+            aria-label="Margin amount"
+            inputMode="decimal"
+            value={ticket.amount ?? ''}
+            placeholder="optional"
+            disabled={disabled}
+            onChange={(e) => setAmount(e.target.value)}
+            className="h-11 font-mono text-[15px] font-bold tabular-nums"
+          />
+        </Field>
       </div>
 
-      {/* Product + Validity */}
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className={labelCls} htmlFor="order-product">Product</label>
-          <div className={cn(segWrapCls, 'gap-0.5 p-0.5')} role="group" aria-labelledby="order-product">
-            {caps.products.map((p) => (
-              <button key={p} type="button" id={p === caps.products[0] ? 'order-product' : undefined} onClick={() => set('product', p)} disabled={disabled} aria-pressed={ticket.product === p} className={cn('h-8 text-[10px]', ticket.product === p ? segOnCls : segIdleCls)}>
-                {p}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div>
-          <label className={labelCls} htmlFor="order-validity">Validity</label>
-          <div className={cn(segWrapCls, 'gap-0.5 p-0.5')} role="group" aria-labelledby="order-validity">
-            {VALIDITIES.map((v) => (
-              <button key={v} type="button" id={v === VALIDITIES[0] ? 'order-validity' : undefined} onClick={() => set('validity', v)} disabled={disabled} aria-pressed={ticket.validity === v} className={cn('h-8 text-[10px]', ticket.validity === v ? segOnCls : segIdleCls)}>
-                {v}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Quantity + Amount */}
-      <div>
-        <div className="mb-1 flex items-center justify-between gap-2">
-          <label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground" htmlFor="order-qty">
-            Quantity {lot > 1 && <span className="font-medium normal-case tracking-normal">· 1 lot = {lot}</span>}
-          </label>
-          <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
-            {perShare != null ? `mgn/qty ${unit}${fmt(perShare)}` : 'mgn/qty —'}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button type="button" onClick={decQty} disabled={disabled} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground active:scale-95" aria-label="Decrease quantity"><Minus className="h-4 w-4" /></button>
-          <input id="order-qty" type="number" inputMode="numeric" min={minQty} step={lot} value={ticket.quantity} onChange={e => setQty(e.target.value)} disabled={disabled} aria-label="Quantity" className={cn(inputCls, 'min-w-0 flex-1 text-center')} />
-          <button type="button" onClick={incQty} disabled={disabled} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground active:scale-95" aria-label="Increase quantity"><Plus className="h-4 w-4" /></button>
-          <div className="relative min-w-0 flex-1">
-            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 font-mono text-[13px] font-bold text-muted-foreground" aria-hidden>{unit}</span>
-            <input id="order-amount" type="number" inputMode="decimal" step="any" min="0" value={amountValue} onChange={e => onAmount(e.target.value)} disabled={disabled} placeholder={`Amt ${perShare != null ? fmtShort(perShare * lot) : '—'}`} aria-label="Margin amount to commit" className={cn(inputCls, 'pl-6 text-[13px]')} />
-          </div>
-        </div>
-        <p className="mt-1 truncate text-[10px] text-muted-foreground">
-          {perShare == null ? 'Margin sizing needs a live price.' : `${qtyValid ? `${qtyNum} qty` : 'qty'} × ${unit}${fmtShort(refPrice ?? 0)} = ${unit}${fmtShort(total ?? 0)} · mgn/qty ${unit}${fmtShort(perShare)}`}
-        </p>
-      </div>
-
-      {/* Price fields */}
+      {/* prices */}
       {(needsPrice || needsTrigger) && (
-        <div className="grid grid-cols-2 gap-1.5">
+        <div className="grid gap-2.5 sm:grid-cols-2">
           {needsPrice && (
-            <div>
-              <div className={cn(labelCls, 'flex items-center justify-between gap-1')}>
-                <span>Limit ({unit})</span>
-                {ltp != null && <button type="button" onClick={() => set('price', ltp.toFixed(2))} disabled={disabled} className="rounded border border-primary/30 bg-primary/10 px-1 py-px text-[9px] font-bold text-primary transition-colors hover:bg-primary/20">= LTP</button>}
-              </div>
-              <input type="number" inputMode="decimal" step="0.05" min="0" value={ticket.price === '0' ? '' : ticket.price} onChange={e => set('price', e.target.value)} disabled={disabled} className={inputCls} placeholder={`${unit}0.00`} aria-label="Limit price" />
-            </div>
+            <Field label="Limit price">
+              <Input
+                aria-label="Limit price"
+                inputMode="decimal"
+                value={ticket.price}
+                disabled={disabled}
+                onChange={(e) => onChange({ ...ticket, price: e.target.value })}
+                className="h-11 font-mono text-[15px] font-bold tabular-nums"
+              />
+            </Field>
           )}
           {needsTrigger && (
-            <div>
-              <label className={labelCls} htmlFor="order-trigger">Trigger ({unit})</label>
-              <input id="order-trigger" type="number" inputMode="decimal" step="0.05" min="0" value={ticket.triggerPrice} onChange={e => set('triggerPrice', e.target.value)} disabled={disabled} className={inputCls} placeholder="Trigger" aria-label="Trigger price" />
-            </div>
+            <Field label="Trigger price">
+              <Input
+                aria-label="Trigger price"
+                inputMode="decimal"
+                value={ticket.triggerPrice}
+                disabled={disabled}
+                onChange={(e) => onChange({ ...ticket, triggerPrice: e.target.value })}
+                className="h-11 font-mono text-[15px] font-bold tabular-nums"
+              />
+            </Field>
           )}
         </div>
       )}
 
-      {/* Fill state */}
-      {needsPrice && ltp != null && limitPrice > 0 && (
-        <div className={cn('flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 text-[11px] font-semibold',
-          marketable ? 'border-success/40 bg-success/10 text-success' : 'border-warning/40 bg-warning/10 text-warning'
-        )}>
-          <span className="truncate">
-            {marketable ? `${ticket.side} ${symbol ?? 'order'} will fill — LTP ${fmt(ltp)} reached your limit.` : `PENDING — LTP ${fmt(ltp)} has not reached ${unit}${fmt(limitPrice)} yet.`}
-          </span>
-          <span className="shrink-0 font-mono tabular-nums">{sign((ltp - limitPrice) as number)}{(Math.abs(ltp - limitPrice)).toFixed(2)}</span>
-        </div>
-      )}
+      <Marketability
+        side={ticket.side}
+        orderType={ticket.orderType}
+        price={Number(ticket.price)}
+        ltp={quote?.ltp ?? null}
+      />
 
-      {ticket.product === 'CASH' && (
-        <p className="rounded-xl border border-info/25 bg-info/5 px-2.5 py-1.5 text-[10px] text-muted-foreground">
-          Cash delivery — full payment, settles into <span className="font-semibold text-foreground">Holdings</span>.
+      {selection.marginStatus === 'REQUIRES_ORDER_CONTEXT' && (
+        <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[12px] text-muted-foreground">
+          The margin for this instrument depends on the order — the server figure appears once the
+          ticket is complete.
         </p>
       )}
     </div>
   );
+})
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+          {label}
+        </span>
+        {hint && <span className="text-[11px] tabular-nums text-muted-foreground/80">{hint}</span>}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function Segmented({
+  value,
+  options,
+  onChange,
+  disabled,
+  tone,
+}: {
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  tone?: 'side';
+}) {
+  return (
+    <div
+      role="radiogroup"
+      className={cn(
+        'grid w-full overflow-hidden rounded-lg border border-border bg-muted/30',
+        options.length === 2 && 'grid-cols-2',
+        options.length === 3 && 'grid-cols-3',
+        options.length === 4 && 'grid-cols-4',
+        options.length >= 5 && 'grid-cols-5',
+      )}
+    >
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            onClick={() => onChange(opt.value)}
+            className={cn(
+              'h-10 border-r border-border/60 text-[12px] font-bold uppercase tracking-wide transition-colors last:border-r-0 disabled:opacity-50',
+              tone === 'side' && active
+                ? opt.value === 'BUY'
+                  ? 'bg-success text-success-foreground'
+                  : 'bg-destructive text-destructive-foreground'
+                : active
+                  ? 'bg-card text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:bg-card/60 hover:text-foreground',
+            )}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function Marketability({
+  side,
+  orderType,
+  price,
+  ltp,
+}: {
+  side: OrderSide;
+  orderType: string;
+  price: number;
+  ltp: number | null;
+}) {
+  if (orderType !== 'L' && orderType !== 'SL') return null;
+  if (ltp == null || !(price > 0)) return null;
+  const marketable = side === 'BUY' ? ltp <= price : ltp >= price;
+  return (
+    <p
+      className={cn(
+        'rounded-lg border px-3 py-2 text-[12px] font-medium',
+        marketable
+          ? 'border-success/30 bg-success/[0.07] text-success'
+          : 'border-warning/30 bg-warning/[0.07] text-warning',
+      )}
+    >
+      {marketable
+        ? `Marketable now — the live LTP ${ltp.toFixed(2)} already crosses your price.`
+        : `Not marketable yet — the live LTP is ${ltp.toFixed(2)}; this order rests until it reaches your price.`}
+    </p>
+  );
+}
+
+function quantityFromMarginSafe(
+  amount: number,
+  perShare: number,
+  lotSize: number,
+): number | null {
+  const raw = Math.floor(amount / perShare);
+  if (raw < 1) return null;
+  const aligned = Math.floor(raw / lotSize) * lotSize;
+  return aligned >= lotSize ? aligned : null;
 }

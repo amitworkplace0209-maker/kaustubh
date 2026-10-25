@@ -1,4 +1,4 @@
-**STATUS: MIGRATED 2026-09-23 — 4-WS model (WebSocket_ConnectionManager_Flow.md + 08_WEBSOCKET_ARCHITECTURE.md). Dual description WS#1+WS#2 collapsed; now WS#1 SFeed + WS#2 OrderFeed + WS#3 Backend?Frontend + WS#4 Frontend?Backend. See 08/09 for canonical flows.**
+**STATUS: MIGRATED 2026-09-23 ï¿½ 4-WS model (WebSocket_ConnectionManager_Flow.md + 08_WEBSOCKET_ARCHITECTURE.md). Dual description WS#1+WS#2 collapsed; now WS#1 SFeed + WS#2 OrderFeed + WS#3 Backend?Frontend + WS#4 Frontend?Backend. See 08/09 for canonical flows.**
 
 # KAUSTUBH/KDS Trading Terminal - Architecture Documentation Index
 
@@ -44,6 +44,7 @@ This directory contains the authoritative architecture documentation for the KAU
 - **33-**: Migration roadmap and incremental upgrade path
 - **34-**: Developer onboarding and setup guide
 - **35-**: AI agent and LLM context for codebase navigation
+- **36-**: Device-local AI provider bridge and Market Watch/Suggestions integration
 
 ### Documentation Rules
 1. **Current implementation is source-of-truth**: Architecture docs define the *approved* architecture; never falsely document something as implemented if the code does not match
@@ -69,6 +70,7 @@ This directory contains the authoritative architecture documentation for the KAU
 | 33_MIGRATION_PLAN.md | Prioritized migration roadmap |
 | 34_DEVELOPER_ONBOARDING.md | Onboarding guide for new developers |
 | 35_AI_AGENT_CONTEXT.md | AI/LLM context for codebase navigation |
+| 36_LOCAL_AI_BRIDGE_ARCHITECTURE.md | Device-local AI provider bridge, analysis contract and Market Watch/Suggestions integration |
 | ARCHITECTURE_DOCUMENTATION_AUDIT.md | Audit of documentation completeness |
 
 ### Engine Documentation Cross-Reference
@@ -90,8 +92,9 @@ Each engine in `docs/engines/` has a corresponding architectural specification. 
 
 ### Recent Updates
 - **2026-09-21**: Initial architecture documentation rebuild started
-- All 35 architecture files to be created with current-state vs target-state analysis
+- All 35+ architecture files to be created with current-state vs target-state analysis
 - Based on scan of 25+ engine docs, 13 existing architecture files, Python service code, and 30+ frontend pages
+- **2026-10-21**: Added `36_LOCAL_AI_BRIDGE_ARCHITECTURE.md` for the device-local Ollama/LM Studio/llama.cpp bridge and its Market Watch/Suggestions integration
 
 ---
 *Generated as part of KAUSTUBH/KDS trading terminal architecture documentation rebuild.*

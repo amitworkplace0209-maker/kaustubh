@@ -137,6 +137,29 @@ FEED_CONNECTING = "CONNECTING"
 FEED_CONNECTED = "CONNECTED"
 FEED_DISCONNECTED = "DISCONNECTED"
 
+# SymbolState-owned keys merged into full-universe rows so ranked rows can render
+# circuit/margin/classification without the browser deriving them (doc §14/§17/
+# §20/§24/§27). ``lastTickAt`` is deliberately absent: list payloads keep the
+# epoch-seconds value the flat record already publishes.
+_STATE_ROW_KEYS = (
+    "circuitDistanceUpperPct",
+    "circuitDistanceLowerPct",
+    "circuitDistancePct",
+    "circuitStatus",
+    "marginValue",
+    "marginMultiplier",
+    "marginStatus",
+    "intradayStatus",
+    "classification",
+    "stockState",
+    "movementFlags",
+    "dataCompleteness",
+    "dataQuality",
+    "eligibilityStatus",
+    "blockReason",
+    "tickCount",
+)
+
 
 def _fnum(value: Any) -> Optional[float]:
     if value is None or value == "":
@@ -934,8 +957,18 @@ class MarketWatchEngine(EngineBase):
         by_symbol: dict[str, dict] = {}
         for inst in instruments or []:
             symbol = str(inst.get("symbol") or inst.get("tradingSymbol") or "")
-            if symbol:
-                by_symbol.setdefault(symbol, inst)
+            if not symbol:
+                continue
+            existing = by_symbol.get(symbol)
+            # A symbol can appear in more than one segment (e.g. an EQ and an
+            # F&O contract). Membership is an NSE-EQ lock, so the EQ record
+            # must win regardless of master ordering; taking the first record
+            # silently marks a valid locked EQ as unresolved.
+            if existing is None or (
+                not instrument_cache.is_nse_eq(existing)
+                and instrument_cache.is_nse_eq(inst)
+            ):
+                by_symbol[symbol] = inst
 
         active: list[dict] = []
         registry: dict[str, dict] = {}
@@ -1188,7 +1221,8 @@ class MarketWatchEngine(EngineBase):
             from api.ws_engine import get_wired_engine
 
             sm = get_session_manager()
-            session_id = (sm.snapshot() or {}).get("session_id")
+            session_snap = sm.snapshot() or {}
+            session_id = session_snap.get("session_id") or session_snap.get("sessionId")
             await sm.apply_daily_subscription_intent(
                 trading_date, session_id, self.daily_subscription_intent(),
             )
@@ -1590,15 +1624,15 @@ class MarketWatchEngine(EngineBase):
         try:
             from services.session.session_manager import get_session_manager
 
-            snapshot = get_session_manager().snapshot() or {}
+            sm = get_session_manager()
+            decisions = sm.margin_decisions_for([state.instrument_token, state.symbol]) or {}
         except Exception:
             return
-        decisions = snapshot.get("marginDecisions") or {}
-        entry = decisions.get(state.symbol)
+        entry = decisions.get(state.instrument_token) or decisions.get(state.symbol)
         if not isinstance(entry, dict):
             return
         state.apply_margin(
-            value=_fnum(entry.get("marginValue") or entry.get("value") or entry.get("requiredMargin")),
+            value=_fnum(entry.get("marginValue") or entry.get("value") or entry.get("requiredMargin") or entry.get("marginAmount")),
             multiplier=_fnum(entry.get("multiplier") or entry.get("leverage") or entry.get("marginMultiplier")),
             threshold=cfg.weekly.margin_multiplier_threshold,
             status=None,
@@ -1872,6 +1906,14 @@ class MarketWatchEngine(EngineBase):
     # ------------------------------------------------------------------
     # Tick consumption (doc §8, §19 — feed and ranking stay separate)
     # ------------------------------------------------------------------
+    # Time budget/cap for the tick drain (same cooperative pattern as the
+    # feature engine): per-tick work is CPU on the event loop, and holding the
+    # loop too long starved the HTTP server during feed bursts — every REST
+    # call (dashboard/quality/...) seemed to hang. The drain stops after the
+    # budget and the loop yields so other tasks always get a slice.
+    TICK_BATCH_BUDGET_S = 0.010
+    TICK_BATCH_MAX = 64
+
     async def _listen_loop(self) -> None:
         q = self._subscriber_queue
         if not q:
@@ -1879,23 +1921,36 @@ class MarketWatchEngine(EngineBase):
         while True:
             try:
                 event = await q.get()
-                event_type = event.get("eventType", "")
-                if event_type == EngineEvents.TICK_VALIDATED:
-                    tick = event.get("data", {}) or {}
-                    token = str(tick.get("instrumentToken") or tick.get("token", ""))
-                    if token:
-                        self._process_tick(token, tick)
-                        if token in self._registry and token not in self._subscribed_tokens:
-                            with self._lock:
-                                self._subscribed_tokens.add(token)
-                elif event_type == EngineEvents.WEBSOCKET_DISCONNECTED:
-                    self._on_ws_disconnected()
-                elif event_type in (EngineEvents.WEBSOCKET_CONNECTED, EngineEvents.WEBSOCKET_RECONNECTED):
-                    self._on_ws_reconnected()
+                self._handle_event(event)
+                deadline = time.perf_counter() + self.TICK_BATCH_BUDGET_S
+                for _ in range(self.TICK_BATCH_MAX):
+                    try:
+                        nxt = q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    self._handle_event(nxt)
+                    if time.perf_counter() >= deadline:
+                        break
+                await asyncio.sleep(0)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.record_error("tick_processing_error", str(exc))
+
+    def _handle_event(self, event: dict) -> None:
+        event_type = event.get("eventType", "")
+        if event_type == EngineEvents.TICK_VALIDATED:
+            tick = event.get("data", {}) or {}
+            token = str(tick.get("instrumentToken") or tick.get("token", ""))
+            if token:
+                self._process_tick(token, tick)
+                if token in self._registry and token not in self._subscribed_tokens:
+                    with self._lock:
+                        self._subscribed_tokens.add(token)
+        elif event_type == EngineEvents.WEBSOCKET_DISCONNECTED:
+            self._on_ws_disconnected()
+        elif event_type in (EngineEvents.WEBSOCKET_CONNECTED, EngineEvents.WEBSOCKET_RECONNECTED):
+            self._on_ws_reconnected()
 
     def _on_ws_disconnected(self) -> None:
         self._feed_state = FEED_DISCONNECTED
@@ -1976,12 +2031,12 @@ class MarketWatchEngine(EngineBase):
                 "generatedAt": generated_at,
                 "epoch": now,
                 "feedState": self._feed_state,
-                   "universeSize": len(self._universe),
-                   "eligibleUniverseCount": custom.get("eligibleUniverseCount", 0),
-                   "priceCappedCount": custom.get("priceCappedCount", 0),
-                   "priceCap": custom.get("priceCap"),
-                   "watchableCount": custom.get("watchableCount", 0),
-                   "subscribedTokenCount": custom.get("subscribedTokenCount", 0),
+                "universeSize": len(self._universe),
+                "eligibleUniverseCount": custom.get("eligibleUniverseCount", 0),
+                "priceCappedCount": custom.get("priceCappedCount", 0),
+                "priceCap": custom.get("priceCap"),
+                "watchableCount": custom.get("watchableCount", 0),
+                "subscribedTokenCount": custom.get("subscribedTokenCount", 0),
                 "liveStateCount": custom.get("liveInstrumentCount", 0),
                 "statusCounts": self._status_counts(now),
                 "indexVersion": self._index_version,
@@ -1990,6 +2045,26 @@ class MarketWatchEngine(EngineBase):
                 "staleThresholdSeconds": custom.get("staleThresholdSeconds"),
             },
         ]
+        # doc §16 controlled UI publish — the exact payload the
+        # ``GET /api/market-watch/ui`` route serves, so a browser subscribed to
+        # the channel receives the SAME document the REST poll would return
+        # (and a dashboard widget needs no request of its own).
+        try:
+            ui = self.ui_payload()
+            if isinstance(ui, dict) and ui.get("ok"):
+                frames = [
+                    f for f in frames if f.get("type") != "market_watch.ui"
+                ]
+                frames.append({
+                    "type": "market_watch.ui",
+                    "reason": reason,
+                    "tradingDate": trading_date,
+                    "generatedAt": generated_at,
+                    "epoch": now,
+                    "payload": ui,
+                })
+        except Exception as exc:
+            self.record_error("market_watch_ui_broadcast_error", str(exc))
         try:
             bus = get_event_bus()
             for frame in frames:
@@ -2909,14 +2984,16 @@ class MarketWatchEngine(EngineBase):
         """Start the Friday 15:25 scan without blocking the lifecycle loop.
 
         Runs on the 1s lifecycle cadence but starts real work at most once per
-        Friday, guarded by five independent conditions:
+        Friday, guarded by six independent conditions:
 
         1. ``weekly.enabled`` must be on.
         2. The current IST weekday must be Friday (4) and the clock must have
            reached ``weekly.friday_scan_hhmm`` (default 15:25).
         3. It must be a trading day (a holiday has no fresh LTP/margin).
-        4. No scan may already have completed for the current ISO week.
-        5. No scan may already be in flight, or in its post-failure back-off.
+        4. The Session Manager must report an active broker session; without
+           one the margin rule cannot be satisfied.
+        5. No scan may already have completed for the current ISO week.
+        6. No scan may already be in flight, or in its post-failure back-off.
 
         The screen itself runs in a background task: resolving prices and broker
         margin for the whole NSE universe takes minutes, and blocking the 1 s
@@ -2947,6 +3024,21 @@ class MarketWatchEngine(EngineBase):
                 return
             if time.time() < self._friday_scan_retry_at:
                 return
+
+            # The screen needs the broker's MIS margin answer. Without an
+            # active session the automatic run would only burn price calls and
+            # end in SCAN_ERROR; wait for login instead. Manual runs are not
+            # blocked and report the real failure. Checked after the cheap
+            # dedupe guards so a completed/failed week does not snapshot the
+            # session every second.
+            try:
+                from services.session.session_manager import get_session_manager
+
+                snap = get_session_manager().snapshot() or {}
+                if not bool(snap.get("active")):
+                    return
+            except Exception:
+                pass
 
             self._friday_scan_running_for = scan_week
             logger.info("[MARKET_WATCH_FRIDAY_SCAN] Scheduling scan for week %s", scan_week)
@@ -3124,6 +3216,21 @@ class MarketWatchEngine(EngineBase):
             err for err in scan_result.errors
             if str(err).startswith(("candidate load failed", "margin batch failed"))
         ]
+        if not fatal_errors and scan_result.candidates == 0:
+            fatal_errors = ["candidate master produced zero NSE EQ instruments"]
+        if not fatal_errors and scan_result.priced == 0:
+            fatal_errors = ["price resolution failed for every candidate"]
+        if (
+            not fatal_errors
+            and scan_result.margin_requested > 0
+            and scan_result.margin_resolved == 0
+        ):
+            # At least one priced candidate was inside the price band, but no
+            # authoritative margin answer came back (typically a logged-out
+            # broker session). This is an outage, not "no stock qualifies".
+            # If every priced candidate is above the cap, zero margin calls were
+            # made and zero survivors is a legitimate outcome.
+            fatal_errors = ["margin resolution returned no authoritative answers"]
         if fatal_errors:
             reason = "SCAN_ERROR"
             detail = "; ".join(fatal_errors[:3])
@@ -3939,6 +4046,25 @@ class MarketWatchEngine(EngineBase):
                         tf_state = tfs.get(tf)
                         row[f"change_{tf}"] = tf_state.price_move if tf_state else None
                         row[f"change_{tf}_pct"] = tf_state.change_pct if tf_state else None
+                    # doc §14/§17/§20/§27 — the typed SymbolState owns circuit,
+                    # margin and classification. The flat legacy record does
+                    # not, so ranked rows used to render those columns as "--".
+                    # Merge only the state-owned keys (never ``lastTickAt``,
+                    # which stays epoch seconds in list payloads) and never
+                    # overwrite a real flat value with a null.
+                    compact = state.to_compact()
+                    for key in _STATE_ROW_KEYS:
+                        value = compact.get(key)
+                        if value is not None:
+                            row[key] = value
+                    # doc §12/§14 — the saved-filter catalog reads
+                    # ``fiveMinPercent`` / ``tenMinPercent`` (momentum), which
+                    # the flat record leaves null. Publish the typed timeframe
+                    # values so a "1% in 5 min" filter matches real rows.
+                    if row.get("fiveMinPercent") is None:
+                        row["fiveMinPercent"] = compact.get("change_5m_pct")
+                    if row.get("tenMinPercent") is None:
+                        row["tenMinPercent"] = compact.get("change_10m_pct")
                 merged[token] = row
             rows = list(merged.values())
         if limit:
@@ -4082,7 +4208,17 @@ class MarketWatchEngine(EngineBase):
     # ------------------------------------------------------------------
     # Override status_snapshot (doc §25 observability)
     # ------------------------------------------------------------------
+    # Polled every ~2s by the engine registry, the alert reporter and REST
+    # dashboards; each rebuild walks the whole stock state (+ weekly/friday
+    # status builds). A short TTL keeps those concurrent polls from duplicating
+    # the work on the event loop while the page stays a polling-time view.
+    STATUS_SNAPSHOT_TTL_S = 1.5
+
     def status_snapshot(self) -> dict:
+        cached = getattr(self, "_status_snapshot_cache", None)
+        now = time.time()
+        if cached is not None and now - self._status_snapshot_at < self.STATUS_SNAPSHOT_TTL_S:
+            return cached
         now = time.time()
         base = super().status_snapshot()
         counts = self._status_counts(now)
@@ -4228,6 +4364,8 @@ class MarketWatchEngine(EngineBase):
             "classificationCounts": classification_counts,
         }
         base["metrics"]["custom"].update(custom)
+        self._status_snapshot_cache = base
+        self._status_snapshot_at = time.time()
         return base
 
     # ------------------------------------------------------------------

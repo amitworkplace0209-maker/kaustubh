@@ -95,7 +95,7 @@ export default function MoversTab({ onOpenSymbol }: { onOpenSymbol: (row: MWRow)
     for (const s of searchResults?.items ?? []) consider(s.token);
     return { tokens: out, truncated: seen.size < (Object.values(sections).reduce((n, rows) => n + rows.length, 0) + (searchResults?.items.length ?? 0)) };
   }, [sections, searchResults]);
-  const { ticks, connectionState, frames } = useMarketWatchRealtime(tokens);
+  const { ticks, connectionState, connected, frames } = useMarketWatchRealtime(tokens);
 
   useEffect(() => {
     // Paint pinned badges from the realtime pins frame (or REST on mount).
@@ -156,12 +156,16 @@ export default function MoversTab({ onOpenSymbol }: { onOpenSymbol: (row: MWRow)
   useEffect(() => {
     fetchData();
     // doc §25/§26 — the boards change on the engine's own publish cadence and
-    // arrive as `market_watch.status` / `.ranking` frames. This interval is a
-    // 60s reconciliation safety net for a dropped socket, not the update path;
-    // it used to be a full `/sections` + `/boards` refetch every 12s.
-    const iv = setInterval(fetchData, RECONCILE_INTERVAL_MS);
+    // arrive as `market_watch.status` / `.ranking` frames, with the exact
+    // refetch keyed on `indexVersion` below. This interval is ONLY the safety
+    // net while the socket cannot deliver, not the update path.
+    const iv = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (connected) return;
+      fetchData();
+    }, RECONCILE_INTERVAL_MS);
     return () => { if (iv) clearInterval(iv); };
-  }, [fetchData]);
+  }, [fetchData, connected]);
 
   // A new board version IS a board change, so refetch exactly when the engine
   // says the publish set moved. Keying on `indexVersion` rather than on "any

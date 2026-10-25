@@ -7,14 +7,18 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Cable,
+  ChevronLeft,
+  ChevronRight,
   Cpu,
   Database,
   Filter,
   History as HistoryIcon,
   Layers,
+  List,
   Pin as PinIcon,
   Radio,
   RefreshCw,
+  Search,
   ShieldCheck,
   Timer,
   Zap,
@@ -22,10 +26,11 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { useOneShot } from '@/lib/engine-realtime';
 import { useFrontendRealtime } from '@/components/frontend-realtime-provider';
 import {
-  SM, TONE, fmtNum, fmtTs, fmtDuration,
+  SM, TONE, fmtNum, fmtTs, fmtDuration, tierBadge,
 } from '@/app/_pages/session-manager/sm-shared';
 import { cn } from '@/lib/utils';
 
@@ -98,13 +103,13 @@ function IstClock() {
 
 // ---------------- colorful KPI ----------------
 type Accent = 'emerald' | 'cyan' | 'violet' | 'amber' | 'rose' | 'sky';
-const ACCENT: Record<Accent, { bar: string; chip: string; value: string }> = {
-  emerald: { bar: 'bg-emerald-400', chip: 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/25', value: 'text-emerald-300' },
-  cyan: { bar: 'bg-cyan-400', chip: 'bg-gradient-to-br from-cyan-500 to-sky-600 text-white shadow-lg shadow-cyan-500/25', value: 'text-cyan-300' },
-  violet: { bar: 'bg-violet-400', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/25', value: 'text-violet-300' },
-  amber: { bar: 'bg-amber-400', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25', value: 'text-amber-300' },
-  rose: { bar: 'bg-rose-400', chip: 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg shadow-rose-500/25', value: 'text-rose-300' },
-  sky: { bar: 'bg-sky-400', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg shadow-sky-500/25', value: 'text-sky-300' },
+const ACCENT: Record<Accent, { bar: string; chip: string; value: string; card: string }> = {
+  emerald: { bar: 'bg-emerald-400', chip: 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/25', value: 'text-emerald-600', card: 'bg-gradient-to-br from-card via-card to-emerald-500/[0.08] hover:border-emerald-500/60' },
+  cyan: { bar: 'bg-cyan-400', chip: 'bg-gradient-to-br from-cyan-500 to-sky-600 text-white shadow-lg shadow-cyan-500/25', value: 'text-cyan-600', card: 'bg-gradient-to-br from-card via-card to-cyan-500/[0.08] hover:border-cyan-500/60' },
+  violet: { bar: 'bg-violet-400', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/25', value: 'text-violet-600', card: 'bg-gradient-to-br from-card via-card to-violet-500/[0.08] hover:border-violet-500/60' },
+  amber: { bar: 'bg-amber-400', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25', value: 'text-amber-600', card: 'bg-gradient-to-br from-card via-card to-amber-500/[0.09] hover:border-amber-500/60' },
+  rose: { bar: 'bg-rose-400', chip: 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg shadow-rose-500/25', value: 'text-rose-600', card: 'bg-gradient-to-br from-card via-card to-rose-500/[0.08] hover:border-rose-500/60' },
+  sky: { bar: 'bg-sky-400', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg shadow-sky-500/25', value: 'text-sky-600', card: 'bg-gradient-to-br from-card via-card to-sky-500/[0.08] hover:border-sky-500/60' },
 };
 
 function Kpi({ icon: Icon, label, value, sub, accent, loading }: {
@@ -112,7 +117,7 @@ function Kpi({ icon: Icon, label, value, sub, accent, loading }: {
 }) {
   const a = ACCENT[accent];
   return (
-    <Card className="relative overflow-hidden shadow-soft transition-all duration-200 hover:-translate-y-1 hover:shadow-soft-lg">
+    <Card className={cn('relative overflow-hidden border shadow-soft ring-1 ring-inset ring-black/[0.02] transition-all duration-200 hover:-translate-y-1 hover:shadow-soft-lg', a.card)}>
       <span aria-hidden className={cn('absolute inset-x-0 top-0 h-1', a.bar)} />
       <span aria-hidden className={cn('pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full opacity-20 blur-2xl', a.bar)} />
       <CardContent className="relative flex items-center gap-3 p-3.5">
@@ -151,7 +156,7 @@ function StatusDonut({ counts }: { counts: Record<string, number> }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-col items-center gap-4 sm:flex-row sm:gap-6">
-        <div className="relative h-44 w-44 shrink-0 rounded-full ring-4 ring-white/5 transition-transform duration-200 hover:scale-[1.03]" style={{ background: `conic-gradient(${stops.join(', ')})` }} role="img" aria-label={`${total} instruments by status`}>
+        <div className="relative h-44 w-44 shrink-0 rounded-full ring-4 ring-black/[0.05] transition-transform duration-200 hover:scale-[1.03]" style={{ background: `conic-gradient(${stops.join(', ')})` }} role="img" aria-label={`${total} instruments by status`}>
           <div className="absolute inset-5 flex flex-col items-center justify-center rounded-full bg-card shadow-inner">
             <span className="font-mono text-2xl font-bold tabular-nums">{fmtNum(total)}</span>
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">records</span>
@@ -159,7 +164,7 @@ function StatusDonut({ counts }: { counts: Record<string, number> }) {
         </div>
         <div className="grid w-full flex-1 grid-cols-1 gap-1.5 min-[420px]:grid-cols-2">
           {entries.map(([k, v]) => (
-            <div key={k} className="flex items-center justify-between gap-2 rounded-lg border border-border/50 bg-white/[0.02] px-2.5 py-1.5 text-xs transition-colors hover:border-primary/40">
+            <div key={k} className="flex items-center justify-between gap-2 rounded-lg border border-border/50 bg-black/[0.03] px-2.5 py-1.5 text-xs transition-colors hover:border-primary/40">
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full shadow" style={{ background: DONUT_COLORS[k] ?? '#38bdf8' }} />
                 <span className="truncate font-mono font-medium">{k}</span>
@@ -198,7 +203,7 @@ function FeedBars({ levels }: { levels: Record<string, number> }) {
         const v = Number(levels?.[l] ?? 0);
         const pct = total ? (v / total) * 100 : 0;
         return (
-          <div key={l} className="min-w-[110px] flex-1 rounded-lg border border-border/50 bg-white/[0.02] px-2.5 py-1.5">
+          <div key={l} className="min-w-[110px] flex-1 rounded-lg border border-border/50 bg-black/[0.03] px-2.5 py-1.5">
             <div className="flex items-center justify-between text-[11px]">
               <span className="flex items-center gap-1.5 font-mono font-bold"><span className="h-2 w-2 rounded-full" style={{ background: colors[l] }} />{l}</span>
               <span className="font-mono tabular-nums">{fmtNum(v)}</span>
@@ -215,6 +220,10 @@ function FeedBars({ levels }: { levels: Record<string, number> }) {
 
 // ---------------- main page ----------------
 export default function SessionManagerOverviewPage() {
+  // Scope: 'market_watch' = sirf Market Watch list ke stocks, 'all' = poora master.
+  const [scope, setScope] = useState<'market_watch' | 'all'>('market_watch');
+  const scoped = scope === 'market_watch';
+
   // critical first, secondary after paint
   const [late, setLate] = useState(false);
   useEffect(() => {
@@ -222,12 +231,14 @@ export default function SessionManagerOverviewPage() {
     return () => clearTimeout(t);
   }, []);
 
-  const ov = useOneShot<Record<string, unknown>>(SM_OVERVIEW);
+  const ov = useOneShot<Record<string, unknown>>(scoped ? `${SM_OVERVIEW}?scope=market_watch` : SM_OVERVIEW);
   const sess = useOneShot<Record<string, unknown>>(SM_SESSION);
   const diag = useOneShot<Record<string, unknown>>(SM_DIAG, late);
-  const exp = useOneShot<Record<string, unknown>>(SM_EXPIRY, late);
+  const exp = useOneShot<Record<string, unknown>>(scoped ? `${SM_EXPIRY}?scope=market_watch` : SM_EXPIRY, late);
   const con = useOneShot<Record<string, unknown>>(SM_CONNS, late);
   const evt = useOneShot<unknown[]>(SM_EVENTS, late);
+  // The watched-list itself: scoped payload is small; 'all' is opt-in heavy.
+  const list = useOneShot<any[]>(scoped ? `${SM}/instruments?scope=market_watch&limit=2000` : `${SM}/instruments?limit=2000`, true);
 
   useThrottledCadence(ov.refresh, true, 15000);
   useThrottledCadence(sess.refresh, true, 15000);
@@ -237,7 +248,7 @@ export default function SessionManagerOverviewPage() {
   useThrottledCadence(evt.refresh, late, 30000);
 
   const refreshAll = () => {
-    ov.refresh(); sess.refresh();
+    ov.refresh(); sess.refresh(); list.refresh();
     if (late) { diag.refresh(); exp.refresh(); con.refresh(); evt.refresh(); }
   };
 
@@ -248,6 +259,7 @@ export default function SessionManagerOverviewPage() {
   const connsData = (con.data ?? {}) as Record<string, any>;
 
   const counts = (overview.counts ?? {}) as Record<string, any>;
+  const scopeMeta = (overview.scope ?? {}) as Record<string, any>;
   const status = (overview.statusCounts ?? {}) as Record<string, number>;
   const levels = (overview.feedLevelCounts ?? {}) as Record<string, number>;
   const health = (overview.health ?? {}) as Record<string, any>;
@@ -287,6 +299,23 @@ export default function SessionManagerOverviewPage() {
     return [...(rows.expiring ?? []), ...(rows.today ?? [])].slice(0, 5);
   }, [expiry.rows]);
 
+  // Market Watch list panel stock data — the main audience
+  const [listQ, setListQ] = useState('');
+  const [listPage, setListPage] = useState(0);
+  const LIST_PAGE_SIZE = 12;
+  const listRowsAll = useMemo(() => (list.data ?? []) as any[], [list.data]);
+  useEffect(() => { setListPage(0); }, [listQ, scope]);
+  const listRows = useMemo(() => {
+    const q = listQ.trim().toLowerCase();
+    if (!q) return listRowsAll;
+    return listRowsAll.filter((r) => (r.symbol ?? '').toLowerCase().includes(q)
+      || (r.trading_symbol ?? '').toLowerCase().includes(q)
+      || String(r.instrument_token ?? '').includes(q));
+  }, [listRowsAll, listQ]);
+  const listTotalPages = Math.max(1, Math.ceil(listRows.length / LIST_PAGE_SIZE));
+  const safeListPage = Math.min(listPage, listTotalPages - 1);
+  const listPageRows = listRows.slice(safeListPage * LIST_PAGE_SIZE, safeListPage * LIST_PAGE_SIZE + LIST_PAGE_SIZE);
+
   const loading = !ov.data && !ov.error;
 
   const remaining = id.remainingSeconds != null ? Math.max(0, Math.round(Number(id.remainingSeconds))) : null;
@@ -294,21 +323,21 @@ export default function SessionManagerOverviewPage() {
   const remainPct = remaining != null && duration != null ? Math.max(0, Math.min(100, (remaining / duration) * 100)) : null;
 
   const expiryBuckets = ([
-    ['Today', expiry.today, 'border-amber-500/30 bg-amber-500/10 text-amber-300'],
-    ['N-day', expiry.nday, 'border-sky-500/30 bg-sky-500/10 text-sky-300'],
-    ['Custom', expiry.custom, 'border-violet-500/30 bg-violet-500/10 text-violet-300'],
-    ['Expiring', expiry.expiring ?? status.EXPIRING, 'border-yellow-500/30 bg-yellow-500/10 text-yellow-300'],
-    ['Expired', expiry.expired ?? status.EXPIRED, 'border-rose-500/30 bg-rose-500/10 text-rose-300'],
-    ['No expiry', expiry.no_expiry, 'border-zinc-500/30 bg-zinc-500/10 text-zinc-300'],
+    ['Today', expiry.today, 'border-amber-500/30 bg-amber-500/10 text-amber-700'],
+    ['N-day', expiry.nday, 'border-sky-500/30 bg-sky-500/10 text-sky-700'],
+    ['Custom', expiry.custom, 'border-violet-500/30 bg-violet-500/10 text-violet-700'],
+    ['Expiring', expiry.expiring ?? status.EXPIRING, 'border-yellow-500/30 bg-yellow-500/10 text-yellow-700'],
+    ['Expired', expiry.expired ?? status.EXPIRED, 'border-rose-500/30 bg-rose-500/10 text-rose-700'],
+    ['No expiry', expiry.no_expiry, 'border-zinc-500/30 bg-zinc-500/10 text-zinc-700'],
   ] as const);
 
   const sections = [
-    { href: '/services/session-manager/session', icon: Layers, title: 'Session', desc: 'Identity, lifecycle, terminals', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-sky-500/25', text: 'text-sky-300', count: active ? 'ACTIVE' : String(life.lifecycleState ?? life.state ?? '—') },
-    { href: '/services/session-manager/instruments', icon: Database, title: 'Instruments', desc: 'Canonical records + actions', chip: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-500/25', text: 'text-emerald-300', count: `${fmtNum(counts.total)} records` },
-    { href: '/services/session-manager/connections', icon: Cable, title: 'Connections', desc: 'Feed links + revisions', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-amber-500/25', text: 'text-amber-300', count: `${fmtNum(connections.length)} links · rev ${fmtNum(revisionDesired)}` },
-    { href: '/services/session-manager/sources', icon: Filter, title: 'Sources', desc: 'Instruments by origin', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-violet-500/25', text: 'text-violet-300', count: 'by origin' },
-    { href: '/services/session-manager/history', icon: HistoryIcon, title: 'History', desc: 'Lifecycle audit trail', chip: 'bg-gradient-to-br from-slate-500 to-zinc-600 text-white shadow-slate-500/25', text: 'text-slate-300', count: `${fmtNum(events.length)} recent` },
-    { href: '/services/session-manager/diagnostics', icon: Cpu, title: 'Diagnostics', desc: 'Health, registry, mongo', chip: 'bg-gradient-to-br from-teal-500 to-cyan-600 text-white shadow-teal-500/25', text: 'text-teal-300', count: health.ok ? 'HEALTHY' : 'CHECK' },
+    { href: '/services/session-manager/session', icon: Layers, title: 'Session', desc: 'Identity, lifecycle, terminals', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-sky-500/25', text: 'text-sky-700', count: active ? 'ACTIVE' : String(life.lifecycleState ?? life.state ?? '—') },
+    { href: '/services/session-manager/instruments', icon: Database, title: 'Instruments', desc: scoped ? 'Market Watch list rows + actions' : 'Canonical records + actions', chip: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-500/25', text: 'text-emerald-700', count: `${fmtNum(counts.total)} ${scoped ? 'MW stocks' : 'records'}` },
+    { href: '/services/session-manager/connections', icon: Cable, title: 'Connections', desc: 'Feed links + revisions', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-amber-500/25', text: 'text-amber-700', count: `${fmtNum(connections.length)} links · rev ${fmtNum(revisionDesired)}` },
+    { href: '/services/session-manager/sources', icon: Filter, title: 'Sources', desc: 'Instruments by origin', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-violet-500/25', text: 'text-violet-700', count: 'by origin' },
+    { href: '/services/session-manager/history', icon: HistoryIcon, title: 'History', desc: 'Lifecycle audit trail', chip: 'bg-gradient-to-br from-slate-500 to-zinc-600 text-white shadow-slate-500/25', text: 'text-slate-700', count: `${fmtNum(events.length)} recent` },
+    { href: '/services/session-manager/diagnostics', icon: Cpu, title: 'Diagnostics', desc: 'Health, registry, mongo', chip: 'bg-gradient-to-br from-teal-500 to-cyan-600 text-white shadow-teal-500/25', text: 'text-teal-700', count: health.ok ? 'HEALTHY' : 'CHECK' },
   ];
 
   return (
@@ -325,21 +354,44 @@ export default function SessionManagerOverviewPage() {
           <div className="min-w-0 flex-1">
             <h1 className="truncate bg-gradient-to-r from-foreground via-foreground to-muted-foreground bg-clip-text text-xl font-bold tracking-tight sm:text-2xl">Session Manager</h1>
             <p className="mt-0.5 truncate text-xs text-muted-foreground sm:text-sm">
-              Broker session + instrument registry control plane · <span className="font-mono font-semibold text-foreground">{fmtNum(counts.total)}</span> instruments · live backend state
+              {scoped ? (
+                <>Broker session control plane · <span className="font-mono font-semibold text-foreground">{fmtNum(counts.total)}</span> Market Watch list stocks{scopeMeta.all ? <span className="text-muted-foreground"> of {fmtNum(scopeMeta.all)} total</span> : null} · live backend state</>
+              ) : (
+                <>Broker session + full instrument master control plane · <span className="font-mono font-semibold text-foreground">{fmtNum(counts.total)}</span> instruments · live backend state</>
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge className={active ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-200' : 'border border-rose-500/40 bg-gradient-to-r from-rose-500/25 to-rose-500/10 text-rose-200'}>
+            {/* SCOPE — Market Watch list ke stocks hi, poora master opt-in */}
+            <div aria-label="registry scope" className="flex items-center rounded-full border border-border bg-muted/40 p-0.5 shadow-inner">
+              <button
+                type="button"
+                onClick={() => setScope('market_watch')}
+                className={cn('rounded-full px-3 py-1.5 text-[11px] font-bold transition-all duration-200',
+                  scoped ? 'bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white shadow-md shadow-violet-500/30' : 'text-muted-foreground hover:text-foreground')}
+              >
+                Market Watch list
+              </button>
+              <button
+                type="button"
+                onClick={() => setScope('all')}
+                className={cn('rounded-full px-3 py-1.5 text-[11px] font-bold transition-all duration-200',
+                  !scoped ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/30' : 'text-muted-foreground hover:text-foreground')}
+              >
+                All instruments
+              </button>
+            </div>
+            <Badge className={active ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-800' : 'border border-rose-500/40 bg-gradient-to-r from-rose-500/25 to-rose-500/10 text-rose-800'}>
               <span className={cn('mr-1.5 inline-block h-1.5 w-1.5 rounded-full', active ? 'animate-pulse bg-emerald-400' : 'bg-rose-400')} />
               {active ? 'SESSION ACTIVE' : 'NO SESSION'}
             </Badge>
-            <Badge variant="outline" className={ws.state === 'CONNECTED' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : ''}>
+            <Badge variant="outline" className={ws.state === 'CONNECTED' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700' : ''}>
               WS {String(ws.state ?? '—')}
             </Badge>
-            <Badge variant="outline" className={configPersisted ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-300'}>
+            <Badge variant="outline" className={configPersisted ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700' : 'border-amber-500/40 bg-amber-500/10 text-amber-700'}>
               {configPersisted ? 'CONFIG PERSISTED' : 'CONFIG DEFAULTS'}
             </Badge>
-            <Badge variant="outline" className="border-violet-500/30 bg-violet-500/10 tabular-nums text-violet-300">rev {fmtNum(revisionDesired)}</Badge>
+            <Badge variant="outline" className="border-violet-500/30 bg-violet-500/10 tabular-nums text-violet-700">rev {fmtNum(revisionDesired)}</Badge>
             <IstClock />
             <Button size="sm" onClick={refreshAll} className="gap-1.5 bg-gradient-to-r from-primary to-violet-500 shadow-md">
               <RefreshCw className="h-3.5 w-3.5" /> Refresh
@@ -367,7 +419,7 @@ export default function SessionManagerOverviewPage() {
       </div>
 
       {ov.error && (
-        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-700">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span className="min-w-0">Backend overview unavailable: {ov.error} — baaki cards jahan data mila wahan real values, kahin fake nahi.</span>
           <Button size="sm" variant="outline" className="ml-auto shrink-0" onClick={() => ov.refresh()}>Retry</Button>
@@ -376,7 +428,7 @@ export default function SessionManagerOverviewPage() {
 
       {/* KPI STRIP — full color cards */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Kpi accent="emerald" icon={Database} label="Instruments" value={fmtNum(counts.total)} sub={`broker ${String(overview.broker ?? id.broker ?? '—')}`} loading={loading} />
+        <Kpi accent="emerald" icon={Database} label={scoped ? 'MW stocks' : 'Instruments'} value={fmtNum(counts.total)} sub={scoped && scopeMeta.all ? `of ${fmtNum(scopeMeta.all)} master rows` : `broker ${String(overview.broker ?? id.broker ?? '—')}`} loading={loading} />
         <Kpi accent="cyan" icon={Zap} label="Active feeding" value={fmtNum(status.ACTIVE)} sub={`${fmtNum(counts.subscribed)} broker-subscribed`} loading={loading} />
         <Kpi accent="violet" icon={Radio} label="Desired" value={fmtNum(counts.desired)} sub={`revision ${fmtNum(revisionDesired)}`} loading={loading} />
         <Kpi accent="amber" icon={PinIcon} label="Pinned" value={fmtNum(counts.pinned)} sub={`${fmtNum(status.SUBSCRIBED_AND_PINNED ?? 0)} sub-pinned`} loading={loading} />
@@ -387,12 +439,92 @@ export default function SessionManagerOverviewPage() {
       {/* EXPIRY BUCKETS — colorful chart cards */}
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
         {expiryBuckets.map(([label, v]) => (
-          <div key={label} className={cn('rounded-xl border px-2.5 py-2.5 text-center shadow-sm transition-transform hover:-translate-y-0.5', label === 'Today' && 'border-amber-500/30 bg-gradient-to-b from-amber-500/15 to-transparent', label === 'N-day' && 'border-sky-500/30 bg-gradient-to-b from-sky-500/15 to-transparent', label === 'Custom' && 'border-violet-500/30 bg-gradient-to-b from-violet-500/15 to-transparent', label === 'Expiring' && 'border-yellow-500/30 bg-gradient-to-b from-yellow-500/15 to-transparent', label === 'Expired' && 'border-rose-500/30 bg-gradient-to-b from-rose-500/15 to-transparent', label === 'No expiry' && 'border-zinc-500/30 bg-gradient-to-b from-zinc-500/15 to-transparent')}>
-            <p className="font-mono text-lg font-bold tabular-nums">{exp.error && expiry.today == null ? '—' : fmtNum(v as number | undefined)}</p>
+          <div key={label} className={cn('rounded-xl border px-2.5 py-2.5 text-center shadow-sm ring-1 ring-inset ring-black/[0.02] transition-transform hover:-translate-y-0.5', label === 'Today' && 'border-amber-500/40 bg-gradient-to-b from-amber-500/[0.18] to-transparent hover:border-amber-500/70', label === 'N-day' && 'border-sky-500/40 bg-gradient-to-b from-sky-500/[0.18] to-transparent hover:border-sky-500/70', label === 'Custom' && 'border-violet-500/40 bg-gradient-to-b from-violet-500/[0.18] to-transparent hover:border-violet-500/70', label === 'Expiring' && 'border-yellow-500/40 bg-gradient-to-b from-yellow-500/[0.18] to-transparent hover:border-yellow-500/70', label === 'Expired' && 'border-rose-500/40 bg-gradient-to-b from-rose-500/[0.18] to-transparent hover:border-rose-500/70', label === 'No expiry' && 'border-zinc-500/40 bg-gradient-to-b from-zinc-500/[0.15] to-transparent hover:border-zinc-500/70')}>
+            <p className={cn('font-mono text-lg font-bold tabular-nums', label === 'Today' && 'text-amber-700', label === 'N-day' && 'text-sky-700', label === 'Custom' && 'text-violet-700', label === 'Expiring' && 'text-yellow-700', label === 'Expired' && 'text-rose-700', label === 'No expiry' && 'text-zinc-600')}>{exp.error && expiry.today == null ? '—' : fmtNum(v as number | undefined)}</p>
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
           </div>
         ))}
       </div>
+
+      {/* MARKET WATCH LIST — watched stocks only (scope-driven) */}
+      <Card className="overflow-hidden shadow-soft">
+        <CardHeader className="bg-gradient-to-r from-fuchsia-500/10 via-violet-500/5 to-cyan-500/10 pb-2">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-lg bg-gradient-to-br from-fuchsia-500 to-violet-600 p-1.5 text-white shadow"><List className="h-3.5 w-3.5" /></span>
+            {scoped ? 'Market Watch list stocks' : 'Instrument registry'}
+            <Badge variant="outline" className={cn('tabular-nums', scoped ? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-700' : 'border-sky-500/30 bg-sky-500/10 text-sky-700')}>
+              {fmtNum(listRows.length)} rows
+            </Badge>
+            {list.error && <span className="text-rose-700">load failed: {list.error}</span>}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-3">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[220px] flex-1">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={listQ}
+                onChange={(e) => setListQ(e.target.value)}
+                placeholder="Search watched stocks by symbol / token…"
+                className="h-8 pl-8 text-xs"
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              <Button size="sm" variant="ghost" className="h-8" disabled={safeListPage === 0} onClick={() => setListPage(safeListPage - 1)} aria-label="previous page"><ChevronLeft className="h-4 w-4" /></Button>
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{safeListPage + 1} / {listTotalPages}</span>
+              <Button size="sm" variant="ghost" className="h-8" disabled={safeListPage >= listTotalPages - 1} onClick={() => setListPage(safeListPage + 1)} aria-label="next page"><ChevronRight className="h-4 w-4" /></Button>
+            </div>
+          </div>
+          {!list.data && !list.error ? (
+            <div className="grid grid-cols-1 gap-2 min-[540px]:grid-cols-2 xl:grid-cols-3">
+              {Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-16 animate-pulse rounded-xl bg-gradient-to-r from-muted/70 to-muted/40" />)}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 min-[540px]:grid-cols-2 xl:grid-cols-3">
+              {listPageRows.map((r: any, i: number) => {
+                const stable = r.instrument_token ? `${r.exchange_segment}|${r.instrument_token}` : String(r.instrument_key ?? i);
+                return (
+                  <div
+                    key={stable || i}
+                    title={r.instrument_key}
+                    className="group flex items-center gap-2.5 rounded-xl border border-border bg-gradient-to-br from-card via-card to-fuchsia-500/[0.06] px-3 py-2.5 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-fuchsia-500/60 hover:shadow-lg"
+                  >
+                    <span className="flex h-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-fuchsia-500 to-violet-600 px-1.5 font-mono text-[10px] font-bold text-white shadow-md shadow-violet-500/30 transition-transform duration-200 group-hover:scale-105">
+                      {String(r.symbol ?? '—').slice(0, 4).toUpperCase()}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="flex items-center gap-1.5 truncate text-xs font-semibold">
+                        {r.symbol || '—'}
+                        {r.is_index && <Badge variant="outline" className="bg-sky-500/15 px-1 py-0 text-[9px] font-semibold text-sky-800 border-sky-500/40">IDX</Badge>}
+                        {r.is_depth && <Badge variant="outline" className="bg-fuchsia-500/15 px-1 py-0 text-[9px] font-semibold text-fuchsia-800 border-fuchsia-500/40">D8</Badge>}
+                      </p>
+                      <p className="truncate font-mono text-[10px] text-muted-foreground">
+                        {String(r.exchange_segment ?? '—')} · {String(r.instrument_token ?? '—')}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <Badge variant="outline" className={cn('text-[9px] font-medium', TONE[r.status ?? ''] ?? 'border-zinc-400/50 bg-zinc-500/10 text-zinc-700')}>{String(r.status ?? '—').replace(/_/g, ' ')}</Badge>
+                      <span className="flex items-center gap-1">
+                        {tierBadge(r.feed_level, r.market_data)}
+                        {r.desired && <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/12 px-1 py-0 text-[9px] font-semibold text-emerald-800">desired</Badge>}
+                        {r.pin && <Badge variant="outline" className="border-amber-500/40 bg-amber-500/12 px-1 py-0 text-[9px] font-semibold text-amber-800">pin</Badge>}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+              {!listPageRows.length && (
+                <p className="col-span-full py-6 text-center text-xs text-muted-foreground">
+                  Koi {scoped ? 'Market Watch list' : 'registry'} stock match nahi hua — search clear karein ya backend universe check karein.
+                </p>
+              )}
+            </div>
+          )}
+          <p className="mt-3 text-right text-[11px] text-muted-foreground">
+            <span className="font-mono">GET /instruments{scoped ? '?scope=market_watch' : ''}</span> · sirf {scoped ? 'Market Watch list' : 'poora master'} · {listRows.length ? `page ${safeListPage + 1} of ${listTotalPages}` : '—'}
+          </p>
+        </CardContent>
+      </Card>
 
       {/* MAIN GRID */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
@@ -424,37 +556,37 @@ export default function SessionManagerOverviewPage() {
             <CardTitle className="flex items-center gap-2 text-xs">
               <span className="rounded-lg bg-gradient-to-br from-emerald-500 to-cyan-600 p-1.5 text-white shadow"><ShieldCheck className="h-3.5 w-3.5" /></span>
               Live session
-              <Badge variant="outline" className={cn('ml-auto', active && 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200')}>{String(life.lifecycleState ?? life.state ?? '—')}</Badge>
+              <Badge variant="outline" className={cn('ml-auto', active && 'border-emerald-500/40 bg-emerald-500/15 text-emerald-800')}>{String(life.lifecycleState ?? life.state ?? '—')}</Badge>
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 pt-4 text-xs">
             {!sess.data && !sess.error ? (
               <div className="space-y-2">{[0, 1, 2, 3].map((i) => <div key={i} className="h-9 animate-pulse rounded-lg bg-gradient-to-r from-muted/70 to-muted/40" />)}</div>
             ) : sess.error ? (
-              <p className="text-rose-300">Session load failed: {sess.error}</p>
+              <p className="text-rose-700">Session load failed: {sess.error}</p>
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded-xl border border-sky-500/25 bg-gradient-to-b from-sky-500/10 to-transparent px-2.5 py-2"><p className="text-[10px] font-bold uppercase tracking-wider text-sky-300/80">Broker</p><p className="truncate font-mono font-semibold">{String(id.broker ?? overview.broker ?? '—')}</p></div>
-                  <div className="rounded-xl border border-violet-500/25 bg-gradient-to-b from-violet-500/10 to-transparent px-2.5 py-2"><p className="text-[10px] font-bold uppercase tracking-wider text-violet-300/80">Mode · source</p><p className="truncate font-mono font-semibold">{String(id.mode ?? overview.mode ?? '—')} · {String(id.loginSource ?? '—')}</p></div>
+                  <div className="rounded-xl border border-sky-500/25 bg-gradient-to-b from-sky-500/10 to-transparent px-2.5 py-2"><p className="text-[10px] font-bold uppercase tracking-wider text-sky-700/80">Broker</p><p className="truncate font-mono font-semibold">{String(id.broker ?? overview.broker ?? '—')}</p></div>
+                  <div className="rounded-xl border border-violet-500/25 bg-gradient-to-b from-violet-500/10 to-transparent px-2.5 py-2"><p className="text-[10px] font-bold uppercase tracking-wider text-violet-700/80">Mode · source</p><p className="truncate font-mono font-semibold">{String(id.mode ?? overview.mode ?? '—')} · {String(id.loginSource ?? '—')}</p></div>
                 </div>
                 <div className="rounded-xl border border-emerald-500/25 bg-gradient-to-b from-emerald-500/10 to-transparent px-2.5 py-2">
-                  <div className="flex items-center justify-between"><p className="text-[10px] font-bold uppercase tracking-wider text-emerald-300/80">Remaining</p><p className="font-mono font-bold tabular-nums">{remaining != null ? fmtDuration(remaining) : '—'}</p></div>
+                  <div className="flex items-center justify-between"><p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700/80">Remaining</p><p className="font-mono font-bold tabular-nums">{remaining != null ? fmtDuration(remaining) : '—'}</p></div>
                   {remainPct != null && (
                     <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-muted"><div className={cn('h-full rounded-full bg-gradient-to-r transition-all', remainPct > 30 ? 'from-emerald-500 to-emerald-400' : 'from-amber-500 to-amber-400')} style={{ width: `${remainPct}%` }} /></div>
                   )}
                   <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">login {fmtTs(id.loginTime as string | undefined)} → exp {fmtTs(id.expiresAt as string | undefined)}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant="outline" className={ws.state === 'CONNECTED' ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200' : ''}>WS {String(ws.state ?? '—')}</Badge>
+                  <Badge variant="outline" className={ws.state === 'CONNECTED' ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-800' : ''}>WS {String(ws.state ?? '—')}</Badge>
                   <Badge variant="outline" className="tabular-nums">reconnects {fmtNum(ws.reconnectCount)}</Badge>
                   <Badge variant="outline">routing {String(routing.state ?? '—')}</Badge>
                 </div>
                 <div className="space-y-0.5 text-[11px] text-muted-foreground">
                   <p className="truncate">user <span className="font-mono text-foreground">{String(id.userId ?? '—')}</span> · validated {fmtTs(id.validatedAt as string | undefined)}</p>
                   <p className="truncate">last activity {fmtTs(session.lastActivityAt as string | undefined)} · last msg {fmtTs(ws.lastMessageAt as string | undefined)}</p>
-                  {(session.lastAuthError as string | undefined) && <p className="truncate text-rose-300">auth err: {String(session.lastAuthError)}</p>}
-                  {(session.lastRestError as string | undefined) && <p className="truncate text-rose-300">rest err: {String(session.lastRestError)}</p>}
+                  {(session.lastAuthError as string | undefined) && <p className="truncate text-rose-700">auth err: {String(session.lastAuthError)}</p>}
+                  {(session.lastRestError as string | undefined) && <p className="truncate text-rose-700">rest err: {String(session.lastRestError)}</p>}
                 </div>
               </>
             )}
@@ -478,7 +610,7 @@ export default function SessionManagerOverviewPage() {
             ) : (
               <>
                 {expiringPreview.map((r: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] px-2 py-1.5 text-[11px]">
+                  <div key={i} className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/[0.09] px-2 py-1.5 text-[11px] shadow-sm">
                     <span className="min-w-0 truncate font-medium">{r.symbol || '—'} <span className="font-mono text-muted-foreground">{r.instrument_token}</span></span>
                     <span className="shrink-0 font-mono text-muted-foreground">{fmtTs(r.expires_at)}</span>
                   </div>
@@ -501,22 +633,22 @@ export default function SessionManagerOverviewPage() {
             {!late || (!con.data && !con.error) ? (
               <div className="space-y-1.5">{[0, 1].map((i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/60" />)}</div>
             ) : con.error ? (
-              <p className="text-xs text-rose-300">Connections unavailable: {con.error}</p>
+              <p className="text-xs text-rose-700">Connections unavailable: {con.error}</p>
             ) : connections.length === 0 ? (
               <p className="py-4 text-center text-xs text-muted-foreground">No feed connections — backend ne koi link report nahi kiya.</p>
             ) : (
               connections.slice(0, 4).map((c: any) => (
-                <div key={c.connection_id ?? c.id} className={cn('rounded-lg border px-2.5 py-2', c.state === 'CONNECTED' ? 'border-emerald-500/25 bg-emerald-500/[0.05]' : 'border-rose-500/25 bg-rose-500/[0.05]')}>
+                <div key={c.connection_id ?? c.id} className={cn('rounded-lg border px-2.5 py-2 shadow-sm', c.state === 'CONNECTED' ? 'border-emerald-500/45 bg-emerald-500/[0.09]' : 'border-rose-500/45 bg-rose-500/[0.09]')}>
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                     <span className="font-mono font-semibold">{c.connection_id ?? c.id}</span>
-                    <Badge variant="outline" className={c.state === 'CONNECTED' ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200' : 'border-rose-500/40 bg-rose-500/15 text-rose-200'}>{String(c.state ?? '—')}</Badge>
+                    <Badge variant="outline" className={c.state === 'CONNECTED' ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-800' : 'border-rose-500/40 bg-rose-500/15 text-rose-800'}>{String(c.state ?? '—')}</Badge>
                     <span className="ml-auto font-mono text-muted-foreground">rev {fmtNum(c.last_applied_revision)}</span>
                   </div>
                   <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">broker {c.broker ?? '—'} · hb {fmtTs(c.last_heartbeat)} · reconnects {fmtNum(c.reconnect_count)}</p>
                 </div>
               ))
             )}
-            <p className="pt-1 text-[11px] text-muted-foreground">fully applied: <span className={cn('font-mono font-semibold', revApply.fully_applied ? 'text-emerald-300' : 'text-amber-300')}>{String(revApply.fully_applied ?? '—')}</span></p>
+            <p className="pt-1 text-[11px] text-muted-foreground">fully applied: <span className={cn('font-mono font-semibold', revApply.fully_applied ? 'text-emerald-700' : 'text-amber-700')}>{String(revApply.fully_applied ?? '—')}</span></p>
           </CardContent>
         </Card>
 
@@ -535,8 +667,8 @@ export default function SessionManagerOverviewPage() {
               ) : (
                 <>
                   {events.map((e: any, i: number) => (
-                    <div key={i} className="flex items-center gap-2 rounded-lg border border-border/40 bg-white/[0.02] px-2 py-1.5 text-[11px]">
-                      <Badge variant="outline" className={cn('shrink-0 font-mono text-[9px]', TONE[e.severity ?? ''] ?? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300')}>{String(e.event ?? 'event').toUpperCase().slice(0, 18)}</Badge>
+                    <div key={i} className="flex items-center gap-2 rounded-lg border border-border/40 bg-black/[0.03] px-2 py-1.5 text-[11px]">
+                      <Badge variant="outline" className={cn('shrink-0 font-mono text-[9px]', TONE[e.severity ?? ''] ?? 'border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-700')}>{String(e.event ?? 'event').toUpperCase().slice(0, 18)}</Badge>
                       <span className="min-w-0 flex-1 truncate text-muted-foreground">{e.message ?? e.details ?? e.instrument_id ?? '—'}</span>
                       <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{fmtTs(e.ts ?? e.timestamp ?? e.created_at ?? e.at)}</span>
                     </div>
@@ -556,11 +688,11 @@ export default function SessionManagerOverviewPage() {
             <div className="h-6 w-full animate-pulse rounded bg-muted/60" />
           ) : (
             <>
-              <Badge variant="outline" className={mongoConnected ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200' : 'border-rose-500/40 bg-rose-500/15 text-rose-200'}>
+              <Badge variant="outline" className={mongoConnected ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-800' : 'border-rose-500/40 bg-rose-500/15 text-rose-800'}>
                 Mongo {mongoConnected ? 'CONNECTED' : 'DOWN'}
               </Badge>
               {engines.map(([eid, e]: [string, any]) => (
-                <Badge key={eid} variant="outline" className={e.state === 'RUNNING' ? 'border-emerald-500/30 text-emerald-300' : ''}>
+                <Badge key={eid} variant="outline" className={e.state === 'RUNNING' ? 'border-emerald-500/30 text-emerald-700' : ''}>
                   {eid}: {String(e.state ?? '—')}{e.health && e.health !== 'HEALTHY' ? ` · ${e.health}` : ''}
                 </Badge>
               ))}
@@ -601,7 +733,7 @@ export default function SessionManagerOverviewPage() {
       </div>
 
       <p className="text-[11px] text-muted-foreground">
-        Sources: <span className="font-mono">GET /overview · /session · /diagnostics · /expiry · /connections · /events</span> — sab real backend state. Critical (overview+session) pehle, baaki 600ms baad; auto-refresh throttled (15s/30s, hidden tab paused). Missing = ‘—’, fake kabhi nahi.
+        Sources: <span className="font-mono">GET /overview · /session · /diagnostics · /expiry · /connections · /events</span> — sab real backend state{scoped ? <> · scope <span className="font-mono">?scope=market_watch</span> = sirf Market Watch list stocks</> : ''}. Critical (overview+session) pehle, baaki 600ms baad; auto-refresh throttled (15s/30s, hidden tab paused). Missing = ‘—’, fake kabhi nahi.
       </p>
     </div>
   );

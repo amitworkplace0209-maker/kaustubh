@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import logging
 import json
+from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import Any
 
 from database.connection import get_db
 
@@ -400,8 +402,14 @@ DEFAULTS: dict[str, dict] = {
     "sched_square_off_time": {"value": "15:16", "category": "scheduler", "type": "string", "description": "Square-off trigger time (HH:MM)"},
     "sched_feed_stop_time": {"value": "15:30", "category": "scheduler", "type": "string", "description": "Broker feed-stop time (HH:MM)"},
     "sched_square_off_enabled": {"value": True, "category": "scheduler", "type": "boolean", "description": "Allow the scheduler to trigger square-off at the configured time"},
-    "sched_market_timezone": {"value": "Asia/Kolkata", "category": "scheduler", "type": "select", "description": "Market time zone"},
-    "sched_trading_day_behavior": {"value": "trading_days", "category": "scheduler", "type": "select", "description": "Trading-day behaviour"},
+    "sched_market_timezone": {"value": "Asia/Kolkata", "category": "scheduler", "type": "select", "options": [
+        "Asia/Kolkata", "Asia/Dubai", "Asia/Karachi", "Asia/Singapore", "Asia/Hong_Kong",
+        "Asia/Tokyo", "Europe/London", "Europe/Berlin", "America/New_York", "America/Chicago",
+        "America/Los_Angeles", "Australia/Sydney", "UTC"
+    ], "description": "Market time zone — scheduler ka poora lifecycle isi zone ki ghadi se chalta hai (live, restart nahi chahiye)"},
+    "sched_trading_day_behavior": {"value": "trading_days", "category": "scheduler", "type": "select", "options": [
+        "trading_days", "weekdays", "calendar_days"
+    ], "description": "Trading-day behaviour — trading_days=NSE calendar (weekend/holiday band), weekdays=Mon-Fri har din, calendar_days=har din run"},
     # ---- Security (settings organiser) ----
     "sec_app_lock": {"value": False, "category": "security", "type": "boolean", "description": "Lock the Data Saver UI after a timeout"},
     "sec_auto_lock": {"value": True, "category": "security", "type": "boolean", "description": "Automatically lock after the configured timeout"},
@@ -559,6 +567,48 @@ async def get_setting(key: str):
     if doc:
         return doc["value"]
     return DEFAULTS.get(key, {}).get("value")
+
+
+async def get_settings_many(keys: Iterable[str]) -> dict[str, Any]:
+    """Read many settings in ONE MongoDB round trip.
+
+    The settings store is a remote Atlas cluster in production, so a caller
+    that reads 19 keys one at a time pays 19 network round trips for what is a
+    single key-value lookup. This helper resolves schedule aliases, fetches all
+    distinct keys with one ``$in`` query, and returns a value for every
+    requested key (stored value first, declared default second).
+
+    A store failure degrades to the declared defaults instead of failing the
+    caller: these are display/preference reads, not trading decisions.
+    """
+    requested = [str(k) for k in keys]
+    resolved: dict[str, str] = {}
+    wanted: set[str] = set()
+    for key in requested:
+        target = resolve_schedule_alias(key)
+        resolved[key] = target
+        wanted.add(target)
+
+    stored: dict[str, Any] = {}
+    if wanted:
+        try:
+            docs = await get_db().app_settings.find(
+                {"key": {"$in": sorted(wanted)}},
+                {"key": 1, "value": 1},
+            ).to_list(length=len(wanted))
+            for doc in docs:
+                stored[str(doc.get("key"))] = doc.get("value")
+        except Exception as exc:
+            logger.debug("Batched settings read failed: %s", exc)
+
+    out: dict[str, Any] = {}
+    for key in requested:
+        target = resolved[key]
+        if target in stored:
+            out[key] = stored[target]
+        else:
+            out[key] = DEFAULTS.get(target, {}).get("value")
+    return out
 
 
 _SETTING_TYPE_VALIDATORS: dict = {}
@@ -720,6 +770,8 @@ async def get_all_settings() -> dict:
             "value": source["value"] if source else defn["value"],
             "category": defn["category"],
             "description": defn["description"],
+            "type": defn.get("type"),
+            "options": defn.get("options"),
             "updatedAt": source.get("updatedAt") if source else None,
         }
     return result
@@ -738,6 +790,59 @@ async def reset_setting(key: str) -> dict:
     if target != key:
         await db.app_settings.delete_one({"key": key})
     fallback = DEFAULTS[target]["value"]
+    logger.info("Setting reset to default: %s -> %s", key, fallback)
+
+    # Live runtime propagation — a reset is a FIRST-CLASS change, exactly like
+    # a write: flush the TTL cache, notify the state store and re-evaluate the
+    # scheduler lifecycle so the default takes effect within one tick instead
+    # of only after the next restart.
+    try:
+        from services.runtime_settings import refresh_runtime_settings
+        await refresh_runtime_settings()
+    except Exception as exc:
+        logger.debug("Runtime settings cache refresh failed after reset: %s", exc)
+
+    try:
+        from services.state_store import set_entity_state
+        await set_entity_state(
+            "settings", {"changed": key, "value": fallback, "updatedAt": None, "reset": True},
+            reason=f"setting-reset:{key}",
+        )
+    except Exception as exc:
+        logger.debug("Settings reset event not published: %s", exc)
+
+    try:
+        from services.event_bus import publish_event
+        await publish_event(
+            {
+                "type": "settings_changed",
+                "key": key,
+                "value": fallback,
+                "reset": True,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    except Exception as exc:
+        logger.debug("Settings reset bus event not published: %s", exc)
+
+    try:
+        if target == "sched_enabled":
+            from scheduler import request_reconcile, start_scheduler, stop_scheduler
+            if bool(fallback) is False:
+                stop_scheduler()
+            elif scheduler_is_running():
+                request_reconcile()
+            else:
+                start_scheduler()
+        elif target.startswith("sched_") or target == "ws_enabled":
+            from scheduler import request_reconcile
+            request_reconcile()
+        elif target == "ds_collection_enabled":
+            from scheduler import request_reconcile
+            request_reconcile()
+    except Exception as exc:
+        logger.debug("Scheduler wake after reset failed (next tick will pick it up): %s", exc)
+
     return {
         "key": key,
         "value": fallback,
@@ -745,6 +850,7 @@ async def reset_setting(key: str) -> dict:
         "description": DEFAULTS[key]["description"],
         "updatedAt": None,
     }
+
 
 
 async def reset_all_settings() -> dict:

@@ -138,12 +138,19 @@ export function useOrderEngineLive(): OrderEngineLive {
     void refresh();
   }, [refresh]);
 
-  // Slow safety net. The realtime frames below are the primary update path;
-  // this only re-syncs rows a reconnect or a non-pushing broker could leave stale.
+  // Slow safety net ONLY. The realtime frames below are the primary update
+  // path; this re-syncs rows a reconnect or a non-pushing broker could leave
+  // stale. While the shared socket is UP the `orders` snapshot already covers
+  // it (the backend pushes the authoritative book on subscribe and on every
+  // change), so the timer stays idle and costs zero REST calls.
   useEffect(() => {
-    const id = window.setInterval(() => void refresh(), RECONCILE_MS);
+    const tick = () => {
+      if (realtime.connected) return;
+      void refresh();
+    };
+    const id = window.setInterval(tick, RECONCILE_MS);
     return () => window.clearInterval(id);
-  }, [refresh]);
+  }, [refresh, realtime.connected]);
 
   // Subscribe to the `orders` state channel so the backend pushes order
   // transitions for the active terminal into this session.

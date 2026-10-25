@@ -1,37 +1,100 @@
 'use client';
 
-// Data Saver — Dashboard.
+// Data Saver — Dashboard (redesigned from scratch).
 //
 // LOOK
-// Creamy, soft and fluid. Every surface is theme-aware (bg-card / border-border
-// / hsl(var(--…))) so it re-tints with the active theme instead of fighting it,
-// and the whole page floats over a slow drifting aurora field (video-like
-// ambient motion, transform+opacity only, disabled under reduced-motion).
+// A vivid, colour-forward surface that is tuned for BOTH dark and light: every
+// card carries a gradient accent rail, a soft theme-tinted glow, a hover
+// spotlight and a sheen sweep (transform/opacity only). The whole page floats
+// over a slow drifting aurora field. All animations are disabled under
+// prefers-reduced-motion.
+//
+// DATA — TWO LANES, ONE TRUTH
+//  · WebSocket (primary): the backend pushes a live `dashboard` document over
+//    WS#3 (state changes instantly + 6s telemetry). The provider merges every
+//    frame shallowly over the REST envelope — live fields win, heavy REST-only
+//    detail (events, alerts, storage categories, states cards) is preserved.
+//  · REST (fallback): `/api/data-saver/dashboard` keeps polling while the
+//    socket is down. The header badge shows which lane delivered the newest
+//    data. A transport that cannot deliver renders "—" honesty: a number the
+//    backend cannot measure is NEVER invented, not by WS and not by REST.
 //
 // CONTENT
-// Hero -> live status strip -> KPI tiles -> Scheduler (what happened / how many
-// / what's next) -> Session -> Pipeline -> Storage + Quality -> Alerts + Events
-// -> Quick links -> diagnostics.
-//
-// HONESTY
-// Unchanged backend contract: a metric that cannot be measured renders as an em
-// dash, never 0. No score, trend or percentage is computed here.
+// Hero (transport + market + countdown) -> status strip -> KPI grid -> live
+// flow -> scheduler -> session + pipeline -> storage + quality -> alerts +
+// events -> quick links -> diagnostics. Floating live assistant (chat) is
+// mounted at the end of the page.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
-  Activity, AlertCircle, ArrowRight, CalendarClock, CheckCircle2, Clock, Cpu,
-  Database, Download, Gauge, HardDrive, History, Layers, ListChecks, Radio,
-  RefreshCw, Server, Shield, Sparkles, Timer, TrendingDown, TrendingUp, Wifi,
-  WifiOff, Zap,
+  Activity, AlertCircle, ArrowRight, CalendarClock, CheckCircle2, Clock,
+  Cpu, Database, Download, Gauge, HardDrive, History, Layers, ListChecks,
+  Pause, Play, Radio, RefreshCw, Server, Shield, Sparkles, Smartphone, Timer,
+  TrendingDown, TrendingUp, Wifi, WifiOff, Zap,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SectionCard, SectionHeading, StatusBadge, EmptyState, LoadingState } from '@/components/design-system';
 import { fmtBytes, fmtUptime } from '@/lib/formatters';
 import { cn } from '@/lib/utils';
 import { useDataSaver } from '@/components/phase2/data-saver-provider';
+import { DashboardFlow } from '@/components/phase2/dashboard-flow';
+import { DashboardChat } from '@/components/phase2/dashboard-chat';
 
-const DASH = '\u2014';
+const DASH = '—';
+
+/* ========================================================================== */
+/* PWA                                                                         */
+/* ========================================================================== */
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
+
+/** True when the app already runs as an installed PWA. */
+function isStandalone(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.matchMedia('(display-mode: standalone)').matches
+    || (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
+
+/** Install-app button wired to the browser's own install flow (never fake). */
+function InstallAppButton() {
+  const [event, setEvent] = useState<BeforeInstallPromptEvent | null>(null);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (isStandalone()) setDone(true);
+    const onPrompt = (e: Event) => {
+      e.preventDefault();
+      setEvent(e as BeforeInstallPromptEvent);
+    };
+    const onInstalled = () => {
+      setDone(true);
+      setEvent(null);
+    };
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onPrompt);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  if (done || !event) return null;
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      onClick={() => { void event.prompt().finally(() => setEvent(null)); }}
+      className="rounded-full border border-emerald-400/30 bg-emerald-500/10 text-[11px] font-semibold text-emerald-600 transition hover:bg-emerald-500/20 dark:text-emerald-400"
+      aria-label="Install the Data Saver app"
+    >
+      <Smartphone className="h-3.5 w-3.5" /> Install app
+    </Button>
+  );
+}
 
 /* ========================================================================== */
 /* Ambient background                                                          */
@@ -43,6 +106,8 @@ function Aurora() {
       <div className="ds-drift-a absolute -left-32 -top-32 h-[34rem] w-[34rem] rounded-full bg-primary/10 blur-[110px]" />
       <div className="ds-drift-b absolute -right-40 top-24 h-[38rem] w-[38rem] rounded-full bg-info/10 blur-[120px]" />
       <div className="ds-drift-c absolute -bottom-40 left-1/4 h-[32rem] w-[32rem] rounded-full bg-purple/10 blur-[120px]" />
+      <div className="ds-drift-b absolute right-1/3 -bottom-52 h-[26rem] w-[26rem] rounded-full bg-rose/10 blur-[110px]" />
+      <div className="ds-drift-a absolute -top-20 right-10 h-[22rem] w-[22rem] rounded-full bg-teal/10 blur-[100px]" />
     </div>
   );
 }
@@ -53,15 +118,15 @@ function Aurora() {
 
 type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
-/** Soft, desaturated accents so the page reads warm rather than neon. */
-const ACCENT: Record<string, { rail: string; chip: string; text: string; soft: string }> = {
-  teal:    { rail: 'from-teal-400/70 to-emerald-400/40',    chip: 'from-teal-400/90 to-emerald-500/80',    text: 'text-teal-600 dark:text-teal-400',      soft: 'bg-teal-500/10' },
-  sky:     { rail: 'from-sky-400/70 to-blue-400/40',        chip: 'from-sky-400/90 to-blue-500/80',        text: 'text-sky-600 dark:text-sky-400',       soft: 'bg-sky-500/10' },
-  violet:  { rail: 'from-violet-400/70 to-purple-400/40',   chip: 'from-violet-400/90 to-purple-500/80',   text: 'text-violet-600 dark:text-violet-400', soft: 'bg-violet-500/10' },
-  amber:   { rail: 'from-amber-400/70 to-orange-400/40',    chip: 'from-amber-400/90 to-orange-500/80',    text: 'text-amber-600 dark:text-amber-400',   soft: 'bg-amber-500/10' },
-  rose:    { rail: 'from-rose-400/70 to-pink-400/40',       chip: 'from-rose-400/90 to-pink-500/80',       text: 'text-rose-600 dark:text-rose-400',     soft: 'bg-rose-500/10' },
-  emerald: { rail: 'from-emerald-400/70 to-teal-400/40',    chip: 'from-emerald-400/90 to-teal-500/80',    text: 'text-emerald-600 dark:text-emerald-400', soft: 'bg-emerald-500/10' },
-  slate:   { rail: 'from-slate-400/60 to-slate-300/30',     chip: 'from-slate-400/90 to-slate-500/80',     text: 'text-slate-600 dark:text-slate-300',   soft: 'bg-slate-500/10' },
+/** Vivid but desaturable accents — readable on both light and dark. */
+const ACCENT: Record<string, { rail: string; chip: string; text: string; glow: string }> = {
+  teal:    { rail: 'from-teal-400 via-emerald-400 to-teal-300',    chip: 'from-teal-400 to-emerald-500',   text: 'text-teal-600 dark:text-teal-300',      glow: 'via-teal-500/20' },
+  sky:     { rail: 'from-sky-400 via-blue-400 to-cyan-300',        chip: 'from-sky-400 to-blue-500',       text: 'text-sky-600 dark:text-sky-300',        glow: 'via-sky-500/20' },
+  violet:  { rail: 'from-violet-400 via-purple-400 to-fuchsia-300', chip: 'from-violet-400 to-purple-500', text: 'text-violet-600 dark:text-violet-300',  glow: 'via-violet-500/20' },
+  amber:   { rail: 'from-amber-400 via-orange-400 to-yellow-300',  chip: 'from-amber-400 to-orange-500',   text: 'text-amber-600 dark:text-amber-300',    glow: 'via-amber-500/20' },
+  rose:    { rail: 'from-rose-400 via-pink-400 to-red-300',        chip: 'from-rose-400 to-pink-500',      text: 'text-rose-600 dark:text-rose-300',      glow: 'via-rose-500/20' },
+  emerald: { rail: 'from-emerald-400 via-green-400 to-lime-300',   chip: 'from-emerald-400 to-teal-500',   text: 'text-emerald-600 dark:text-emerald-300', glow: 'via-emerald-500/20' },
+  slate:   { rail: 'from-slate-400 via-zinc-400 to-slate-300',     chip: 'from-slate-400 to-slate-500',    text: 'text-slate-600 dark:text-slate-300',    glow: 'via-slate-500/15' },
 };
 
 const TONE_DOT: Record<Tone, string> = {
@@ -80,29 +145,34 @@ const TONE_PILL: Record<Tone, string> = {
   neutral: 'border-border/60 bg-muted/40 text-muted-foreground',
 };
 
-/** The page's single surface. Creamy: low-contrast edge, soft lift, sheen. */
+/**
+ * The page's single surface: theme-aware glass with a colored rail, a soft
+ * accent glow and a hover spotlight that follows a fixed soft gradient.
+ */
 function SoftCard({
-  accent = 'slate', children, className, lift = false, rail = true, glow = true, index,
+  accent = 'slate', children, className, lift = true, index,
 }: {
   accent?: string; children: React.ReactNode; className?: string;
-  lift?: boolean; rail?: boolean; glow?: boolean; index?: number;
+  lift?: boolean; index?: number;
 }) {
   const a = ACCENT[accent] ?? ACCENT.slate;
   return (
     <div
       style={index != null ? ({ '--ds-i': index } as React.CSSProperties) : undefined}
       className={cn(
-        'ds-card group rounded-2xl border border-border/50 bg-card/75 shadow-[0_1px_2px_hsl(var(--foreground)/0.035)] backdrop-blur-xl',
+        'ds-card group relative overflow-hidden rounded-3xl border border-border/50 bg-card/75 shadow-[0_1px_3px_hsl(var(--foreground)/0.04),0_18px_44px_-28px_hsl(var(--foreground)/0.18)] backdrop-blur-2xl',
         lift && 'ds-lift',
         index != null && 'ds-rise',
         className,
       )}
     >
-      {rail && <span aria-hidden className={cn('absolute inset-x-0 top-0 h-[2.5px] bg-gradient-to-r', a.rail)} />}
-      {glow && (
-        <span aria-hidden className="pointer-events-none absolute -right-20 -top-24 h-52 w-52 rounded-full opacity-[0.045] blur-3xl"
-          style={{ background: 'var(--primary)' }} />
-      )}
+      {/* accent rail */}
+      <span aria-hidden className={cn('absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r opacity-80', a.rail)} />
+      {/* accent glow */}
+      <span aria-hidden className={cn('pointer-events-none absolute -right-24 -top-28 h-56 w-56 rounded-full bg-gradient-to-br from-transparent blur-3xl', a.glow, 'to-transparent')} />
+      {/* hover spotlight */}
+      <span aria-hidden className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100"
+        style={{ background: 'radial-gradient(420px circle at 22% 0%, hsl(var(--primary) / 0.055), transparent 62%)' }} />
       {children}
     </div>
   );
@@ -111,7 +181,7 @@ function SoftCard({
 /** Small label + value block used inside cards. */
 function Stat({ label, value, tone, hint }: { label: string; value: React.ReactNode; tone?: Tone; hint?: string }) {
   return (
-    <div className="rounded-xl border border-border/40 bg-background/40 px-2.5 py-2" title={hint}>
+    <div className="rounded-xl border border-border/40 bg-background/40 px-2.5 py-2 transition-colors duration-300 hover:border-border/70" title={hint}>
       <p className="truncate text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">{label}</p>
       <p className={cn('mt-0.5 truncate text-[15px] font-semibold leading-5 tracking-tight tabular-nums', tone ? TONE_TEXT[tone] : 'text-foreground')}>
         {value}
@@ -258,7 +328,7 @@ function eventTone(sev: string | null | undefined): Tone {
 function TechDetails({ entries }: { entries: { key: string; state: any }[] }) {
   if (entries.length === 0) return null;
   return (
-    <details className="group rounded-2xl border border-border/40 bg-card/50 px-4 py-2.5 text-[11px] text-muted-foreground backdrop-blur-xl">
+    <details className="group relative overflow-hidden rounded-2xl border border-border/40 bg-card/50 px-4 py-2.5 text-[11px] text-muted-foreground backdrop-blur-xl">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] transition-colors hover:text-foreground">
         <Sparkles className="h-3 w-3" />
         Technical details · sources &amp; diagnostics
@@ -292,17 +362,16 @@ function TechDetails({ entries }: { entries: { key: string; state: any }[] }) {
 /* ========================================================================== */
 
 function DashboardView() {
-  const { data, error: fetchError, errorReason, loading, hasData, consecutiveFailures, refresh } = useDataSaver();
-  const [now, setNow] = useState<number>(Date.now());
-  const dataAtRef = useRef<number>(Date.now());
+  const {
+    data, error: fetchError, errorReason, loading, hasData, consecutiveFailures,
+    refresh, paused, setPaused, transport, liveUpdatedAt, socketState,
+  } = useDataSaver();
 
+  const [now, setNow] = useState<number>(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-  useEffect(() => {
-    if (data) dataAtRef.current = Date.now();
-  }, [data]);
 
   const d: any = data ?? {};
   const updatedAt = (d.updatedAt as string | null) ?? null;
@@ -329,10 +398,6 @@ function DashboardView() {
   const qualityScore = num(d.qualityScore);
   const wsUptimeSec = num(d.wsUptimeSec);
 
-  const ageSinceData = Math.max(0, Math.floor((now - dataAtRef.current) / 1000));
-  const sessionRemaining = sess.active && sess.remainingSeconds != null ? Math.max(0, sess.remainingSeconds - ageSinceData) : null;
-  const schedRemaining = sched.remainingSeconds != null ? Math.max(0, sched.remainingSeconds - ageSinceData) : null;
-
   const storageUsedPct = stor.used != null && stor.capacity != null && stor.capacity > 0
     ? Number(((stor.used / stor.capacity) * 100).toFixed(1))
     : null;
@@ -355,23 +420,48 @@ function DashboardView() {
 
   /* ---------------- Scheduler: happened / counts / upcoming ---------------- */
 
-  const lifecycle: { label: string; at: string | null; status: Tone }[] = useMemo(() => {
+  /** Real lifecycle statuses produced by the backend's
+   *  `_scheduler_event_lifecycle` — never guessed from times alone. */
+  const lifecycleTone = (raw: unknown): Tone => {
+    const s = String(raw ?? '').toUpperCase();
+    if (['COMPLETED'].includes(s)) return 'success';
+    if (['RUNNING', 'ACTIVE'].includes(s)) return 'info';
+    if (['FAILED'].includes(s)) return 'danger';
+    if (['RETRYING', 'CATCHING_UP', 'SKIPPED', 'WAITING', 'DUE'].includes(s)) return 'warning';
+    return 'neutral'; // UPCOMING / NOT_APPLICABLE / unknown
+  };
+
+  const lifecycle: {
+    key: string; label: string; status: Tone; statusLabel: string;
+    at: string | null; scheduled: string | null; explanation: string | null; source: string | null;
+  }[] = useMemo(() => {
     if (Array.isArray(sched.lifecycle) && sched.lifecycle.length > 0) {
-      return sched.lifecycle.map((it: any) => {
-        const raw = String(it?.status ?? '').toLowerCase();
-        const tone: Tone = raw === 'done' || raw === 'completed' ? 'success'
-          : raw === 'active' || raw === 'running' ? 'info'
-            : raw === 'pending' ? 'warning' : 'neutral';
-        return { label: String(it?.label ?? it?.code ?? '—').replace(/_/g, ' '), at: it?.at ?? it?.time ?? null, status: tone };
-      });
+      return sched.lifecycle.map((it: any) => ({
+        key: String(it?.code ?? it?.label ?? DASH),
+        label: String(it?.label ?? it?.code ?? DASH).replace(/_/g, ' '),
+        status: lifecycleTone(it?.status),
+        statusLabel: String(it?.status ?? 'unknown').toLowerCase(),
+        at: str(it?.actual),
+        scheduled: str(it?.scheduled),
+        explanation: str(it?.explanation),
+        source: str(it?.actualSource),
+      }));
     }
-    // Fallback to the canonical window timestamps when no lifecycle block exists.
-    const w = sched.windowTimes ?? {};
+    // Fallback to the canonical window timestamps when no lifecycle block exists
+    // (windowTimes keys per scheduler get_schedule(): login / ws_connect /
+    // tick_collection_start / ws_disconnect / logout — real ISO times).
+    const w: any = sched.windowTimes ?? {};
+    const mk = (code: string, label: string, iso: unknown) => ({
+      key: code, label, status: (str(iso) ? 'success' : 'neutral') as Tone,
+      statusLabel: str(iso) ? 'recorded' : 'not recorded',
+      at: str(iso), scheduled: str(iso), explanation: null, source: null,
+    });
     return [
-      { label: 'Login', at: w.login ?? null, status: w.login ? 'success' : 'neutral' },
-      { label: 'WS connect', at: w.ws_connect ?? null, status: w.ws_connect ? 'success' : 'neutral' },
-      { label: 'Tick collection', at: w.tick_collection_start ?? null, status: w.tick_collection_start ? 'success' : 'neutral' },
-      { label: 'Logout', at: w.logout ?? null, status: w.logout ? 'success' : 'neutral' },
+      mk('login', 'login', w.login),
+      mk('ws_connect', 'ws connect', w.ws_connect),
+      mk('tick_collection', 'tick collection', w.tick_collection_start),
+      mk('ws_disconnect', 'ws disconnect', w.ws_disconnect),
+      mk('logout', 'logout', w.logout),
     ];
   }, [sched]);
 
@@ -411,8 +501,8 @@ function DashboardView() {
         <SectionCard title="No data yet" icon={Activity}>
           <EmptyState
             icon={Activity}
-            title="No ticks captured today."
-            description="The dashboard has not yet received a valid snapshot. It will load automatically when data becomes available."
+            title="No snapshot received yet."
+            description="The dashboard has not received a valid payload from either lane (WebSocket push or REST). It loads automatically as soon as data becomes available."
             action={<Button size="sm" variant="outline" onClick={refresh}><RefreshCw className="mr-2 h-4 w-4" /> Retry</Button>}
           />
         </SectionCard>
@@ -425,7 +515,7 @@ function DashboardView() {
     {
       href: '/data-saver/subscription', icon: Radio, accent: 'amber', title: 'Subscribed Stocks',
       value: fmtNum(num(subscribed.active)),
-      tone: (num(subscribed.active) ?? 0) > 0 ? 'success' : 'neutral',
+      tone: ((num(subscribed.active) ?? 0) > 0 ? 'success' : 'neutral') as Tone,
       sub: subscribed.total != null
         ? <>of {fmtNum(num(subscribed.total))} on watch{subscribed.byWs != null ? <> · {fmtNum(num(subscribed.byWs))} on WS</> : null}</>
         : 'No subscription measurement available',
@@ -433,13 +523,13 @@ function DashboardView() {
     {
       href: '/data-saver/ticks', icon: Activity, accent: 'teal', title: 'Active Instruments',
       value: fmtNum(num(d.activeInstruments)),
-      tone: (num(d.activeInstruments) ?? 0) > 0 ? 'success' : 'neutral',
-      sub: num(d.activeInstruments) != null ? 'Instruments receiving ticks in the current window' : 'No active feed to measure',
+      tone: ((num(d.activeInstruments) ?? 0) > 0 ? 'success' : 'neutral') as Tone,
+      sub: num(d.activeInstruments) != null ? 'Instruments receiving ticks now' : 'No active feed to measure',
     },
     {
       href: '/data-saver/ticks', icon: Zap, accent: 'sky', title: 'Ticks Today',
       value: fmtNum(ticksToday),
-      tone: ticksToday != null ? (ticksToday > 0 ? 'success' : 'warning') : 'neutral',
+      tone: (ticksToday != null ? (ticksToday > 0 ? 'success' : 'warning') : 'neutral') as Tone,
       sub: ticksToday == null
         ? (mongo.connected ? 'No ticks captured today (market/schedule)' : 'Unmeasured — MongoDB offline')
         : ticksToday > 0
@@ -449,19 +539,19 @@ function DashboardView() {
     {
       href: '/data-saver/insights', icon: Database, accent: 'violet', title: 'Total Records',
       value: fmtNum(num(d.totalRecordsInDb)),
-      tone: (num(d.totalRecordsInDb) ?? 0) > 0 ? 'success' : 'neutral',
+      tone: ((num(d.totalRecordsInDb) ?? 0) > 0 ? 'success' : 'neutral') as Tone,
       sub: num(d.totalRecordsInDb) != null ? 'Tick documents in the MongoDB ticks collection' : 'MongoDB did not report a count',
     },
     {
       href: '/data-saver/insights', icon: HardDrive, accent: 'violet', title: 'Storage Used',
       value: storageUsedPct != null ? `${storageUsedPct.toFixed(1)}%` : DASH,
-      tone: storageUsedPct == null ? 'neutral' : storageUsedPct >= 90 ? 'warning' : 'success',
+      tone: (storageUsedPct == null ? 'neutral' : storageUsedPct >= 90 ? 'warning' : 'success') as Tone,
       sub: stor.used != null && stor.capacity != null ? <>{fmtBytes(stor.used)} of {fmtBytes(stor.capacity)}</> : 'No storage measurement available',
     },
     {
       href: '/data-saver/websocket', icon: Gauge, accent: 'emerald', title: 'Ticks / sec',
       value: pipelineLive ? fmtNum(num(pipe.ticksPerSec)) : DASH,
-      tone: pipelineLive && (num(pipe.ticksPerSec) ?? 0) > 0 ? 'success' : 'neutral',
+      tone: (pipelineLive && (num(pipe.ticksPerSec) ?? 0) > 0 ? 'success' : 'neutral') as Tone,
       sub: pipelineLive
         ? num(pipe.ticksPerSec) != null && (num(pipe.ticksPerSec) ?? 0) > 0
           ? <>live rate over rolling 10s{pipe.savedPerSec != null ? <> · saving {fmtNum(num(pipe.savedPerSec))}/s</> : null}</>
@@ -474,7 +564,7 @@ function DashboardView() {
     { label: 'Market', value: sched.marketState ?? sched.marketStatus ?? 'UNKNOWN', tone: sched.isTradingDay ? 'success' : 'info', hint: sched.marketReasonMessage ?? st['scheduler.market']?.reason },
     { label: 'Scheduler', value: sched.running ? 'Running' : 'Stopped', tone: sched.running ? 'success' : 'danger', hint: `State ${sched.state ?? DASH} · ${sched.enabled ? 'enabled' : 'disabled'}` },
     { label: 'Session', value: sess.active ? 'Active' : 'Inactive', tone: sess.active ? 'success' : marketClosed ? 'info' : 'warning', hint: st['session.status']?.reason },
-    { label: 'WebSocket', value: ws.connected ? 'Connected' : 'Disconnected', tone: ws.connected ? 'success' : marketClosed ? 'info' : 'danger', hint: ws.disconnectReason ? `Reason: ${ws.disconnectReason}` : st['ws.connection']?.reason },
+    { label: 'Feed WS#1', value: ws.connected ? 'Connected' : 'Disconnected', tone: ws.connected ? 'success' : marketClosed ? 'info' : 'danger', hint: ws.disconnectReason ? `Reason: ${ws.disconnectReason}` : st['ws.connection']?.reason },
     { label: 'Database', value: mongo.connected ? 'Connected' : 'Disconnected', tone: mongo.connected ? 'success' : 'danger', hint: st['system.mongo']?.reason },
     { label: 'Internet', value: ws.internetOk ? 'Online' : 'Offline', tone: ws.internetOk ? 'success' : 'danger', hint: st['system.internet']?.reason },
     { label: 'Pipeline', value: pipelineLive ? 'Running' : 'Stopped', tone: pipelineLive ? 'success' : marketClosed ? 'info' : 'warning', hint: currentReason },
@@ -494,7 +584,6 @@ function DashboardView() {
     { label: 'Raw ticks', value: stor.rawData, color: 'from-orange-400 to-amber-300', dot: 'bg-orange-400', tip: 'ticks collection on-disk size (MongoDB)' },
     { label: 'Metadata', value: stor.metadata, color: 'from-blue-400 to-sky-300', dot: 'bg-blue-400', tip: 'all non-ticks collections on disk' },
     { label: 'Indexes', value: stor.indexBytes, color: 'from-violet-400 to-purple-300', dot: 'bg-violet-400', tip: 'real index sizes across collections' },
-    { label: 'Cache (in-memory)', value: null, color: 'from-teal-400 to-emerald-300', dot: 'bg-teal', tip: 'in-memory buffer — not disk-measurable' },
   ];
 
   const quickLinks = [
@@ -505,8 +594,19 @@ function DashboardView() {
     { href: '/data-saver/schedules', icon: CalendarClock, title: 'Schedules', desc: 'Windows & lifecycle', accent: 'violet' },
     { href: '/data-saver/downloads', icon: Download, title: 'Downloads', desc: 'Export & delivery', accent: 'rose' },
     { href: '/data-saver/insights', icon: Layers, title: 'Insights', desc: 'Events & reports', accent: 'slate' },
-    { href: '/data-saver/watch-list', icon: Sparkles, title: 'Watch List', desc: 'Tracked symbols', accent: 'amber' },
+    { href: '/data-saver/settings', icon: ListChecks, title: 'Settings', desc: 'PWA, storage, theme', accent: 'amber' },
   ];
+
+  /* ---------------- transport badges ---------------- */
+  const transportPill = fetchError
+    ? { cls: TONE_PILL.danger as string, text: 'Offline — both lanes failed', dot: 'danger' as Tone, live: false }
+    : transport === 'live'
+      ? { cls: TONE_PILL.success as string, text: `WS push · ${timeAgo(updatedAt, now)}`, dot: 'success' as Tone, live: true }
+      : liveUpdatedAt
+        ? { cls: TONE_PILL.info as string, text: `WS stalled · REST fallback`, dot: 'info' as Tone, live: false }
+        : { cls: TONE_PILL.neutral as string, text: `REST poll · ${timeAgo(updatedAt, now)}`, dot: 'neutral' as Tone, live: true };
+
+  const schedRemaining = sched.remainingSeconds != null ? Math.max(0, sched.remainingSeconds - 0) : null;
 
   return (
     <div className="relative min-h-full">
@@ -516,7 +616,6 @@ function DashboardView() {
 
         {/* ══════════════ HERO ══════════════ */}
         <header className="ds-card relative overflow-hidden rounded-3xl border border-border/50 bg-card/70 p-4 shadow-[0_2px_6px_-2px_hsl(var(--foreground)/0.05),0_24px_60px_-32px_hsl(var(--foreground)/0.25)] backdrop-blur-2xl sm:p-5">
-          {/* inner aurora — video-like motion, theme-tinted */}
           <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
             <div className="ds-drift-a absolute -left-24 -top-28 h-80 w-80 rounded-full bg-primary/12 blur-[90px]" />
             <div className="ds-drift-b absolute -bottom-32 right-0 h-80 w-80 rounded-full bg-info/10 blur-[90px]" />
@@ -526,9 +625,9 @@ function DashboardView() {
           <div className="relative flex flex-wrap items-start justify-between gap-5">
             <div className="min-w-0">
               <div className="flex items-center gap-3">
-                <span className="relative flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-primary/70 shadow-lg shadow-primary/25">
-                  <Activity className="h-5 w-5 text-primary-foreground" />
-                  {pipelineLive && <span className="absolute -inset-0.5 -z-10 rounded-2xl bg-primary/25 ds-breathe" />}
+                <span className="relative flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-400 via-emerald-500 to-sky-500 shadow-lg shadow-emerald-500/25">
+                  <Activity className="h-5 w-5 text-white" />
+                  {pipelineLive && <span className="ds-breathe absolute -inset-0.5 -z-10 rounded-2xl bg-emerald-400/25" />}
                 </span>
                 <div className="min-w-0">
                   <h1 className="truncate text-xl font-semibold leading-tight tracking-[-0.02em]">Data Saver</h1>
@@ -537,10 +636,9 @@ function DashboardView() {
               </div>
 
               <div className="mt-3.5 flex flex-wrap items-center gap-2">
-                <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold',
-                  fetchError ? TONE_PILL.danger : TONE_PILL.success)}>
-                  <PulseDot tone={fetchError ? 'danger' : 'success'} live={!fetchError} />
-                  {fetchError ? 'Offline — retrying' : `Live · ${timeAgo(updatedAt, now)}`}
+                <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold', transportPill.cls)}>
+                  <PulseDot tone={transportPill.dot} live={transportPill.live} />
+                  {transportPill.text}
                 </span>
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/40 px-2.5 py-1 text-[11px] tabular-nums text-muted-foreground backdrop-blur">
                   <Clock className="h-3 w-3" /> {liveClock} IST
@@ -555,10 +653,20 @@ function DashboardView() {
                     <Timer className="h-3 w-3" /> {fmtCountdown(schedRemaining)}
                   </span>
                 )}
-                <Button size="sm" variant="ghost" onClick={refresh} aria-label="Refresh" disabled={loading}
-                  className="ml-auto rounded-full transition-transform duration-300 hover:scale-105">
-                  <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-                </Button>
+                <span className="ml-auto flex items-center gap-1.5">
+                  <InstallAppButton />
+                  <Button size="sm"
+                    variant="ghost"
+                    onClick={() => setPaused(!paused)}
+                    aria-label={paused ? 'Resume live updates' : 'Pause live updates'}
+                    className="rounded-full">
+                    {paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={refresh} aria-label="Force refresh" disabled={loading}
+                    className="rounded-full transition-transform duration-300 hover:scale-105">
+                    <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+                  </Button>
+                </span>
               </div>
 
               <p className="mt-3 max-w-2xl text-[11px] leading-relaxed text-muted-foreground">
@@ -592,7 +700,7 @@ function DashboardView() {
             <AlertCircle className="h-4 w-4" />
             <span className="font-semibold">Dashboard data temporarily unavailable.</span>
             <span className="text-destructive/80">{errorReason ? `Reason: ${errorReason}` : 'Backend unreachable.'}</span>
-            <span className="text-destructive/70 tabular-nums">Last good: {updatedAt ? fmtTs(updatedAt) : 'none yet'}</span>
+            <span className="tabular-nums text-destructive/70">Last good: {updatedAt ? fmtTs(updatedAt) : 'none yet'}</span>
             {consecutiveFailures > 1 && <span className="text-destructive/70">Retry {consecutiveFailures}… auto-retrying.</span>}
             <button type="button" onClick={refresh}
               className="ml-auto inline-flex items-center gap-1 rounded-full border border-destructive/30 px-2.5 py-0.5 font-semibold transition hover:bg-destructive/10">
@@ -622,14 +730,13 @@ function DashboardView() {
             {kpis.map((k, i) => {
               const a = ACCENT[k.accent] ?? ACCENT.slate;
               return (
-                <Link key={k.title} href={k.href} className="block h-full" style={{ '--ds-i': i } as React.CSSProperties}
-                  data-verify={`card-${k.title.toLowerCase().replace(/\s+/g, '-')}`}>
-                  <SoftCard accent={k.accent} lift index={i} className="h-full p-4">
+                <Link key={k.title} href={k.href} className="block h-full" style={{ '--ds-i': i } as React.CSSProperties}>
+                  <SoftCard accent={k.accent} index={i} className="h-full p-4">
                     <div className="flex items-start justify-between gap-2">
                       <span className={cn('flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md transition-transform duration-300 group-hover:scale-110', a.chip)}>
                         <k.icon className="h-4 w-4" />
                       </span>
-                      <span className={cn('rounded-full border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.12em]', TONE_PILL[k.tone as Tone])}>
+                      <span className={cn('rounded-full border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.12em]', TONE_PILL[k.tone])}>
                         {k.tone === 'success' ? 'OK' : k.tone === 'warning' ? 'WARN' : k.tone === 'danger' ? 'ERR' : 'IDLE'}
                       </span>
                     </div>
@@ -646,6 +753,9 @@ function DashboardView() {
             })}
           </div>
         </section>
+
+        {/* ══════════════ LIVE FLOW ══════════════ */}
+        <DashboardFlow />
 
         {/* ══════════════ SCHEDULER ══════════════ */}
         <SoftCard accent="amber" className="p-4 sm:p-5" index={0}>
@@ -672,14 +782,14 @@ function DashboardView() {
           ) : (
             <>
               <div className="mt-4 grid grid-cols-3 gap-2">
-                <Stat label="State" value={sched.state} />
+                <Stat label="State" value={String(sched.state ?? DASH)} />
                 <Stat label="Market" value={sched.marketStatus ?? DASH} tone={marketOpen ? 'success' : 'neutral'} />
                 <Stat label="Trading day" value={sched.isTradingDay ? 'Yes' : 'No'} tone={sched.isTradingDay ? 'success' : 'neutral'} />
               </div>
 
               <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-3">
 
-                {/* WHAT HAPPENED — when */}
+                {/* WHAT HAPPENED */}
                 <div className="lg:col-span-1">
                   <SubHeading icon={History} right={
                     <span className={cn('rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]',
@@ -689,7 +799,6 @@ function DashboardView() {
                     </span>
                   }>What happened</SubHeading>
 
-                  {/* MANUAL LOGIN — only while a real manual session is live */}
                   {sess.active === true && String(sess.loginSource ?? '').toUpperCase() === 'MANUAL' && (
                     <div className="mb-2 rounded-xl border border-info/25 bg-info/10 px-2.5 py-2">
                       <p className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-info">
@@ -703,13 +812,24 @@ function DashboardView() {
 
                   <ol className="relative space-y-2">
                     {lifecycle.map((l, i) => (
-                      <li key={`${l.label}-${i}`} className="relative flex items-center gap-3">
+                      <li key={`${l.key}-${i}`} className="relative flex items-center gap-3" title={l.explanation ?? undefined}>
                         {i < lifecycle.length - 1 && <span aria-hidden className="absolute left-[7px] top-5 h-[calc(100%+0.5rem)] w-px bg-border/60" />}
                         <PulseDot tone={l.status} live={l.status === 'info'} />
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[11px] font-medium capitalize">{l.label}</span>
-                          <span className="block truncate text-[9px] text-muted-foreground/70">
-                            {l.at ? fmtTs(l.at) : sched.isTradingDay ? 'not recorded today' : 'n/a — non-trading day'}
+                          <span className="flex items-center gap-1.5">
+                            <span className="truncate text-[11px] font-medium capitalize">{l.label}</span>
+                            {l.source && (
+                              <span className="shrink-0 rounded bg-muted px-1 text-[8px] font-bold uppercase tracking-wide text-muted-foreground/70">
+                                {l.source}
+                              </span>
+                            )}
+                          </span>
+                          <span className="block truncate text-[9px] tabular-nums text-muted-foreground/70">
+                            {l.at
+                              ? <>{fmtTs(l.at)} <span className="text-muted-foreground/50">({timeAgo(l.at, now)})</span></>
+                              : l.scheduled
+                                ? <span className="text-muted-foreground/60">scheduled {fmtTs(l.scheduled)} · {l.statusLabel}</span>
+                                : <>no scheduled time today</>}
                           </span>
                         </span>
                       </li>
@@ -724,24 +844,24 @@ function DashboardView() {
                   </div>
                 </div>
 
-                {/* HOW MANY — counts */}
+                {/* HOW MANY */}
                 <div className="lg:col-span-1">
                   <SubHeading icon={ListChecks} right={
                     ledger.timezone ? <span className="text-[9px] font-bold uppercase tracking-[0.12em] text-muted-foreground">{ledger.timezone}</span> : undefined
                   }>How many</SubHeading>
 
-                  {ledger.totalRuns > 0 ? (
+                  {num(ledger.totalRuns) != null && num(ledger.totalRuns)! > 0 ? (
                     <>
                       <div className="grid grid-cols-2 gap-2">
                         {runCounts.map((r) => (
-                          <div key={r.label} className="rounded-xl border border-border/40 bg-background/40 px-2.5 py-2 transition-colors hover:border-border/60">
+                          <div key={r.label} className="rounded-xl border border-border/40 bg-background/40 px-2.5 py-2 transition-colors hover:border-border/70">
                             <p className="truncate text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">{r.label}</p>
                             <p className={cn('mt-0.5 text-base font-semibold leading-5 tabular-nums', TONE_TEXT[r.tone])}>{fmtNum(r.value)}</p>
                           </div>
                         ))}
                       </div>
 
-                      {Object.keys(ledgerJobsToday).length > 0 && (
+                      {ledgerJobsToday && Object.keys(ledgerJobsToday).length > 0 && (
                         <div className="mt-2.5">
                           <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground/80">Jobs today</p>
                           <div className="flex flex-wrap gap-1.5">
@@ -766,7 +886,7 @@ function DashboardView() {
                   )}
                 </div>
 
-                {/* WHAT'S NEXT — upcoming */}
+                {/* WHAT'S NEXT */}
                 <div className="lg:col-span-1">
                   <SubHeading icon={CalendarClock} right={
                     schedRemaining != null
@@ -786,7 +906,7 @@ function DashboardView() {
                         const inSec = secondsUntil(u.at, now);
                         const isNext = String(sched.nextEvent ?? '') !== '' && i === 0;
                         return (
-                          <li key={u.key} className="flex items-center gap-3 rounded-xl border border-border/40 bg-background/40 px-2.5 py-2 transition-colors hover:border-border/60">
+                          <li key={u.key} className="flex items-center gap-3 rounded-xl border border-border/40 bg-background/40 px-2.5 py-2 transition-colors hover:border-border/70">
                             <span className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded-lg',
                               isNext ? 'bg-primary/10 text-primary' : 'bg-muted/50 text-muted-foreground')}>
                               <Clock className="h-3.5 w-3.5" />
@@ -821,164 +941,164 @@ function DashboardView() {
           )}
         </SoftCard>
 
-        {/* ══════════════ SESSION ══════════════ */}
-        <SoftCard accent="emerald" className="p-4 sm:p-5" index={1}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-teal-500 text-white shadow-md">
-                <Shield className="h-4 w-4" />
-              </span>
-              <div>
-                <h2 className="text-sm font-semibold tracking-tight">Session</h2>
-                <p className="text-[10px] text-muted-foreground">Broker login state &amp; expiry</p>
+        {/* ══════════════ SESSION + PIPELINE ══════════════ */}
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+
+          <SoftCard accent="emerald" className="p-4 sm:p-5" index={1}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-teal-500 text-white shadow-md">
+                  <Shield className="h-4 w-4" />
+                </span>
+                <div>
+                  <h2 className="text-sm font-semibold tracking-tight">Session</h2>
+                  <p className="text-[10px] text-muted-foreground">Broker login state &amp; expiry</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {sess.loginSource && (
+                  <span className={cn('rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]',
+                    String(sess.loginSource).toUpperCase() === 'MANUAL' ? TONE_PILL.info : TONE_PILL.neutral)}>
+                    {String(sess.loginSource).toUpperCase()}
+                  </span>
+                )}
+                <StatusBadge status={sess.active ? 'success' : 'info'} label={sess.active ? 'Active' : 'Inactive'} />
+                <Link href="/data-saver/configuration" className="text-[10px] text-muted-foreground transition-colors hover:text-foreground">Configuration</Link>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {sess.loginSource && (
-                <span className={cn('rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]',
-                  String(sess.loginSource).toUpperCase() === 'MANUAL' ? TONE_PILL.info : TONE_PILL.neutral)}>
-                  {String(sess.loginSource).toUpperCase()}
-                </span>
-              )}
-              <StatusBadge status={sess.active ? 'success' : 'info'} label={sess.active ? 'Active' : 'Inactive'} />
-              <Link href="/data-saver/configuration" className="text-[10px] text-muted-foreground transition-colors hover:text-foreground">Configuration</Link>
-            </div>
-          </div>
 
-          {!sess.state && !sess.active ? (
-            <div className="mt-4"><EmptyState icon={Shield} title="Session unavailable" description="No session state reported by the backend" /></div>
-          ) : (
-            <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-[auto_1fr]">
-              {/* Identity + countdown */}
-              <div className="flex items-center gap-4 rounded-2xl border border-border/40 bg-background/40 p-4">
-                <div className={cn('relative flex h-20 w-20 shrink-0 items-center justify-center rounded-full',
-                  sess.active ? 'bg-success/12 ring-1 ring-success/25' : 'bg-muted/40 ring-1 ring-border/60')}>
-                  {sess.active && <span className="absolute inset-0 rounded-full bg-success/20 ds-breathe" />}
-                  <div className="relative text-center">
-                    <p className={cn('text-base font-semibold leading-none tracking-tight tabular-nums',
-                      sess.active ? 'text-success' : 'text-muted-foreground')}>
-                      {sess.active && sessionRemaining != null ? fmtCountdown(sessionRemaining) : '—'}
+            {!sess.state && !sess.active ? (
+              <div className="mt-4"><EmptyState icon={Shield} title="Session unavailable" description="No session state reported by the backend" /></div>
+            ) : (
+              <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-[auto_1fr]">
+                <div className="flex items-center gap-4 rounded-2xl border border-border/40 bg-background/40 p-4">
+                  <div className={cn('relative flex h-20 w-20 shrink-0 items-center justify-center rounded-full',
+                    sess.active ? 'bg-success/12 ring-1 ring-success/25' : 'bg-muted/40 ring-1 ring-border/60')}>
+                    {sess.active && <span className="absolute inset-0 rounded-full bg-success/20 ds-breathe" />}
+                    <div className="relative text-center">
+                      <p className={cn('text-base font-semibold leading-none tracking-tight tabular-nums',
+                        sess.active && typeof sess.remainingSeconds === 'number' ? 'text-success' : 'text-muted-foreground')}>
+                        {sess.active && typeof sess.remainingSeconds === 'number' ? fmtCountdown(sess.remainingSeconds) : DASH}
+                      </p>
+                      <p className="mt-1 text-[8px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                        {sess.active ? 'expires in' : 'inactive'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-muted-foreground/80">Status</p>
+                    <p className="mt-0.5 truncate text-lg font-semibold tracking-tight">
+                      {sess.state ? String(sess.state).toUpperCase() : sess.active ? 'SESSION ACTIVE' : 'SESSION INACTIVE'}
                     </p>
-                    <p className="mt-1 text-[8px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
-                      {sess.active ? 'expires in' : 'inactive'}
+                    <p className="mt-1.5 truncate text-[10px] text-muted-foreground">
+                      {sess.user ? <>User <span className="font-mono">{sess.user}</span></> : 'No display-safe user identifier reported'}
                     </p>
+                    {sess.lastLoginAt && (
+                      <p className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
+                        Since {fmtTs(sess.lastLoginAt)} · <span className="text-muted-foreground/70">{timeAgo(sess.lastLoginAt, now)}</span>
+                      </p>
+                    )}
                   </div>
                 </div>
 
-                <div className="min-w-0">
-                  <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-muted-foreground/80">Status</p>
-                  <p className="mt-0.5 truncate text-lg font-semibold tracking-tight">
-                    {sess.state ? String(sess.state).toUpperCase() : sess.active ? 'SESSION ACTIVE' : 'SESSION INACTIVE'}
-                  </p>
-                  <p className="mt-1.5 truncate text-[10px] text-muted-foreground">
-                    {sess.user ? <>User <span className="font-mono">{sess.user}</span></> : 'No display-safe user identifier reported'}
-                  </p>
-                  {sess.lastLoginAt && (
-                    <p className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
-                      Since {fmtTs(sess.lastLoginAt)} · <span className="text-muted-foreground/70">{timeAgo(sess.lastLoginAt, now)}</span>
+                <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
+                  <div>
+                    <DetailRow label="Login time" value={sess.lastLoginAt ? fmtTs(sess.lastLoginAt) : <span className="text-muted-foreground">No login recorded</span>} />
+                    <DetailRow label="Validated at" value={sess.validatedAt ? fmtTs(sess.validatedAt) : <span className="text-muted-foreground">Not validated</span>} />
+                    <DetailRow label="Expires at" value={sess.expiresAt ? fmtTs(sess.expiresAt) : <span className="text-muted-foreground">Until scheduled logout</span>}
+                      valueClass={sess.active ? 'text-warning' : undefined} />
+                    <DetailRow label="Duration" value={sess.sessionDurationSeconds != null ? fmtUptime(sess.sessionDurationSeconds) : <span className="text-muted-foreground">Until scheduled logout</span>} />
+                  </div>
+                  <div>
+                    <DetailRow label="Login count" value={sess.loginCount != null ? fmtNum(num(sess.loginCount)) : <span className="text-muted-foreground">Not recorded</span>} />
+                    <DetailRow label="Broker feed" value={sess.wsState ? String(sess.wsState).toUpperCase() : <span className="text-muted-foreground">Feed not connected</span>} />
+                    <DetailRow label="Last logout" value={sess.lastLogoutAt ? fmtTs(sess.lastLogoutAt) : <span className="text-muted-foreground">No logout recorded</span>} />
+                    <DetailRow label="Logout reason" value={sess.lastLogoutReason
+                      ? <span className="font-medium">{String(sess.lastLogoutReason).replace(/_/g, ' ')}</span>
+                      : sess.active ? <span className="text-muted-foreground">N/A — session active</span>
+                        : <span className="text-muted-foreground">No logout recorded</span>} />
+                  </div>
+
+                  {!sess.active && (
+                    <p className="col-span-full rounded-xl border border-border/40 bg-background/40 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+                      {st['session.status']?.reason ?? (sched.marketReasonMessage ?? 'No active broker session.')}
+                    </p>
+                  )}
+                  {sess.lastLoginError && (
+                    <p className="col-span-full rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-[10px] text-destructive">
+                      Login error: {sess.lastLoginError}
                     </p>
                   )}
                 </div>
               </div>
+            )}
+          </SoftCard>
 
-              {/* Facts */}
-              <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
-                <div>
-                  <DetailRow label="Login time" value={sess.lastLoginAt ? fmtTs(sess.lastLoginAt) : <span className="text-muted-foreground">No login recorded</span>} />
-                  <DetailRow label="Validated at" value={sess.validatedAt ? fmtTs(sess.validatedAt) : <span className="text-muted-foreground">Not validated</span>} />
-                  <DetailRow label="Expires at" value={sess.expiresAt ? fmtTs(sess.expiresAt) : <span className="text-muted-foreground">Until scheduled logout</span>}
-                    valueClass={sess.active ? 'text-warning' : undefined} />
-                  <DetailRow label="Duration" value={sess.sessionDurationSeconds != null ? fmtUptime(sess.sessionDurationSeconds) : <span className="text-muted-foreground">Until scheduled logout</span>} />
-                </div>
-                <div>
-                  <DetailRow label="Login count" value={sess.loginCount != null ? fmtNum(num(sess.loginCount)) : <span className="text-muted-foreground">Not recorded</span>} />
-                  <DetailRow label="Broker feed" value={sess.wsState ? String(sess.wsState).toUpperCase() : <span className="text-muted-foreground">Feed not connected</span>} />
-                  <DetailRow label="Last logout" value={sess.lastLogoutAt ? fmtTs(sess.lastLogoutAt) : <span className="text-muted-foreground">No logout recorded</span>} />
-                  <DetailRow label="Logout reason" value={sess.lastLogoutReason
-                    ? <span className="font-medium">{String(sess.lastLogoutReason).replace(/_/g, ' ')}</span>
-                    : sess.active ? <span className="text-muted-foreground">N/A — session active</span>
-                      : <span className="text-muted-foreground">No logout recorded</span>} />
-                </div>
-
-                {!sess.active && (
-                  <p className="col-span-full rounded-xl border border-border/40 bg-background/40 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
-                    {st['session.status']?.reason ?? (sched.marketReasonMessage ?? 'No active broker session.')}
-                  </p>
-                )}
-                {sess.lastLoginError && (
-                  <p className="col-span-full rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-[10px] text-destructive">
-                    Login error: {sess.lastLoginError}
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
-        </SoftCard>
-
-        {/* ══════════════ TICK PIPELINE ══════════════ */}
-        <SoftCard accent={pipelineLive ? 'teal' : 'slate'} className="p-4 sm:p-5" index={2}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <span className={cn('flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md',
-                pipelineLive ? 'from-teal-400 to-emerald-500' : 'from-slate-400 to-slate-500')}>
-                {pipelineLive ? <Activity className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
-              </span>
-              <div>
-                <h2 className="text-sm font-semibold tracking-tight">Tick Pipeline</h2>
-                <p className="max-w-xl truncate text-[10px] text-muted-foreground">{currentReason}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <StatusBadge status={pipelineLive ? 'success' : marketClosed ? 'info' : 'warning'} label={pipelineLive ? 'RUNNING' : 'STOPPED'} />
-              <Link href="/data-saver/websocket" className="text-[10px] text-muted-foreground transition-colors hover:text-foreground">WebSocket</Link>
-            </div>
-          </div>
-
-          <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
-            <Stat label="Ticks received" value={fmtNum(num(pipe.totalReceived))} tone="info" hint="since process start" />
-            <Stat label="Saved" value={fmtNum(num(pipe.totalWrites))} tone="success"
-              hint={pipe.savedPerSec != null && pipelineLive ? `${fmtNum(num(pipe.savedPerSec))}/s now` : 'persisted to MongoDB'} />
-            <Stat label="Failed" value={fmtNum(num(pipe.failed))} tone={num(pipe.failed) ? 'danger' : 'success'}
-              hint={pipe.failed == null ? 'not measured' : num(pipe.failed) ? 'write failures recorded' : 'no write failures'} />
-            <Stat label="Buffer pending" value={fmtNum(num(pipe.bufferLength))} hint="in-memory queue" />
-          </div>
-
-          <div className="mt-2 grid grid-cols-1 gap-x-8 sm:grid-cols-2">
-            <DetailRow label="Save success rate" value={d.saveSuccessRate != null ? `${d.saveSuccessRate.toFixed(2)}%` : DASH}
-              valueClass={d.saveSuccessRate == null ? undefined : d.saveSuccessRate >= 99 ? 'text-success' : 'text-warning'} />
-            <DetailRow label="Feed latency" value={ws.latencyMs != null ? `${Math.round(num(ws.latencyMs)!)}ms` : DASH}
-              hint={ws.latencyMs != null ? 'Exchange → backend measured latency' : 'Measured only while ticks flow'} />
-          </div>
-
-          <div className="mt-3 rounded-xl border border-border/40 bg-background/40 px-3 py-2.5">
-            <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground/80">Lifecycle timeline</p>
-            {[
-              { label: 'Started', time: pipe.startedAt ?? str(st['pipeline.started']?.value), tone: 'text-info', live: false },
-              { label: 'Last tick', time: pipe.lastTickAt, tone: 'text-foreground', live: pipelineLive },
-              { label: 'Last save', time: pipe.lastSavedAt, tone: 'text-success', live: false },
-              { label: 'Last failed write', time: pipe.lastFailedWriteAt, tone: 'text-destructive', live: false },
-              { label: pipelineLive ? 'Still running' : 'Stopped / offline since', time: pipelineLive ? null : (str(st['pipeline.state']?.lastUpdated) ?? pipe.offlineSince ?? pipe.stoppedAt), tone: 'text-warning', live: !pipelineLive },
-            ].map((row, i, arr) => (
-              <div key={row.label} className="relative flex items-baseline gap-3 py-[3px]">
-                {i < arr.length - 1 && <span aria-hidden className="absolute left-[3px] top-4 h-full w-px bg-border/60" />}
-                <span className="relative z-10 bg-background px-[3px]">
-                  <PulseDot tone={row.live ? (pipelineLive ? 'success' : 'warning') : (row.time ? 'neutral' : 'neutral')} live={row.live} />
+          <SoftCard accent={pipelineLive ? 'teal' : 'slate'} className="p-4 sm:p-5" index={2}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span className={cn('flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md',
+                  pipelineLive ? 'from-teal-400 to-emerald-500' : 'from-slate-400 to-slate-500')}>
+                  {pipelineLive ? <Activity className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{row.label}</span>
-                <span className={cn('shrink-0 text-[11px] font-medium tabular-nums', row.time ? row.tone : 'text-muted-foreground/50')}>
-                  {row.time ? fmtTs(row.time) : (pipelineLive && row.label === 'Still running' ? 'connected now' : 'not yet recorded')}
-                </span>
+                <div>
+                  <h2 className="text-sm font-semibold tracking-tight">Tick Pipeline</h2>
+                  <p className="max-w-xs truncate text-[10px] text-muted-foreground sm:max-w-md">{currentReason}</p>
+                </div>
               </div>
-            ))}
-          </div>
+              <div className="flex items-center gap-2">
+                <StatusBadge status={pipelineLive ? 'success' : marketClosed ? 'info' : 'warning'} label={pipelineLive ? 'RUNNING' : 'STOPPED'} />
+                <Link href="/data-saver/websocket" className="text-[10px] text-muted-foreground transition-colors hover:text-foreground">WebSocket</Link>
+              </div>
+            </div>
 
-          {!pipelineLive && <p className="mt-2.5 text-[10px] text-muted-foreground">Rate metrics are not measured while the stream is stopped — no ticks are entering the pipeline.</p>}
-        </SoftCard>
+            <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
+              <Stat label="Ticks received" value={fmtNum(num(pipe.totalReceived))} tone="info" hint="since process start" />
+              <Stat label="Saved" value={fmtNum(num(pipe.totalWrites))} tone="success"
+                hint={pipe.savedPerSec != null && pipelineLive ? `${fmtNum(num(pipe.savedPerSec))}/s now` : 'persisted to MongoDB'} />
+              <Stat label="Failed" value={fmtNum(num(pipe.failed))} tone={num(pipe.failed) ? 'danger' : 'success'}
+                hint={pipe.failed == null ? 'not measured' : num(pipe.failed) ? 'write failures recorded' : 'no write failures'} />
+              <Stat label="Buffer pending" value={fmtNum(num(pipe.bufferLength))} hint="in-memory queue" />
+            </div>
+
+            <div className="mt-2 grid grid-cols-1 gap-x-8 sm:grid-cols-2">
+              <DetailRow label="Save success rate" value={d.saveSuccessRate != null ? `${d.saveSuccessRate.toFixed(2)}%` : DASH}
+                valueClass={d.saveSuccessRate == null ? undefined : d.saveSuccessRate >= 99 ? 'text-success' : 'text-warning'} />
+              <DetailRow label="Feed latency" value={ws.latencyMs != null ? `${Math.round(num(ws.latencyMs)!)}ms` : DASH}
+                hint={ws.latencyMs != null ? 'Exchange → backend measured latency' : 'Measured only while ticks flow'} />
+            </div>
+
+            <div className="mt-3 rounded-xl border border-border/40 bg-background/40 px-3 py-2.5">
+              <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground/80">Lifecycle timeline</p>
+              {[
+                { label: 'Started', time: pipe.startedAt ?? str(st['pipeline.started']?.value), tone: 'text-info', live: false },
+                { label: 'Last tick', time: pipe.lastTickAt, tone: 'text-foreground', live: pipelineLive },
+                { label: 'Last save', time: pipe.lastSavedAt, tone: 'text-success', live: false },
+                { label: 'Last failed write', time: pipe.lastFailedWriteAt, tone: 'text-destructive', live: false },
+                { label: pipelineLive ? 'Still running' : 'Stopped / offline since', time: pipelineLive ? null : (str(st['pipeline.state']?.lastUpdated) ?? pipe.offlineSince ?? pipe.stoppedAt), tone: 'text-warning', live: !pipelineLive },
+              ].map((row, i, arr) => (
+                <div key={row.label} className="relative flex items-baseline gap-3 py-[3px]">
+                  {i < arr.length - 1 && <span aria-hidden className="absolute left-[3px] top-4 h-full w-px bg-border/60" />}
+                  <span className="relative z-10 bg-background px-[3px]">
+                    <PulseDot tone={row.live ? (pipelineLive ? 'success' : 'warning') : 'neutral'} live={row.live} />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{row.label}</span>
+                  <span className={cn('shrink-0 text-[11px] font-medium tabular-nums', row.time ? row.tone : 'text-muted-foreground/50')}>
+                    {row.time ? fmtTs(row.time) : (pipelineLive && row.label === 'Still running' ? 'connected now' : 'not yet recorded')}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {!pipelineLive && <p className="mt-2.5 text-[10px] text-muted-foreground">Rate metrics are not measured while the stream is stopped — no ticks are entering the pipeline.</p>}
+          </SoftCard>
+        </div>
 
         {/* ══════════════ STORAGE + QUALITY ══════════════ */}
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
 
-          <SoftCard accent="violet" className="p-4 sm:p-5">
+          <SoftCard accent="violet" className="p-4 sm:p-5" index={0}>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5">
                 <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-400 to-purple-500 text-white shadow-md">
@@ -1049,7 +1169,7 @@ function DashboardView() {
             </div>
           </SoftCard>
 
-          <SoftCard accent="emerald" className="p-4 sm:p-5">
+          <SoftCard accent="emerald" className="p-4 sm:p-5" index={1}>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5">
                 <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-teal-500 text-white shadow-md">
@@ -1066,7 +1186,7 @@ function DashboardView() {
                 sub={qual.total != null ? `${fmtNum(num(qual.total))} ticks` : undefined} />
               <div className="w-full space-y-1.5">
                 {qualityDims.map((q) => (
-                  <div key={q.label} className="flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-background/40 px-2.5 py-1.5 transition-colors hover:border-border/60">
+                  <div key={q.label} className="flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-background/40 px-2.5 py-1.5 transition-colors hover:border-border/70">
                     <span className="min-w-0 truncate text-[11px] text-muted-foreground">{q.label}</span>
                     <span className="flex shrink-0 items-center gap-2">
                       {q.count != null && <span className="text-[10px] tabular-nums text-muted-foreground/70">{fmtNum(q.count)}</span>}
@@ -1110,7 +1230,7 @@ function DashboardView() {
         {/* ══════════════ ALERTS + EVENTS ══════════════ */}
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
 
-          <SoftCard accent={alerts.length ? 'rose' : 'emerald'} className="p-4 sm:p-5">
+          <SoftCard accent={alerts.length ? 'rose' : 'emerald'} className="p-4 sm:p-5" index={0}>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5">
                 <span className={cn('flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md',
@@ -1205,9 +1325,9 @@ function DashboardView() {
               const a = ACCENT[q.accent] ?? ACCENT.slate;
               return (
                 <Link key={q.href} href={q.href} style={{ '--ds-i': i } as React.CSSProperties}
-                  className="ds-rise ds-lift flex items-start gap-2.5 rounded-2xl border border-border/40 bg-card/65 p-3.5 backdrop-blur-xl">
+                  className="group relative flex items-start gap-2.5 overflow-hidden rounded-2xl border border-border/40 bg-card/65 p-3.5 backdrop-blur-xl ds-rise ds-lift">
                   <span aria-hidden className={cn('absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r opacity-50 transition-opacity duration-500 group-hover:opacity-100', a.rail)} />
-                  <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md transition-transform duration-300 group-hover:scale-110', a.chip)}>
+                  <span className={cn('relative z-10 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md transition-transform duration-300 group-hover:scale-110', a.chip)}>
                     <q.icon className="h-4 w-4" />
                   </span>
                   <span className="min-w-0">
@@ -1223,9 +1343,16 @@ function DashboardView() {
         <TechDetails entries={techEntries} />
 
         <p className="pb-2 text-center text-[10px] text-muted-foreground/70">
-          Last updated {fmtTs(updatedAt)} · auto-refreshes every 5s via one centralized poll
+          {transport === 'live'
+            ? <>Live via WebSocket push (state + 6s telemetry) · full detail re-synced over REST every 25s</>
+            : <>REST polling every 10s with exponential backoff · connect the WS gateway for instant pushes</>}
+          {' · '}{String(socketState).toLowerCase()} socket
         </p>
       </div>
+
+      {/* Floating live assistant — the chat sits above the page, above the
+          bottom nav, and above any PWA prompt (never overlapping). */}
+      <DashboardChat />
     </div>
   );
 }

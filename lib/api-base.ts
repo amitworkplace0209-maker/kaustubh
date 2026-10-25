@@ -23,11 +23,31 @@ export const API_BASE =
 /**
  * The realtime WebSocket URL.
  *
- * In the browser the socket must point at the page's own origin so it works
- * from a phone on the LAN, through a reverse proxy, or over HTTPS (where a
- * `ws://` socket would be blocked as mixed content).
+ * Resolution order:
+ *
+ *  1. `NEXT_PUBLIC_WS_URL` (explicit) — used on Vercel, where the frontend
+ *     is a serverless function and therefore CANNOT hold a persistent socket.
+ *     Point it at a host that runs the Python backend's `/ws/realtime`
+ *     gateway (Railway / Render / Fly / any VM). `http(s)://` is accepted and
+ *     normalised to `ws(s)://`.
+ *
+ *  2. Same origin (`ws(s)://<page-host>/ws/realtime`) — used for local
+ *     development and for self-hosted deployments. The browser opens the
+ *     socket against the page's own origin, which means it also works from a
+ *     phone on the LAN and behind a reverse proxy, and it never trips the
+ *     browser's mixed-content rule on an HTTPS deployment.
+ *
+ *     Next.js' own server cannot proxy WebSocket upgrades
+ *     (`next/dist/server/next-server.js` → `handleUpgrade()` is a no-op), so
+ *     this path is served by `server.mjs` — the custom Next server that
+ *     tunnels `/ws/*` to the Python backend.
  */
 export function realtimeSocketUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_WS_URL?.trim();
+  if (explicit) {
+    const normalized = explicit.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
+    return normalized.replace(/\/+$/, '');
+  }
   if (typeof window !== 'undefined' && window.location) {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/ws/realtime`;

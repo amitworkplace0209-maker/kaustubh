@@ -31,6 +31,7 @@ import {
   Database,
   Gauge,
   HardDrive,
+  History,
   Info,
   Pause,
   Play,
@@ -72,9 +73,12 @@ import {
   connectionTone,
   downloadJson,
   fmtAgo,
+  fmtBytes,
   fmtClock,
   fmtCompact,
   fmtDateTime,
+  fmtIso,
+  fmtMs,
   fmtNum,
   fmtSeconds,
   fmtUptime,
@@ -91,6 +95,7 @@ import {
   useSortState,
   type CmArchitectureEntry,
   type CmHealth,
+  type CmHistoryEvent,
 } from './cm-shared';
 import {
   RadialGauge,
@@ -185,6 +190,8 @@ export default function ConnectionManagerOverview() {
     push('frames', data.payload?.framesRouted ?? null);
     push('queue', queueMax);
     push('rate', registry.reduce((a, c) => a + (c.deliveryRatePerSec ?? 0), 0) || null);
+    push('bytes', data.payload?.stats?.bytesPerSec ?? null);
+    push('latency', data.payload?.stats?.avgDeliveryLatencyMs ?? null);
   }, [data.payload, data.updatedAt, registry, queueMax]);
 
   const filteredChannels = useMemo(() => {
@@ -626,18 +633,72 @@ export default function ConnectionManagerOverview() {
         )}
       </SectionCard>
 
-      {/* ================= HONEST GAPS (spec §20/§29/§51) ================= */}
+      {/* ================= §29 CONNECTION HISTORY (real persisted ledger) ================= */}
+      <SectionCard
+        title="Connection history (spec §29)"
+        icon={History}
+        headerRight={
+          <span className="text-[10px] text-muted-foreground">
+            persisted attach/detach ledger · bounded {data.history?.summary?.bound ?? '—'}
+          </span>
+        }
+      >
+        {data.history ? (
+          <div className="space-y-3">
+            <KVGrid cols={4}>
+              <KV label="Sessions 24h" value={fmtNum(data.history.summary?.sessionsLast24h ?? null)} />
+              <KV label="Avg session" value={data.history.summary?.avgSessionSeconds == null ? DASH : fmtSeconds(data.history.summary.avgSessionSeconds)} />
+              <KV label="Rows stored" value={fmtNum(data.history.summary?.rowsStored ?? null)} />
+              <KV label="Fresh rows" value={fmtNum(data.history.summary?.rowsLoaded ?? null)} />
+            </KVGrid>
+            {data.history.events.length ? (
+              <div className="space-y-1">
+                {data.history.events.slice(0, 8).map((e: CmHistoryEvent, i: number) => (
+                  <div
+                    key={`${e.connectionId}-${e.event}-${e.epoch}`}
+                    className="flex flex-wrap items-center gap-2 rounded-lg border border-border/40 bg-background/30 px-2.5 py-1 font-mono text-[10px]"
+                    style={{ animation: 'cm-rise 0.4s ease-out both', animationDelay: `${Math.min(i * 24, 200)}ms` }}
+                  >
+                    <span className="w-32 shrink-0 tabular-nums text-muted-foreground">{fmtIso(e.ts)}</span>
+                    <span className="w-20 shrink-0">
+                      <StatusBadge
+                        status={e.event === 'ATTACHED' ? 'success' : e.event === 'DETACHED' ? 'neutral' : 'info'}
+                        label={e.event.slice(0, 5)}
+                      />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" title={e.connectionId}>{e.connectionId.slice(0, 10)}</span>
+                    <span className="truncate text-muted-foreground" title={e.reason ?? ''}>{e.reason || DASH}</span>
+                    {e.durationSeconds != null ? <span className="shrink-0 tabular-nums">{fmtSeconds(e.durationSeconds)}</span> : null}
+                    {e.framesDelivered != null ? <span className="shrink-0 tabular-nums text-muted-foreground">{fmtCompact(e.framesDelivered)} frames</span> : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                Ledger khali hai — pehla session attach hote hi rows yahan aayenge.
+              </p>
+            )}
+          </div>
+        ) : (
+          <EmptyState
+            icon={ScrollText}
+            title="History unavailable"
+            description="GET /api/realtime/connections/history did not return data — nothing is shown rather than guessed."
+          />
+        )}
+      </SectionCard>
+
+      {/* ================= HONEST GAPS (spec §20) ================= */}
       <div className="rounded-xl border border-dashed border-warning/40 bg-warning/[0.04] px-4 py-3">
         <div className="flex items-start gap-2.5">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-hidden />
           <div>
             <p className="text-xs font-semibold text-foreground">Not measured by this engine</p>
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              Spec §29 connection history and §20 expiry history have no backend endpoint — sessions are
-              live in the registry, not stored as a historical series. Spec §51{' '}
-              <span className="font-mono text-foreground/80">bytes/sec</span> and{' '}
-              <span className="font-mono text-foreground/80">avg delivery latency</span> are not measured
-              either. These gaps are shown rather than filled with a placeholder value.
+              Spec §20 expiry history has no backend endpoint yet — session attach/detach history{' '}
+              (§29) aur wire <span className="font-mono text-foreground/80">bytes/sec</span> +{' '}
+              <span className="font-mono text-foreground/80">avg delivery latency</span> ab REAL measured ledger me
+              hain. Jo abhi bhi nahi naapa jata wo gap hi dikhaya jata hai, placeholder nahi.
             </p>
           </div>
         </div>
@@ -943,8 +1004,30 @@ function AggregateGrid({
       { key: 'reconnecting', label: 'Reconnecting', value: fmtNum(inState('RECONNECTING')), source: 'derived' as const, detail: 'lifecycle map', spark: null, tone: 'warning' as GaugeTone },
       { key: 'consumers', label: 'Consumers', value: fmtNum(consumers.size), source: 'derived' as const, detail: 'distinct consumerId', spark: null, tone: 'info' as GaugeTone },
       { key: 'msgRate', label: 'Messages / sec', value: registry.length ? msgPerSec.toFixed(2) : DASH, source: 'derived' as const, detail: 'sum of deliveryRatePerSec', spark: 'rate', tone: 'teal' as GaugeTone },
-      { key: 'bytesRate', label: 'Bytes / sec', value: NOT_PROVIDED, source: 'not-provided' as const, detail: 'no byte counter', spark: null, tone: 'neutral' as GaugeTone },
-      { key: 'deliveryLatency', label: 'Avg delivery latency', value: NOT_PROVIDED, source: 'not-provided' as const, detail: 'no latency histogram', spark: null, tone: 'neutral' as GaugeTone },
+      {
+        key: 'bytesRate',
+        label: 'Bytes / sec',
+        // Real wire bytes measured on the WS writer path; on pre-metric
+        // backends the field is absent → explicit NOT_PROVIDED, never a zero.
+        value: payload?.stats?.bytesPerSec === undefined
+          ? NOT_PROVIDED
+          : payload?.stats?.bytesPerSec == null ? DASH : `${fmtBytes(payload.stats.bytesPerSec)}/s`,
+        source: payload?.stats?.bytesPerSec === undefined ? ('not-provided' as const) : ('reported' as const),
+        detail: 'WS writer bytes (30 s window)',
+        spark: 'bytes',
+        tone: 'teal' as GaugeTone,
+      },
+      {
+        key: 'deliveryLatency',
+        label: 'Avg delivery latency',
+        value: payload?.stats?.avgDeliveryLatencyMs === undefined
+          ? NOT_PROVIDED
+          : payload?.stats?.avgDeliveryLatencyMs == null ? DASH : fmtMs(payload.stats.avgDeliveryLatencyMs),
+        source: payload?.stats?.avgDeliveryLatencyMs === undefined ? ('not-provided' as const) : ('reported' as const),
+        detail: 'enqueue → delivery (WS writer)',
+        spark: 'latency',
+        tone: 'info' as GaugeTone,
+      },
       { key: 'queueDepthMax', label: 'Max queue depth', value: fmtNum(payload?.backpressure?.queueDepthMax ?? health?.queueDepthMax ?? null), source: 'reported' as const, spark: 'queue', tone: 'warning' as GaugeTone },
       { key: 'dropped', label: 'Dropped messages', value: fmtNum(stats?.messagesDropped ?? health?.messagesDropped ?? null), source: 'reported' as const, spark: null, tone: 'warning' as GaugeTone },
       {
@@ -1054,6 +1137,11 @@ function ChannelTable({
     { key: 'delivered', label: 'Delivered', align: 'right' },
   ];
 
+  const maxDelivered = useMemo(
+    () => Math.max(1, ...rows.map(([, m]) => m.delivered ?? 0)),
+    [rows],
+  );
+
   return (
     <SectionCard
       title={`Delivery channels (${rows.length}${rows.length !== totalChannels ? ` of ${totalChannels}` : ''})`}
@@ -1088,7 +1176,6 @@ function ChannelTable({
             <TableBody>
               {sorted.map(([name, m]) => {
                 const isMarket = m.kind?.includes('market');
-                const maxDelivered = Math.max(...rows.map(([, x]) => x.delivered ?? 0), 1);
                 const pct = m.delivered == null ? 0 : ((m.delivered / maxDelivered) * 100).toFixed(1);
                 return (
                   <TableRow key={name} className="group/row border-border/40 transition-colors hover:bg-muted/40">
@@ -1255,12 +1342,6 @@ function LegendDot({ color, label }: { color: string; label: string }) {
       <span className="h-2 w-2 rounded-full" style={{ background: color }} />
       {label}
     </span>
-  );
-}
-
-function ChartSkeleton({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className={`cm-shimmer w-full rounded-lg border border-border/50 bg-muted/30 ${compact ? 'h-28' : 'h-[260px]'}`} />
   );
 }
 

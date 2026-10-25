@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import {
   AlertTriangle, ArrowLeft, Database, FileSearch,
   GitBranch, HeartPulse, History, Layers, ListFilter,
@@ -149,7 +150,7 @@ export default function AuditEnginePage() {
             <FileSearch className="h-6 w-6" />
           </span>
           <div className="min-w-0 flex-1">
-            <h1 className="truncate bg-gradient-to-r from-indigo-300 via-violet-200 to-emerald-200 bg-clip-text text-xl font-bold tracking-tight text-transparent sm:text-2xl">
+            <h1 className="truncate text-xl font-bold tracking-tight text-foreground sm:text-2xl">
               Audit Engine
             </h1>
             <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground sm:text-sm">
@@ -165,6 +166,16 @@ export default function AuditEnginePage() {
             {notice && <Badge variant="outline" className="max-w-72 truncate">{notice}</Badge>}
             <Button size="sm" onClick={refreshAll} className="gap-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-500 shadow-md">
               <RefreshCw className="h-3.5 w-3.5" /> Refresh
+            </Button>
+            <Button size="sm" variant="outline" asChild className="gap-1.5">
+              <Link href="/services/system/profile/audit_engine">
+                <FileSearch className="h-3.5 w-3.5" /> Engine Profile
+              </Link>
+            </Button>
+            <Button size="sm" variant="outline" asChild className="gap-1.5">
+              <Link href="/services/system">
+                <Layers className="h-3.5 w-3.5" /> All engines
+              </Link>
             </Button>
           </div>
         </div>

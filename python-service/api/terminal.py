@@ -175,6 +175,49 @@ async def terminal_switch(body: dict, _unlock: None = Depends(require_mode_unloc
     return result
 
 
+@router.post("/auto-login")
+async def terminal_auto_login(body: dict, _auth: dict = Depends(require_jwt)):
+    """Obtain the session for a terminal THE WAY THAT TERMINAL CAN.
+
+    * ``kotak``   — TOTP + MPIN, fully automatic (the backend holds both).
+    * ``dummy``   — a managed paper session, no broker call.
+    * ``shoonya`` — OAuth: the stored session is restored when there is one;
+      otherwise the result says ``requires: "oauth_handshake"`` and carries the
+      URL the operator has to open (the Noren SDK has no password login).
+
+    The endpoint never returns a secret — only the method, the message and the
+    OAuth URL.
+    """
+    from services.auto_login import auto_login
+
+    mode = str(body.get("terminal") or active_terminal()).lower()
+    if mode not in ("kotak", "shoonya", "dummy"):
+        raise HTTPException(400, "terminal must be one of kotak|shoonya|dummy")
+    result = await auto_login(mode, source=str(body.get("source") or "api"))
+    payload = result.to_dict()
+    payload["isLoggedIn"] = bool(getattr(get_adapter(mode), "is_logged_in", False))
+    return payload
+
+
+@router.get("/auto-login/state")
+async def terminal_auto_login_state(_auth: dict = Depends(require_jwt)):
+    """What each terminal can do about its own session right now."""
+    from services.terminal_credentials import has_session_material
+
+    rows = []
+    for term in ("kotak", "shoonya", "dummy"):
+        adapter = get_adapter(term)
+        rows.append({
+            "terminal": term,
+            "name": getattr(adapter, "broker_name", term),
+            "enabled": bool(getattr(adapter, "enabled", True)),
+            "isLoggedIn": bool(getattr(adapter, "is_logged_in", False)),
+            "capabilities": getattr(adapter, "capabilities", {}),
+            "hasStoredSession": has_session_material(term) if term == "shoonya" else False,
+        })
+    return {"ok": True, "active": active_terminal(), "terminals": rows}
+
+
 @router.post("/connect")
 async def terminal_connect(body: dict, _auth: dict = Depends(require_jwt)):
     """Authenticate the ACTIVE terminal's adapter (real login, not fabricated)."""

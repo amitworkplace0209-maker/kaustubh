@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
+import asyncio
 from collections import defaultdict, deque
 from typing import Any, Optional
 
@@ -176,24 +177,50 @@ class FeatureEngine(EngineBase):
         """
         return self._canonical_cache.get(token)
 
+    # Time budget (seconds) for draining ready events in one loop iteration.
+    # Per-tick work is pure CPU on the event loop, so an unbounded
+    # process-everything loop starved the HTTP server during feed bursts (the
+    # "/api/system/dashboard hangs" failure). The drain stops after this budget
+    # and the loop yields with sleep(0) so other tasks always get a slice.
+    _TICK_BATCH_BUDGET_S = 0.010
+    # Hard cap on events drained per iteration so a warm queue always yields.
+    _TICK_BATCH_MAX = 64
+
     async def _listen_loop(self) -> None:
-        """Consume validated ticks and compute features."""
+        """Consume validated ticks and compute features.
+
+        Processing is batched within a small time budget and the loop yields
+        after every batch, so the event loop never gets held hostage by a heavy
+        tick burst (ASCII: process a little, yield, repeat).
+        """
         q = self._subscriber_queue
         if not q:
             return
         while True:
             try:
                 event = await q.get()
-                tick = event.get("data", {})
-                token = tick.get("instrumentToken") or tick.get("token", "")
-                if not token:
-                    continue
-                self._sync_rolling_window()
-                self._process_tick(token, tick)
-            except __import__("asyncio").CancelledError:
+                self._handle_tick_event(event)
+                deadline = time.perf_counter() + self._TICK_BATCH_BUDGET_S
+                for _ in range(self._TICK_BATCH_MAX):
+                    try:
+                        nxt = q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    self._handle_tick_event(nxt)
+                    if time.perf_counter() >= deadline:
+                        break
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.record_error("tick_processing_error", str(exc))
+
+    def _handle_tick_event(self, event: dict) -> None:
+        tick = event.get("data", {})
+        token = tick.get("instrumentToken") or tick.get("token", "")
+        if token:
+            self._sync_rolling_window()
+            self._process_tick(token, tick)
 
     def _sync_rolling_window(self) -> None:
         """Resize the per-instrument history when the setting changed.

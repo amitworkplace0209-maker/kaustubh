@@ -53,6 +53,14 @@ MAX_ARCHIVED_POSITIONS = 200
 MAX_ARCHIVED_TRANSACTIONS = 200
 MAX_CLOSED_SESSIONS = 60  # ~8 weeks of daily sessions kept as permanent history
 
+#: Minimum seconds between counter refreshes for an already-open session.
+#: Counter refresh reads three documents plus notifications and writes the
+#: session document; doing that on EVERY read made every Dummy endpoint cost
+#: six extra Atlas round trips. Ten seconds is far below the UI's polling
+#: cadence and order paths explicitly refresh the session after a fill.
+_COUNTER_REFRESH_INTERVAL_S = 10.0
+_last_counter_refresh: dict[str, float] = {}
+
 # Operational app_settings keys owned by the paper engine (api/demo.py).
 _KEY_ACCOUNT = "demo_account"
 _KEY_ORDERS = "demo_orders"
@@ -190,6 +198,8 @@ async def _reset_operational_state(starting_capital: float, session_id: str) -> 
     The long-term accounting / permanent stores (audit, history, watchlists,
     calendar, closed-position records) are NOT part of this reset.
     """
+    from services import read_cache
+
     db = get_db()
     account = _default_account(starting_capital)
     account["sessionId"] = session_id
@@ -206,6 +216,7 @@ async def _reset_operational_state(starting_capital: float, session_id: str) -> 
             {"$set": {"key": key, "value": [], "category": "demo", "updatedAt": now}},
             upsert=True,
         )
+    read_cache.invalidate("dummy:state")
 
 
 async def _close_previous_sessions(open_trading_date: str) -> None:
@@ -302,7 +313,10 @@ def _session_summary(session: dict, account: dict | None, positions: list,
 # --------------------------------------------------------------------------- #
 # Public lifecycle API
 # --------------------------------------------------------------------------- #
-async def ensure_dummy_session(now: Optional[datetime] = None) -> dict:
+async def ensure_dummy_session(
+    now: Optional[datetime] = None,
+    refresh_counters: bool = True,
+) -> dict:
     """Idempotent open of the current Dummy session.
 
     * At/after 12:00 AM IST a new calendar date means a NEW session: close +
@@ -313,6 +327,12 @@ async def ensure_dummy_session(now: Optional[datetime] = None) -> dict:
       restarts never wipe within-day state.
     * A legacy ``PRE_OPEN`` document (pre-midnight-lifecycle) is promoted to
       ``OPEN`` on sight.
+
+    ``refresh_counters=False`` is for read endpoints that compute their own
+    snapshot from the same rows (``/api/dummy/state``): it skips the refresh
+    write entirely, which keeps a GET read-only and fast even while MongoDB's
+    primary is unavailable. Other endpoints refresh at most once per
+    ``_COUNTER_REFRESH_INTERVAL_S`` seconds.
     """
     now = now or _now_utc()
     ist_now = now.astimezone(IST) if now.tzinfo else now.replace(tzinfo=IST)
@@ -324,9 +344,14 @@ async def ensure_dummy_session(now: Optional[datetime] = None) -> dict:
             session["status"] = "OPEN"
             session["started_at"] = ist_now.isoformat()
             await _upsert_session(session)
-        # Refresh present-day counters (idempotent, cheap).
-        await _refresh_session_counters(session)
-        return await _find_session(trading_date) or session
+        if refresh_counters:
+            last = _last_counter_refresh.get(trading_date, 0.0)
+            if (time.monotonic() - last) >= _COUNTER_REFRESH_INTERVAL_S:
+                _last_counter_refresh[trading_date] = time.monotonic()
+                patch = await _refresh_session_counters(session)
+                if patch:
+                    session.update(patch)
+        return session
 
     await _close_previous_sessions(trading_date)
     prefs = await _get_prefs()
@@ -344,29 +369,37 @@ async def ensure_dummy_session(now: Optional[datetime] = None) -> dict:
     return await _find_session(trading_date) or saved
 
 
-async def _refresh_session_counters(session: dict) -> None:
-    """Recompute present-day counters from the live operational store without
-    mutating anything. Best effort, never raises into the lifecycle."""
+async def _refresh_session_counters(session: dict) -> Optional[dict]:
+    """Recompute present-day counters from the live operational store.
+
+    Best effort, never raises into the lifecycle. Returns the applied patch so
+    callers can update their in-memory copy without re-reading the document.
+    """
     try:
-        from services.dummy_extras import get_dummy_notifications
-        db = get_db()
-        account_doc = await db.app_settings.find_one({"key": _KEY_ACCOUNT})
-        orders_doc = await db.app_settings.find_one({"key": _KEY_ORDERS})
-        pos_doc = await db.app_settings.find_one({"key": _KEY_POSITIONS})
-        notifications = await get_dummy_notifications()
+        from services.dummy_extras import get_settings_many
+
+        # One ``$in`` read instead of four sequential Atlas round trips. This
+        # refresh is throttled to 10 s, but on the first request after a
+        # restart it used to add four network RTTs before the session snapshot
+        # could be returned.
+        docs = await get_settings_many(
+            [_KEY_ACCOUNT, _KEY_ORDERS, _KEY_POSITIONS, _KEY_NOTIFICATIONS]
+        )
         summary = _session_summary(
             session,
-            (account_doc or {}).get("value"),
-            (pos_doc or {}).get("value") or [],
-            (orders_doc or {}).get("value") or [],
-            notifications,
+            docs.get(_KEY_ACCOUNT),
+            docs.get(_KEY_POSITIONS) or [],
+            docs.get(_KEY_ORDERS) or [],
+            docs.get(_KEY_NOTIFICATIONS) or [],
         )
         patch = {**summary, "updatedAt": _now_utc()}
         if session.get("started_at"):
             patch["started_at"] = session["started_at"]
         await _upsert_session({**session, **patch})
+        return patch
     except Exception as exc:  # non-fatal
         logger.warning("dummy session counter refresh skipped: %s", exc)
+        return None
 
 
 async def current_session(refresh: bool = True) -> dict:
@@ -375,10 +408,20 @@ async def current_session(refresh: bool = True) -> dict:
     return await session_snapshot(session)
 
 
-async def session_snapshot(session: Optional[dict] = None) -> dict:
-    """Full public snapshot (used by /api/dummy/session and /state)."""
+async def session_snapshot(
+    session: Optional[dict] = None,
+    summary: Optional[dict] = None,
+) -> dict:
+    """Full public snapshot (used by /api/dummy/session and /state).
+
+    ``summary`` lets a caller that already loaded the operational rows supply
+    freshly computed counters, so ``/state`` never has to write the session
+    document just to read it back.
+    """
     if session is None:
         session = await current_session(refresh=False)
+    elif summary:
+        session = {**session, **summary}
     allowed = {
         "sessionId", "trading_date", "terminal", "status", "started_at", "closed_at",
         "starting_capital", "available_capital", "used_capital", "reserved_margin",

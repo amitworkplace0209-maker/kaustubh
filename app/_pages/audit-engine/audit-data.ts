@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getRealtimeConnectionState, subscribeRealtime } from '@/lib/realtime-store';
 
 const BASE = '/api/services/engines/audit_engine';
 
@@ -88,7 +89,7 @@ export const postAuditRecord = (body: Record<string, any>): Promise<any> =>
 export const postAuditFlush = (): Promise<any> =>
   getJson(`${BASE}/flush`, { method: 'POST' });
 
-/** Live aggregated posture (15s auto-refresh, real MongoDB aggregations). */
+/** Live aggregated posture (real MongoDB aggregations). */
 export function useAuditSummary(intervalMs = 15000): {
   data: any | null; error: string | null; loading: boolean; lastUpdated: number | null; refresh: () => void;
 } {
@@ -97,6 +98,10 @@ export function useAuditSummary(intervalMs = 15000): {
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const reqRef = useRef(0);
+  /** Re-evaluated on every socket transition — drives the reconcile cadence. */
+  const [socketState, setSocketState] = useState<string>(() =>
+    typeof window === 'undefined' ? 'DISCONNECTED' : getRealtimeConnectionState(),
+  );
 
   const refresh = useCallback(() => {
     const req = ++reqRef.current;
@@ -116,10 +121,26 @@ export function useAuditSummary(intervalMs = 15000): {
   }, []);
 
   useEffect(() => {
+    setSocketState(getRealtimeConnectionState());
+    return subscribeRealtime(() => setSocketState(getRealtimeConnectionState()));
+  }, []);
+
+  useEffect(() => {
     refresh();
-    const t = setInterval(refresh, intervalMs);
+  }, [refresh]);
+
+  useEffect(() => {
+    // While the WebSocket is UP the audit page already renders its engine
+    // status from the pushed `engine.status` frames, so the summary only needs
+    // a slow reconcile. While the socket is DOWN this is the only carrier —
+    // keep the caller's cadence.
+    const cadence = socketState === 'CONNECTED' ? Math.max(intervalMs * 4, 60000) : intervalMs;
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      refresh();
+    }, cadence);
     return () => { reqRef.current += 1; clearInterval(t); };
-  }, [refresh, intervalMs]);
+  }, [socketState, intervalMs, refresh]);
 
   return { data, error, loading, lastUpdated, refresh };
 }

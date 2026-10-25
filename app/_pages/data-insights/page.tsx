@@ -12,7 +12,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { getStocks, getRecentTicks, getTickStreamUrl } from '@/lib/api';
+import { getStocks, getRecentTicks } from '@/lib/api';
+import { subscribeSseState, subscribeTicks } from '@/lib/shared-sse';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -240,6 +241,9 @@ function SkeletonTable({ rows = 4, cols = 5 }: { rows?: number; cols?: number })
 
 // ─── Page Component ─────────────────────────────────────────────────
 
+/** Slow stocks reconcile while the shared tick stream is live (ms). */
+const STOCK_RECONCILE_MS = 60_000;
+
 export default function DataInsightsPage() {
   // Data
   const [stocks, setStocks] = useState<StockEntry[]>([]);
@@ -254,7 +258,9 @@ export default function DataInsightsPage() {
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
   const mountedRef = useRef(true);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  /** Unsubscribers for the shared tick stream registrations. */
+  const offTicksRef = useRef<(() => void) | null>(null);
+  const offStateRef = useRef<(() => void) | null>(null);
   const anomalyIdSet = useRef<Set<string>>(new Set());
   const pricesRef = useRef<Map<string, number[]>>(new Map());
 
@@ -324,27 +330,28 @@ export default function DataInsightsPage() {
     } catch { /* ignore */ }
   }, []);
 
-  // ─── SSE stream ─────────────────────────────────────────────────
+  // ─── SSE stream — the SHARED browser tick session ───────────────
 
+  const [streamConnected, setStreamConnected] = useState(false);
+  /** Read inside the interval callback without re-installing the timer. */
+  const streamConnectedRef = useRef(false);
+  streamConnectedRef.current = streamConnected;
   const connectStream = useCallback(() => {
-    if (eventSourceRef.current) eventSourceRef.current.close();
+    // One SSE session for the whole app (shared reconnect + coalescing) — this
+    // page only registers a listener, it never opens its own EventSource.
+    offStateRef.current = subscribeSseState((s) => setStreamConnected(Boolean(s.connected)));
+    offTicksRef.current = subscribeTicks((raw) => {
+      const tick = raw as TickData;
+      if (!tick?.symbol || tick.ltp == null) return;
 
-    const es = new EventSource(getTickStreamUrl());
-    eventSourceRef.current = es;
+      const sym = tick.symbol;
 
-    es.onmessage = (event) => {
-      try {
-        const tick: TickData = JSON.parse(event.data);
-        if (!tick?.symbol || tick.ltp == null) return;
-
-        const sym = tick.symbol;
-
-        // Update tick map
-        setTickMap((prev) => {
-          const next = new Map(prev);
-          next.set(sym, tick);
-          return next;
-        });
+      // Update tick map
+      setTickMap((prev) => {
+        const next = new Map(prev);
+        next.set(sym, tick);
+        return next;
+      });
 
         // Update price history (keep last 60 entries for correlation)
         setTickHistory((prev) => {
@@ -383,26 +390,39 @@ export default function DataInsightsPage() {
         }
 
         setLastUpdated(Date.now());
-      } catch { /* ignore */ }
-    };
-
-    es.onerror = () => {
-      es.close();
-      if (mountedRef.current) {
-        setTimeout(connectStream, 3000);
-      }
-    };
+    });
   }, []);
 
   // ─── Init ───────────────────────────────────────────────────────
 
   useEffect(() => {
+    let lastStockLoad = Date.now();
     fetchStocks();
-    seedTicks().then(() => connectStream());
-    const stockInterval = setInterval(fetchStocks, 15000);
+    connectStream();
+    void seedTicks();
+
+    // The subscription list only changes on user CRUD (this page edits it) and
+    // the ticks themselves arrive over the SSE stream, so 15 s re-fetch churn
+    // buys nothing. Reconcile slowly while the stream is live, fast when it is
+    // not, and reload on re-focus.
+    const stockInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (streamConnectedRef.current && Date.now() - lastStockLoad < STOCK_RECONCILE_MS) return;
+      lastStockLoad = Date.now();
+      void fetchStocks();
+    }, 15000);
+    const onFocus = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      lastStockLoad = Date.now();
+      void fetchStocks();
+    };
+    window.addEventListener('focus', onFocus);
+
     return () => {
       clearInterval(stockInterval);
-      eventSourceRef.current?.close();
+      window.removeEventListener('focus', onFocus);
+      offTicksRef.current?.();
+      offStateRef.current?.();
     };
   }, [fetchStocks, seedTicks, connectStream]);
 

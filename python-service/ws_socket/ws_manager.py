@@ -870,6 +870,23 @@ class WebSocketManager:
         if hasattr(self, '_live_publish_task') and self._live_publish_task:
             self._live_publish_task.cancel()
             self._live_publish_task = None
+        reader = getattr(self, '_reader_task', None)
+        if reader is not None and not reader.done():
+            try:
+                reader.cancel()
+            except Exception:
+                pass
+        self._reader_task = None
+        # Capture close code/reason from underlying SDK websocket if available
+        try:
+            ws = getattr(self, '_ws', None)
+            if ws is not None:
+                cc = getattr(ws, 'close_code', None) or getattr(ws, '_close_code', None)
+                cr = getattr(ws, 'close_reason', None) or getattr(ws, '_close_reason', None)
+                if cc is not None and message is None:
+                    message = f"close_code={cc} reason={cr or ''}".strip()
+        except Exception:
+            pass
         with self._lock:
             was_connected = self._connected
             self._connected = False
@@ -978,9 +995,28 @@ class WebSocketManager:
             logger.exception("No running event loop to start the feed reader")
 
     async def _reader_loop(self, ws) -> None:
+        # Cooperative micro-batching: during a live session the broker feed can
+        # deliver thousands of ticks per second and this loop handled each one
+        # inline without ever yielding, so the event loop stayed resident in
+        # this frame (profiled at ~73% of process CPU while dashboard/topbar
+        # requests barely advanced). Yield to the loop every ~10ms of wall
+        # time (or every 32 messages, whichever comes first) — messages are
+        # still processed in arrival order, nothing is dropped or reordered.
+        _YIELD_EVERY_MSGS = 32
+        _YIELD_INTERVAL_S = 0.010
+        since_yield = 0
+        run_started = time.monotonic()
         try:
             async for message in ws:
                 self._handle_feed_message(message)
+                since_yield += 1
+                if (
+                    since_yield >= _YIELD_EVERY_MSGS
+                    or time.monotonic() - run_started >= _YIELD_INTERVAL_S
+                ):
+                    since_yield = 0
+                    run_started = time.monotonic()
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             return
         except Exception as exc:

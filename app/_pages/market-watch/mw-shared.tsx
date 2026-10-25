@@ -7,6 +7,7 @@ import {
   RealtimeTickView,
 } from '@/lib/realtime-ws';
 import { useFrontendRealtime } from '@/components/frontend-realtime-provider';
+import { dedupeFetch } from '@/lib/shared-request';
 
 /**
  * Shared types + helpers for the Market Watch workspace (doc §9–§23).
@@ -351,6 +352,7 @@ export interface MwFridayScanResponse {
   scan?: {
     candidates?: number;
     priced?: number;
+    marginRequested?: number;
     marginResolved?: number;
     marginUnavailable?: number;
     selectedCount?: number;
@@ -913,7 +915,14 @@ export function toneClass(tone: string | null | undefined): string {
 
 export async function fetchWeekly(weekId?: string): Promise<MwWeeklyResponse> {
   const q = weekId ? `?weekId=${encodeURIComponent(weekId)}` : '';
-  return fetchJson<MwWeeklyResponse>(`/api/market-watch/weekly${q}`);
+  const res = await fetchJson<MwWeeklyResponse>(`/api/market-watch/weekly${q}`);
+  // Older backend builds only bound the snake_case query name, so a requested
+  // `weekId` was silently ignored and the current week was returned instead.
+  // Retry explicitly rather than presenting the wrong week as the answer.
+  if (weekId && res.weekId !== weekId) {
+    return fetchJson<MwWeeklyResponse>(`/api/market-watch/weekly?week_id=${encodeURIComponent(weekId)}`);
+  }
+  return res;
 }
 
 export async function fetchWeeklyUniverse(): Promise<{
@@ -958,7 +967,18 @@ export async function fetchWeeklyReport(weekId?: string): Promise<{
   reason?: string;
 }> {
   const q = weekId ? `?weekId=${encodeURIComponent(weekId)}` : '';
-  return fetchJson(`/api/market-watch/weekly/report${q}`);
+  const res = await fetchJson<{
+    ok: boolean;
+    weekId: string;
+    report: MwWeeklyReport | null;
+    reason?: string;
+  }>(`/api/market-watch/weekly/report${q}`);
+  // See fetchWeekly: fall back to the snake_case name on older builds instead
+  // of returning "NO_REPORT" for the wrong week.
+  if (weekId && res.weekId !== weekId) {
+    return fetchJson(`/api/market-watch/weekly/report?week_id=${encodeURIComponent(weekId)}`);
+  }
+  return res;
 }
 
 export async function recordWeeklyDecision(
@@ -1037,9 +1057,20 @@ export function boardLabel(name: string): string {
 }
 
 export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { cache: 'no-store', ...init });
-  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
-  return res.json() as Promise<T>;
+  const load = async (): Promise<T> => {
+    const res = await fetch(url, { cache: 'no-store', ...init });
+    if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
+    return res.json() as Promise<T>;
+  };
+
+  // Several Market Watch surfaces read the same engine documents (progress is
+  // used by the page shell, the status bar and the live board; React dev
+  // StrictMode also mounts effects twice). Collapse concurrent identical GETs
+  // into one request. No TTL: an explicit refresh must still hit the backend,
+  // and mutations are never deduped.
+  const method = (init?.method ?? 'GET').toUpperCase();
+  if (method !== 'GET' || init?.signal) return load();
+  return dedupeFetch(`mw:get:${url}`, load, { ttlMs: 0 });
 }
 
 /** Build the /rank query string for the full-universe table. */
@@ -1153,7 +1184,6 @@ export function useMarketWatchRealtime(tokens: string[]) {
     // *before* the reconcile above could diff against it — which is exactly the
     // churn the reference counting exists to avoid. Unmount release lives in its
     // own effect below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tokenKey, subscribe, unsubscribe]);
 
   // Unmount-only release: read the ref (always current) so a closed tab stops
@@ -1175,7 +1205,12 @@ export function useMarketWatchRealtime(tokens: string[]) {
     const MIN_INTERVAL_MS = 1000;
     return onFrame((frame) => {
       const type = frame?.type;
-      if (type !== 'market_watch.status' && type !== 'market_watch.ranking' && type !== 'market_watch.pins') {
+      if (
+        type !== 'market_watch.status' &&
+        type !== 'market_watch.ranking' &&
+        type !== 'market_watch.pins' &&
+        type !== 'market_watch.ui'
+      ) {
         return; // ignore per-tick frames
       }
       const now = Date.now();
@@ -1333,12 +1368,18 @@ export function useEngineProgress(intervalMs = RECONCILE_INTERVAL_MS): EnginePro
       }
     };
     void load();
-    const id = setInterval(() => void load(), intervalMs);
+    // While the socket delivers `market_watch.status` frames the poll stays
+    // OFF (frames above hold the progress state); REST only retries while the
+    // socket cannot deliver.
+    const id = setInterval(() => {
+      if (connected) return;
+      void load();
+    }, intervalMs);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [intervalMs]);
+  }, [intervalMs, connected]);
 
   // Subscribe to the shared socket's market_watch channel for status frames.
   // Depend on the STABLE callbacks — keying on the provider value object

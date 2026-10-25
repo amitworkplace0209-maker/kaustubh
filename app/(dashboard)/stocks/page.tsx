@@ -145,20 +145,26 @@ export default function StocksPage() {
   }
 }, [search, toast, stocks.length]);
   useEffect(() => {
-  console.log("STOCK PAGE MOUNTED");
+    console.log("STOCK PAGE MOUNTED");
 
-  fetchStocks();
-
-  const interval = setInterval(() => {
-    console.log("STOCK AUTO REFRESH");
     fetchStocks();
-  }, 10000);
 
-  return () => {
-    console.log("STOCK PAGE UNMOUNTED");
-    clearInterval(interval);
-  };
-}, [fetchStocks]);
+    // The subscription list is a Mongo config document — it only changes when
+    // THIS page adds / removes a row, so re-fetching it every 10 s was pure
+    // request churn. Reload on user action and on a window re-focus instead;
+    // the tick data for the listed instruments continues to flow live.
+    const onFocus = () => {
+      if (!document.hidden) fetchStocks();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+
+    return () => {
+      console.log("STOCK PAGE UNMOUNTED");
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [fetchStocks]);
 
   const handleKotakSearch = async () => {
     const query = kotakSearch.trim();

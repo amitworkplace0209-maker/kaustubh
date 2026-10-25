@@ -1,8 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Loader2, Lock, AlertCircle } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13,13 +12,11 @@ interface AuthGateProps {
   onAuthenticated: () => void;
 }
 
-export function AuthGate({ terminal, onAuthenticated }: AuthGateProps) {
+export const AuthGate = memo(function AuthGate({ terminal, onAuthenticated }: AuthGateProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [mode, setMode] = useState<'pin' | 'password'>('password');
-  const [pin, setPin] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -93,4 +90,4 @@ export function AuthGate({ terminal, onAuthenticated }: AuthGateProps) {
       </CardContent>
     </Card>
   );
-}
+});

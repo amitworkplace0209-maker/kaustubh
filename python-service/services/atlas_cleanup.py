@@ -372,3 +372,249 @@ async def stop_cleanup_scheduler() -> None:
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
         _scheduler_task = None
+
+
+# ---------------------------------------------------------------------- #
+# Operator-driven per-collection cleanup (Storage page, Atlas AND local)  #
+# ---------------------------------------------------------------------- #
+#: Collections the app cannot function without (matches the NEVER WIPED
+#: classification in the module docstring). These are refused in BOTH modes
+#: (clear and drop), and by every pass here — including custom selections.
+CLEANUP_PROTECTED_EXACT: frozenset[str] = frozenset({
+    "app_settings",
+    "engine_config",
+    "stocks",
+    "watchlist",
+    "baskets",
+    "market_watch_report",
+    "market_watch_filters",
+    "market_watch_manual_pins",
+    "quality_config",
+    "atlas_cleanup_log",
+    "_migrations",
+})
+
+#: Prefix-protected operational families. ``session_manager_*`` holds the
+#: instrument master + session lifecycle; ``dummy_*`` is the dummy broker's
+#: own state. ``__`` versions are internal probe tables, belt-and-braces.
+CLEANUP_PROTECTED_PREFIXES: tuple[str, ...] = (
+    "session_manager_",
+    "dummy_",
+)
+
+
+def is_protected_collection(name: str) -> bool:
+    """True = the cleanup authority must refuse this collection, always."""
+    n = str(name or "")
+    if n in CLEANUP_PROTECTED_EXACT:
+        return True
+    return n.startswith(CLEANUP_PROTECTED_PREFIXES)
+
+
+async def _append_cleanup_log(doc: dict[str, Any]) -> None:
+    """Write one audit doc to ``atlas_cleanup_log`` (non-fatal on failure)."""
+    try:
+        from database.connection import get_db, is_mongo_connected
+
+        if not is_mongo_connected():
+            return
+        db = get_db()
+        await db[CLEANUP_LOG_COLL].insert_one(doc)
+        await db[CLEANUP_LOG_COLL].create_index([("ts", -1)])
+    except Exception as exc:
+        logger.warning("Cleanup audit log write failed (non-fatal): %s", exc)
+
+
+async def _drop_pass(*, trigger: str, names: tuple[str, ...]) -> dict[str, Any]:
+    """DROP operator-selected collections (space reclaim incl. indexes).
+
+    Clear-only passes free documents but keep allocated storage — on a capped
+    Atlas tier a 0-doc collection still counts against the 512 MB. Drop truly
+    reclaims space; writers recreate whatever they need on the next tick.
+    Guarded by the same lock/flag, audited with the same ledgers, and verified
+    by a fresh ``list_collection_names`` afterwards.
+    """
+    global _running
+    async with _lock:
+        if _running:
+            return {"ok": False, "error": "cleanup already running"}
+        _running = True
+    started_at = _now_iso()
+    started_mono = time.monotonic()
+    result: dict[str, Any] = {
+        "ok": False,
+        "trigger": trigger,
+        "mode": "collection-drop",
+        "startedAt": started_at,
+        "status": "FAILED",
+        "collections": [],
+        "totalDeleted": 0,
+        "collectionsCleaned": 0,
+    }
+    try:
+        from database.connection import get_db, is_mongo_connected
+
+        if not is_mongo_connected():
+            result["error"] = "MongoDB is not connected"
+            return result
+        db = get_db()
+        existing = set(await db.list_collection_names())
+        per_coll: list[dict[str, Any]] = []
+        before_docs = 0
+        for name in names:
+            if name not in existing:
+                per_coll.append({"name": name, "skipped": True, "dropped": False, "deleted": 0})
+                continue
+            try:
+                before_docs = int((await db.command("collStats", name)).get("count", 0) or 0)
+            except Exception:
+                before_docs = 0
+            try:
+                await db.drop_collection(name)
+                per_coll.append({"name": name, "dropped": True, "deleted": before_docs, "before": before_docs})
+            except Exception as exc:
+                per_coll.append({"name": name, "dropped": False, "deleted": 0, "error": str(exc)[:300]})
+        result["collections"] = per_coll
+        result["totalDeleted"] = sum(int(c.get("deleted") or 0) for c in per_coll)
+        result["collectionsCleaned"] = sum(1 for c in per_coll if c.get("dropped"))
+        failed = [c for c in per_coll if c.get("error")]
+        result["ok"] = not failed
+        result["status"] = "SUCCESS" if not failed else "PARTIAL"
+        if failed:
+            result["error"] = "; ".join(f"{c['name']}: {c['error']}" for c in failed)[:500]
+        # Post-state verification: fresh inventory, target gone = reclaimed.
+        try:
+            after = set(await db.list_collection_names())
+            result["verified"] = [
+                {"name": c["name"], "gone": c["name"] not in after}
+                for c in per_coll
+                if not c.get("skipped") and c.get("dropped")
+            ]
+        except Exception as exc:
+            result["verified"] = {"error": str(exc)[:200]}
+    except Exception as exc:
+        logger.exception("Collection drop pass failed")
+        result["error"] = str(exc)[:500]
+    finally:
+        result["finishedAt"] = _now_iso()
+        result["durationSec"] = round(time.monotonic() - started_mono, 2)
+        await _append_cleanup_log({
+            "trigger": trigger,
+            "mode": result["mode"],
+            "startedAt": started_at,
+            "finishedAt": result["finishedAt"],
+            "status": result["status"],
+            "totalDeleted": result["totalDeleted"],
+            "collectionsCleaned": result["collectionsCleaned"],
+            "collections": result["collections"],
+            "error": result.get("error"),
+            "ts": datetime.now(timezone.utc),
+        })
+        async with _lock:
+            _running = False
+    logger.info(
+        "Atlas cleanup %s via %s: %d records in %d collections (%.1fs)",
+        result["status"], trigger, result["totalDeleted"],
+        result["collectionsCleaned"], result["durationSec"],
+    )
+    return result
+
+
+async def run_collection_cleanup(
+    *,
+    names: list[str],
+    mode: str = "clear",
+    trigger: str = "manual-collection",
+) -> dict[str, Any]:
+    """Operator-selected per-collection clean — clear documents or drop whole.
+
+    Works on WHATEVER MongoDB the backend is actually connected to (Atlas
+    cloud, local mongod, VM-local), because every step goes through
+    ``database.connection.get_db()`` — no host is assumed here.
+
+    Protected collections (``is_protected_collection``) are refused up-front
+    so an app-critical collection can never be wiped by mistake. The response
+    carries REAL post-state verification so the UI can prove the clean
+    happened instead of claiming it.
+    """
+    if mode not in ("clear", "drop"):
+        return {"ok": False, "error": "mode must be 'clear' or 'drop'"}
+    from database.connection import get_db, is_mongo_connected
+
+    if not is_mongo_connected():
+        return {"ok": False, "error": "MongoDB is not connected"}
+    db = get_db()
+    wanted = [str(n) for n in names if str(n or "").strip()]
+    if not wanted:
+        return {"ok": False, "error": "no collections selected"}
+    existing = set(await db.list_collection_names())
+
+    errors: list[str] = []
+    targets: list[str] = []
+    for n in wanted:
+        if is_protected_collection(n):
+            errors.append(f"{n}: protected — cleanup authority refused")
+        elif n not in existing:
+            errors.append(f"{n}: not in the connected database")
+        else:
+            targets.append(n)
+    if not targets:
+        return {"ok": False, "error": " · ".join(errors)[:500] or "nothing to clean"}
+
+    if mode == "drop":
+        result = await _drop_pass(trigger=trigger, names=tuple(targets))
+    else:
+        result = await _run_pass(trigger=trigger, collections=tuple(targets), mode="collection-clear")
+        # Post-state verification: fresh exact counts (must be 0) per target.
+        try:
+            verified = []
+            for n in targets:
+                try:
+                    verified.append({"name": n, "remaining": int(await db[n].count_documents({}))})
+                except Exception as exc:
+                    verified.append({"name": n, "remaining": None, "error": str(exc)[:200]})
+            result["verified"] = verified
+        except Exception as exc:
+            result["verified"] = {"error": str(exc)[:200]}
+    if errors:
+        result["refused"] = errors
+    return result
+
+
+async def list_cleanup_plan() -> dict[str, Any]:
+    """Cleanup plan for the Storage page: every real collection classified.
+
+    ``protected`` rows are the ones the authority refuses; everything else is
+    operator-cleanable with explicit confirmation. Counts are real
+    ``count_documents`` results (not estimates) so the delete preview is
+    honest.
+    """
+    from database.connection import get_db, is_mongo_connected
+
+    if not is_mongo_connected():
+        return {"ok": False, "error": "MongoDB is not connected", "collections": []}
+    db = get_db()
+    rows: list[dict[str, Any]] = []
+    try:
+        names = sorted(await db.list_collection_names())
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:300], "collections": []}
+    for n in names:
+        try:
+            count = int(await db[n].count_documents({}))
+        except Exception:
+            count = None
+        rows.append({
+            "name": n,
+            "protected": is_protected_collection(n),
+            "count": count,
+        })
+    return {
+        "ok": True,
+        "database": getattr(db, "name", None),
+        "collections": rows,
+        "protectedExact": sorted(CLEANUP_PROTECTED_EXACT),
+        "protectedPrefixes": list(CLEANUP_PROTECTED_PREFIXES),
+        "temporary": list(TEMPORARY_COLLECTIONS),
+        "fullClean": list(FULL_CLEAN_COLLECTIONS),
+    }

@@ -50,6 +50,7 @@ position.*, notification.new, system.status, connection.status, ...).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -203,6 +204,22 @@ async def realtime_events(
     return {"ok": True, "data": {"events": events, "total": len(events), "limit": limit}}
 
 
+@router.get("/api/realtime/connections/history")
+async def realtime_connection_history(limit: int = Query(50, ge=1, le=250)):
+    """§29 Connection history — real persisted attach/detach ledger.
+
+    Every gateway session now lands in a bounded MongoDB collection
+    (attached state, detach reason, duration, delivered frames, wire bytes).
+    This endpoint reads it back with an honest live summary — the §29 gap is
+    measured, not filled with a placeholder.
+
+    NOTE: declared BEFORE ``/{connection_id}`` so FastAPI does not capture the
+    literal ``history`` as a connection id (route order is match order).
+    """
+    from connection_engine.connection_engine import connection_history_rows
+    return {"ok": True, "data": await connection_history_rows(limit=limit)}
+
+
 @router.get("/api/realtime/connections/{connection_id}")
 async def realtime_connection(connection_id: str = Path(...)):
     """One live connection registry record (control-plane diagnostics)."""
@@ -273,6 +290,27 @@ def _frame(session, event_type: str, *, channel: str = "", data: dict | None = N
         "correlation_id": correlation_id or "",
         "data": data or {},
     }
+
+
+def deliver_frame(session, frame: dict, *, ping: bool = False) -> str:
+    """Serialize one frame and record its REAL wire metrics on the session.
+
+    The returned string is exactly what the writer hands to the socket (compact
+    JSON, sent via ``send_text``). The internal ``_cm_enq`` enqueue stamp is
+    popped here so it never reaches the wire, and its delta becomes the REAL
+    enqueue→delivery latency (spec §51). Ping frames bypass the outbox, so they
+    contribute bytes only — latency samples are never invented.
+    """
+    enq = frame.pop("_cm_enq", None) if isinstance(frame, dict) else None
+    payload = json.dumps(frame, default=str)
+    latency_ms = None
+    if enq is not None and not ping:
+        try:
+            latency_ms = max((time.monotonic() - float(enq)) * 1000.0, 0.0)
+        except Exception:
+            latency_ms = None
+    session.record_delivery(len(payload.encode("utf-8")), latency_ms)
+    return payload
 
 
 @router.websocket("/ws/realtime")
@@ -347,36 +385,39 @@ async def realtime_ws(websocket: WebSocket, token: str = "", access_token: str =
             frame = await session.outbox.get(timeout=HEARTBEAT_INTERVAL_S)
             if frame is None:
                 try:
-                    await websocket.send_json(_frame(session, "ping"))
+                    await websocket.send_text(deliver_frame(session, _frame(session, "ping"), ping=True))
                 except Exception as exc:
                     session.record_error("writer_ping_failed", str(exc))
                     logger.info("[WS] error conn=%s session=%s writer=%s", conn, session.connection_id, exc)
                     break
                 continue
             try:
-                await websocket.send_json(frame)
+                await websocket.send_text(deliver_frame(session, frame))
             except Exception as exc:
                 session.record_error("writer_send_failed", str(exc))
                 logger.info("[WS] error conn=%s session=%s writer=%s", conn, session.connection_id, exc)
                 break
 
     async def reader():
+        reason = "reader ended"
         try:
             while True:
                 raw = await websocket.receive_text()
                 session.mark_activity()
                 try:
-                    import json
-
                     message = json.loads(raw)
                 except Exception:
                     continue
                 await _handle_message(session, websocket, message)
         except WebSocketDisconnect:
-            pass
+            reason = "client WebSocketDisconnect"
         except Exception as exc:
+            reason = f"reader error: {exc}"
             logger.info("[WS] error conn=%s session=%s reader=%s", conn, session.connection_id, exc)
         finally:
+            # The REAL terminal cause, recorded BEFORE detach() writes the §29
+            # history row — the history row carries this as its reason.
+            session.transition(client_mod.DISCONNECTING, reason)
             session.closed = True
             session.outbox.put({"type": "connection.closed"}, critical=True)
 
@@ -666,21 +707,59 @@ async def _handle_market_watch_command(session, action: str, message: dict, requ
 
 
 async def _handle_generic_command(session, action: str, message: dict, request_id: str, correlation_id: str) -> None:
-    """Route watchlist/target realtime controls via appropriate engine."""
+    """Route watchlist/target realtime controls to the owning engine.
+
+    Acknowledgements are REAL: the watchlist engine's own result is echoed back
+    (including its ``ok: False`` outcomes like "already exists"), and an action
+    with no owning engine answers a CLEAR unsupported error instead of the
+    previous silent ``ok=True`` lie.
+    """
     data = message.get("data") or message.get("payload") or message
+
+    def ack(ok: bool, payload: dict) -> None:
+        session.outbox.put(_frame(session, f"{action}.ack", channel="system",
+                                  data={"requestId": request_id, "correlationId": correlation_id,
+                                        "ok": ok, "action": action, **payload},
+                                  correlation_id=correlation_id),
+                           critical=True)
+
     try:
         if action.startswith("watchlist"):
-            from services.watchlist_engine import watchlist_engine
+            from services.watchlist_engine import watchlist_engine, DEFAULT_WATCHLIST_ID
+
+            watchlist_id = str(data.get("watchlist_id") or data.get("watchlistId") or DEFAULT_WATCHLIST_ID)
+            symbol = str(data.get("symbol") or data.get("tradingSymbol") or "").strip()
+            token = str(data.get("token") or data.get("instrumentToken") or "").strip()
+            metadata = {
+                key: data.get(key)
+                for key in ("name", "companyName", "exchange", "exchangeSegment", "tradingSymbol", "isin")
+                if data.get(key)
+            }
             if action == "watchlist_add":
-                await watchlist_engine.add(data.get("symbol") or data.get("tradingSymbol") or "")
+                if not token:
+                    ack(False, {"code": "400", "error": "token required — instrument token bhejo"})
+                    return
+                result = watchlist_engine.add_stock(watchlist_id, symbol, token, **metadata)
             elif action == "watchlist_remove":
-                await watchlist_engine.remove(data.get("symbol") or "")
-        elif action.startswith("target"):
-            # target engine placeholder
-            pass
-        session.outbox.put(_frame(session, f"{action}.ack", channel="system",
-                                  data={"requestId": request_id, "correlationId": correlation_id, "ok": True, "action": action},
-                                  correlation_id=correlation_id))
+                if not token:
+                    ack(False, {"code": "400", "error": "token required — remove ke liye instrument token bhejo"})
+                    return
+                result = watchlist_engine.remove_stock(watchlist_id, token)
+            else:
+                ack(False, {"code": "400", "error": f"unsupported watchlist action: {action}"})
+                return
+            echo = {k: v for k, v in (result or {}).items() if not isinstance(v, dict)} if isinstance(result, dict) else {}
+            if isinstance(result, dict) and isinstance(result.get("entry"), dict):
+                echo["entry"] = {k: result["entry"].get(k) for k in ("symbol", "token", "tradingSymbol")} if result["entry"] else {}
+            ack(bool((result or {}).get("ok")), {"result": echo, "watchlistId": watchlist_id,
+                                                 "error": (result or {}).get("error")})
+            return
+        if action.startswith("target"):
+            # No target rule engine is wired to the gateway yet — answering
+            # ok=True without doing anything would be a fabricated success.
+            ack(False, {"code": "501", "error": f"{action} is not routed by the gateway yet — risk/target endpoints se use karo"})
+            return
+        ack(False, {"code": "400", "error": f"unknown realtime action: {action}"})
     except Exception as exc:
         session.outbox.put(_frame(session, "error.event", channel="system",
                                   data={"requestId": request_id, "correlationId": correlation_id, "code": "500", "message": str(exc)[:300]},

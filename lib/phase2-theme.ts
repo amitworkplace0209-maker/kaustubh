@@ -378,14 +378,13 @@ export function resolveSystemBrightness(brightness: Phase2Brightness): 'light' |
   return brightness === 'dark' || brightness === 'amoled' ? 'dark' : 'light';
 }
 
-const APP_IDS: AppId[] = ['trading', 'data-saver', 'services', 'khumbha-ai'];
+const APP_IDS: AppId[] = ['trading', 'data-saver', 'services'];
 
 /** Fresh default per application — used until the user overrides a preference. */
 const DEFAULT_PER_APP: Record<AppId, { themeId: string; brightness: Phase2Brightness }> = {
   trading: { themeId: 'saffron', brightness: 'light' },
   'data-saver': { themeId: 'saffron', brightness: 'light' },
   services: { themeId: 'ocean', brightness: 'system' },
-  'khumbha-ai': { themeId: 'purple', brightness: 'dark' },
 };
 
 const LEGACY_LOCAL_STORAGE_KEY = 'phase2_theme_state';

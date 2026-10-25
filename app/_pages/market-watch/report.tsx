@@ -23,6 +23,7 @@ import { AlertTriangle, CalendarClock, FileText, RefreshCw } from 'lucide-react'
 import {
   DASH,
   fetchJson,
+  fetchWeeklyReport,
   fmtInt,
   fmtNum,
   fmtPct,
@@ -120,9 +121,7 @@ export default function ReportTab() {
   }, []);
 
   const fetchWeekly = useCallback(async (weekId: string) => {
-    const res = await fetchJson<{ ok: boolean; report: MwWeeklyReport | null }>(
-      `/api/market-watch/weekly/report?weekId=${encodeURIComponent(weekId)}`,
-    );
+    const res = await fetchWeeklyReport(weekId);
     return res.report ?? null;
   }, []);
 

@@ -82,6 +82,38 @@ class RiskEngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(second.accepted)
         self.assertTrue(any("duplicate" in r for r in second.reasons))
 
+    async def test_preview_phase_does_not_record_an_order_intent(self):
+        """A read-only pre-check must not poison the execution path.
+
+        The trade page pre-checks the ticket while the operator is still
+        editing it. When the preview ALSO recorded the intent, the real
+        placement a moment later was rejected as "duplicate order (same intent
+        within suppression window)" — the UI's own safety check made the order
+        impossible to send.
+        """
+        kw = dict(terminal="dummy", symbol="TCS", token="11536", order_type="MKT", quantity="1", product="MIS")
+        preview = await self.risk.validate_order(**kw, phase="preview")
+        self.assertTrue(preview.accepted, preview.reasons)
+        execution = await self.risk.validate_order(**kw)
+        self.assertTrue(execution.accepted, execution.reasons)
+
+    async def test_preview_phase_still_reports_a_recent_real_order(self):
+        """The preview reads the duplicate ring, so it stays honest."""
+        kw = dict(terminal="dummy", symbol="LT", token="11421", order_type="MKT", quantity="1", product="MIS")
+        first = await self.risk.validate_order(**kw)
+        self.assertTrue(first.accepted, first.reasons)
+        preview = await self.risk.validate_order(**kw, phase="preview")
+        self.assertFalse(preview.accepted)
+        self.assertTrue(any("duplicate" in r for r in preview.reasons))
+
+    async def test_preview_phase_ignores_a_different_trigger_price(self):
+        """Two stop orders with different triggers are two different intents."""
+        base = dict(terminal="dummy", symbol="SBIN", token="3045", order_type="SL-M", quantity="1", product="MIS")
+        first = await self.risk.validate_order(trigger_price="500", **base)
+        self.assertTrue(first.accepted, first.reasons)
+        second = await self.risk.validate_order(trigger_price="600", **base)
+        self.assertTrue(second.accepted, second.reasons)
+
     async def test_margin_insufficient_rejects(self):
         with mock.patch(
             "core.engines.risk_engine.RiskEngine._check_margin",
@@ -124,6 +156,20 @@ class RiskEngineApiTest(unittest.IsolatedAsyncioTestCase):
 
         req = ValidateOrderRequest(symbol="TATA")
         self.assertEqual(req.terminal, "kotak")
+
+    async def test_validate_endpoint_is_a_preview_and_leaves_the_ring_empty(self):
+        """`POST /api/services/risk/validate` must not record an order intent."""
+        from api.risk_engine import ValidateOrderRequest, validate_order
+        from core.engines.risk_engine import risk_engine
+
+        risk_engine._recent_orders.clear()
+        res = await validate_order(ValidateOrderRequest(
+            terminal="dummy", symbol="WIPRO", token="3787", order_type="MKT",
+            quantity="1", product="MIS",
+        ))
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["data"]["accepted"], res["data"])
+        self.assertEqual(risk_engine._recent_orders, [])
 
     async def test_config_patch_rejects_negative_limits(self):
         from api.risk_engine import UpdateConfigRequest, update_config
@@ -314,8 +360,11 @@ class DummyExecutionModelTest(unittest.TestCase):
     def test_mkt_rejects_without_ltp(self):
         from api.demo import _execution_decision
         d = _execution_decision(self._req(ltp=0.0))
-        self.assertEqual(d["kind"], "REJECT")
-        self.assertIn("Market LTP unavailable", d["reason"])
+        # Market order without LTP is PARKED (RESTING/PENDING), not rejected -
+        # a real broker queues it until a live price arrives
+        self.assertEqual(d["kind"], "RESTING")
+        self.assertEqual(d["status"], "PENDING")
+        self.assertIn("Waiting for live market price", d["reason"])
 
     def test_limit_rests_when_not_marketable(self):
         from api.demo import _execution_decision

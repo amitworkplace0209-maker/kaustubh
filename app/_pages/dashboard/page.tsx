@@ -23,6 +23,7 @@ import {
   type CanonicalFunds,
 } from '@/lib/api';
 import { useRealtime } from '@/components/realtime-provider';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 import { normalizeOrderStatus } from '@/lib/normalizers';
 import { fmtPct, fmtPnl, fmtQty, fmtRs, pnlClr, toNum } from '@/lib/formatters';
 import { extractBrokerCharges } from '@/lib/charge-service';
@@ -317,33 +318,25 @@ function isSectionDown(status: DashboardSectionStatus | null | undefined): boole
 const MW_POLL_MS = 15000;
 
 function LiveMarketWatchSection({ compact }: { compact?: boolean }) {
-  const [mw, setMw] = useState<UiPublishPayload | null>(null);
-  const [mwErr, setMwErr] = useState<string | null>(null);
-  const mountedRef = useRef(true);
-
-  const fetchMw = useCallback(async () => {
-    try {
-      const res = await fetch('/api/market-watch/ui', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`market watch ${res.status}`);
-      const data = (await res.json()) as UiPublishPayload;
-      if (mountedRef.current) { setMw(data); setMwErr(null); }
-    } catch (err) {
-      if (mountedRef.current) setMwErr(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    fetchMw();
-    const t = setInterval(fetchMw, MW_POLL_MS);
-    const onVisible = () => { if (!document.hidden) fetchMw(); };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      mountedRef.current = false;
-      clearInterval(t);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [fetchMw]);
+  // The engine's own doc §16 UI publish rides the `market_watch` state
+  // channel (pushed whenever the engine re-ranks), so this dashboard widget
+  // renders from the socket document. REST is only the fallback for when the
+  // socket cannot deliver, and it exists behind the SAME hook as every other
+  // WS channel so a socket outage degrades to the old poll behaviour.
+  const { data: mw, error: mwError } = useRealtimeChannel<UiPublishPayload>(
+    'market_watch',
+    {
+      select: (document) => (document?.ui ?? null) as UiPublishPayload | null,
+      fallback: async () => {
+        const res = await fetch('/api/market-watch/ui', { cache: 'no-store' });
+        if (!res.ok) throw new Error(`market watch ${res.status}`);
+        return (await res.json()) as UiPublishPayload;
+      },
+      fallbackKey: 'mw-ui-dashboard',
+      fallbackMs: MW_POLL_MS,
+    },
+  );
+  const mwErr = mwError || null;
 
   const counts = mw?.statusCounts ?? {};
   const connected = mw?.feedState === 'CONNECTED';
@@ -867,7 +860,9 @@ export default function DashboardPage() {
       </Card>
 
       {/* ---- Broker Terminals — shared 4-card grid ---- */}
-      <BrokerCardsSection reloadKey={fetching ? 1 : 0} />
+      {/* useBackend already performs the mount fetch; a reloadKey derived from
+          `fetching` added a duplicate broker-overview request on every load. */}
+      <BrokerCardsSection />
 
       {/* ---- Session · Alerts · Broker Health ---- */}
       <TradingOpsRow />

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState } from 'react';
 import { Bell, CheckCheck, Trash2, X, MoreVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +16,7 @@ import {
   deleteNotification,
 } from '@/lib/api';
 import { useRouter } from 'next/navigation';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 
 type Notification = {
   _id: string;
@@ -83,71 +84,66 @@ function formatTimeAgo(ts: string): string {
 }
 
 export default function NotificationBell() {
-  const [unreadCount, setUnreadCount] = useState(0);
-  const [recent, setRecent] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const router = useRouter();
-  const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   const notificationPath = '/trading/notifications';
 
-  const fetchUnreadCount = useCallback(async () => {
-    try {
-      const data = await getNotifications('?unread_only=true');
-      const count = data?.unreadCount ?? 0;
-      setUnreadCount(count);
-    } catch { /* ignore */ }
-  }, []);
+  // The feed + the unread count arrive over the persistent WebSocket. The
+  // REST call is only the degraded fallback (socket down / not hydrated).
+  const { data, refresh } = useRealtimeChannel<{
+    notifications: Notification[];
+    unreadCount: number;
+  }>('notifications', {
+    fallbackMs: 30000,
+    fallbackKey: 'notifications:feed',
+    fallback: () =>
+      getNotifications('').then((r) => ({
+        notifications: ((r?.notifications || r?.data || []) as Notification[]).slice(0, 5),
+        unreadCount: Number(r?.unreadCount ?? 0),
+      })),
+    select: (doc) => {
+      const d = doc as { notifications?: any[]; unreadCount?: number };
+      return {
+        notifications: ((d.notifications ?? []) as Notification[]).slice(0, 5),
+        unreadCount: Number(d.unreadCount ?? 0),
+      };
+    },
+  });
 
-  const fetchRecent = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await getNotifications('');
-      const items = data?.notifications || data?.data || [];
-      setRecent(Array.isArray(items) ? items.slice(0, 5) : []);
-      const count = data?.unreadCount ?? unreadCount;
-      setUnreadCount(count);
-    } catch { /* ignore */ }
-    finally { setLoading(false); }
-  }, [unreadCount]);
-
-  useEffect(() => {
-    fetchUnreadCount();
-    pollRef.current = setInterval(fetchUnreadCount, 30000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchUnreadCount]);
+  const recent = data?.notifications ?? [];
+  const unreadCount = data?.unreadCount ?? 0;
 
   const handleOpen = () => {
     setOpen(!open);
-    if (!open) fetchRecent();
+    if (!open) {
+      setLoading(true);
+      refresh();
+      setLoading(false);
+    }
   };
 
   const handleMarkRead = async (id: string) => {
     try {
       await markNotificationRead(id);
-      setRecent((prev) => prev.map((n) => n._id === id ? { ...n, read: true } : n));
-      setUnreadCount((prev) => Math.max(0, prev - 1));
+      refresh();
     } catch { /* ignore */ }
   };
 
   const handleMarkAllRead = async () => {
     try {
       await markAllNotificationsRead();
-      setRecent((prev) => prev.map((n) => ({ ...n, read: true })));
-      setUnreadCount(0);
+      refresh();
     } catch { /* ignore */ }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await deleteNotification(id);
-      setRecent((prev) => prev.filter((n) => n._id !== id));
-      if (!recent.find((n) => n._id === id)?.read) {
-        setUnreadCount((prev) => Math.max(0, prev - 1));
-      }
       setDeleteConfirm(null);
+      refresh();
     } catch { /* ignore */ }
   };
 

@@ -77,7 +77,9 @@ import {
   KVGrid,
   downloadJson,
   fmtAgo,
+  fmtBytes,
   fmtDateTime,
+  fmtMs,
   fmtNum,
   fmtRate,
   fmtUptime,
@@ -979,6 +981,9 @@ function ConnectionCard({
                   <KV label="Lifecycle" value={<ProperChip name={lifecycleStateName(shown.lifecycleState)} />} mono={false} />
                   <KV label="Messages delivered" value={fmtNum(shown.messagesDelivered)} />
                   <KV label="Delivery rate" value={fmtRate(shown.deliveryRatePerSec)} />
+                  <KV label="Wire rate" value={shown.bytesPerSec == null ? DASH : `${fmtBytes(shown.bytesPerSec)}/s`} />
+                  <KV label="Avg delivery latency" value={fmtMs(shown.avgDeliveryLatencyMs)} />
+                  <KV label="Wire bytes sent" value={fmtBytes(shown.bytesSent)} />
                   <KV
                     label="Queue"
                     value={

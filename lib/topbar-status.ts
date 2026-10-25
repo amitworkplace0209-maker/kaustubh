@@ -732,20 +732,27 @@ function deriveWebSocket(input: StatusInput, tl: SchedulerTimeline): StatusEntry
   const stateClean = String(brokerWsState ?? '').toUpperCase();
   const checking = !hydrated || brokerWsConnected === 'UNKNOWN';
   const intermediate = WS_INTERMEDIATE.has(stateClean);
+  // Outside the scheduled feed window the broker socket is deliberately down.
+  // That is a standby state, not a failure — painting it red made a normal
+  // exchange holiday look like broken infrastructure.
+  const waitingForMarket = stateClean === 'WAITING_FOR_MARKET_WINDOW' || stateClean === 'SUPERVISOR_WAITING';
 
   let level: PillLevel;
   if (!hydrated) level = 'warning'; // pre-hydration — nothing painted as red yet
   else if (brokerWsConnected === true) level = 'healthy';
+  else if (waitingForMarket) level = 'neutral'; // scheduled standby between sessions
   else if (checking || intermediate) level = 'warning'; // connecting/reconnecting still in progress — amber
   else level = 'error';
 
   const state = brokerWsConnected === true
     ? 'CONNECTED'
-    : brokerWsConnected === false
-      ? 'DISCONNECTED'
-      : intermediate
-        ? stateClean.replace(/^(SUPERVISOR_|WS_)/, '')
-        : 'CHECKING';
+    : waitingForMarket
+      ? 'WAITING'
+      : brokerWsConnected === false
+        ? 'DISCONNECTED'
+        : intermediate
+          ? stateClean.replace(/^(SUPERVISOR_|WS_)/, '')
+          : 'CHECKING';
 
   const nowMs = input.nowMs ?? null;
   const next = nextWebSocketAction(tl, brokerWsConnected, nowMs);
@@ -764,7 +771,15 @@ function deriveWebSocket(input: StatusInput, tl: SchedulerTimeline): StatusEntry
     icon: 'webhook',
     level,
     state,
-    detail: level === 'healthy' ? `${fmtCount(subs)} subs · ${fmtValue(ticks, 'ticks')} · ${fmtAgo(lastTick)}` : checking ? 'Checking live feed…' : level === 'warning' ? 'Reconnecting…' : 'Disconnected',
+    detail: level === 'healthy'
+      ? `${fmtCount(subs)} subs · ${fmtValue(ticks, 'ticks')} · ${fmtAgo(lastTick)}`
+      : waitingForMarket
+        ? 'Market closed — waiting for the scheduled feed window'
+        : checking
+          ? 'Checking live feed…'
+          : level === 'warning'
+            ? 'Reconnecting…'
+            : 'Disconnected',
     next: next ?? undefined,
     after,
     rows: [

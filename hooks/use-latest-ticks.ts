@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { getRecentTicks } from '@/lib/api';
+import { dedupeFetch } from '@/lib/shared-request';
 import { subscribeTicks, subscribeSseState } from '@/lib/shared-sse';
 
 export interface DcLiveTick {
@@ -53,7 +54,10 @@ export function useLatestTicks(enabled = true): UseLatestTicksResult {
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    getRecentTicks(200)
+    // Every page that mounts this hook asks for the same backfill. Collapse
+    // those into one request (and reuse it for a few seconds) instead of
+    // letting each consumer hit /api/ticks/recent during a route change.
+    dedupeFetch('ticks:recent:200:compact', () => getRecentTicks(200, '', true), { ttlMs: 5000 })
       .then((data) => {
         if (cancelled) return;
         const arr = data?.ticks ?? data?.data ?? [];

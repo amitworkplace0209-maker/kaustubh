@@ -1,282 +1,189 @@
 'use client';
 
-/**
- * SERVICES -> Order Engine (Overview)
- *
- * Implements docs/engines/order-engine.md §1–§3 and §24–§26: Order Engine is the
- * single authoritative order-orchestration engine, and every order — manual, AI,
- * basket — passes through one controlled path before reaching a broker.
- *
- * This page therefore does three things and nothing else:
- *   1. shows which terminal the engine is acting on, and whether that terminal
- *      is a paper or a live broker;
- *   2. shows the order state machine split into WORKING (accepted, not executed)
- *      and TERMINAL, because those are different facts;
- *   3. shows whether real market data is actually arriving, since an order that
- *      cannot be priced must sit pending rather than fill at an invented price.
- *
- * There is no place to enter an order here: placement is a single action on the
- * Orders page, which is the page that owns the order lifecycle.
- */
-import { useMemo, useState } from 'react';
-import { Activity, ListOrdered, Play, RefreshCw, Server, ShieldCheck } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import {
+  ArrowUpRight, Building2, FlaskConical, ListOrdered,
+  RefreshCw, Sprout,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { MarketDataBanner } from '@/components/order-engine/market-data-banner';
 import { OrderTable } from '@/components/order-engine/order-table';
 import { StateLegend, StateMachinePanel } from '@/components/order-engine/state-machine-panel';
-import { TONE_CLASS, fmtNum } from '@/components/order-engine/status';
-import { useOrderEngineLive } from '@/components/order-engine/use-order-engine-live';
+import {
+  ConnBadge, OENG_TONE, fmtN,
+} from '@/components/order-engine/oeng-shared';
+import {
+  getOrderEngineState,
+  getOrderEngineOrders,
+  getOrderEngineTerminalDetail,
+  type OrderEngineTerminalDetail,
+} from '@/lib/api';
+
+const BROKER_CARDS = [
+  { key: 'dummy' as const, label: 'Dummy Engine', href: '/services/order-engine/dummy', kind: 'PAPER', icon: FlaskConical, accent: 'border-amber-500/40 bg-amber-500/10 text-amber-700', header: 'border-amber-500/25' },
+  { key: 'kotak' as const, label: 'Kotak Engine', href: '/services/order-engine/kotak', kind: 'SDK', icon: Building2, accent: 'border-sky-500/40 bg-sky-500/10 text-sky-700', header: 'border-sky-500/25' },
+  { key: 'shoonya' as const, label: 'Shoonya Engine', href: '/services/order-engine/shoonya', kind: 'SDK', icon: Sprout, accent: 'border-violet-500/40 bg-violet-500/10 text-violet-700', header: 'border-violet-500/25' },
+];
 
 export default function OrderEngineOverviewPage() {
-  const engine = useOrderEngineLive();
-  const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
+  const [state, setState] = useState<any>(null);
+  const [orders, setOrders] = useState<any[]>([]);
+  const [cards, setCards] = useState<Record<'dummy' | 'kotak' | 'shoonya', OrderEngineTerminalDetail | null>>({
+    dummy: null,
+    kotak: null,
+    shoonya: null,
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const [engineRes, ordersRes] = await Promise.all([
+        getOrderEngineState({ timeoutMs: 15000 }),
+        getOrderEngineOrders(undefined, { timeoutMs: 15000 }),
+      ]);
+      setState(engineRes);
+      setOrders(ordersRes.orders ?? []);
+    } catch (exc: any) {
+      setError(exc?.message ?? 'engine load failed');
+    }
+
+    try {
+      const [d, k, s] = await Promise.all([
+        getOrderEngineTerminalDetail('dummy', { timeoutMs: 15000 }),
+        getOrderEngineTerminalDetail('kotak', { timeoutMs: 15000 }),
+        getOrderEngineTerminalDetail('shoonya', { timeoutMs: 15000 }),
+      ]);
+      setCards({ dummy: d, kotak: k, shoonya: s });
+    } catch {
+      // cards are optional — don't block the page
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
+
+  const connected = state?.connected ?? false;
+  const isPaper = state?.isPaper ?? false;
+  const broker = state?.broker ?? '—';
+  const counts = state?.counts ?? {};
 
   const recent = useMemo(
-    () =>
-      [...engine.orders]
-        .sort((a, b) => String(b.placedAt ?? '').localeCompare(String(a.placedAt ?? '')))
-        .slice(0, 12),
-    [engine.orders],
+    () => [...orders]
+      .sort((a, b) => String(b.placedAt ?? '').localeCompare(String(a.placedAt ?? '')))
+      .slice(0, 12),
+    [orders],
   );
 
-  const cancel = async (orderId: string) => {
-    setBusyOrderId(orderId);
-    await engine.cancel(orderId);
-    setBusyOrderId(null);
-  };
-
-  const connected = engine.state?.connected ?? false;
-  const isPaper = engine.state?.isPaper ?? false;
-  const broker = engine.state?.broker ?? '\u2014';
-  const showDummyConnect = isPaper && !connected && !engine.dummyConnecting;
-
   return (
-    <div className="space-y-5">
-      {/* header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary">
-            <ListOrdered className="h-5 w-5" />
+    <div className="space-y-4 pb-6">
+      {/* HERO */}
+      <section className="relative overflow-hidden rounded-2xl border border-border/50 p-0 shadow-sm">
+        <div className="relative flex items-center gap-3 p-4 sm:p-5">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-700 border border-emerald-500/20">
+            <ListOrdered className="h-6 w-6" />
           </div>
-          <div>
-            <h1 className="text-xl font-semibold">Order Engine</h1>
-            <p className="text-xs text-muted-foreground">
-              Single order choke-point · manual, AI and basket orders all pass through here
+          <div className="min-w-0 flex-1">
+            <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl">Order Engine</h1>
+            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
+              Single order choke-point · har broker engine ka apna page — Dummy, Kotak, Shoonya
             </p>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => void engine.refresh()}>
-            <RefreshCw className="mr-1 h-3 w-3" /> Refresh
-          </Button>
-          {showDummyConnect && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void engine.connectDummy()}
-              className="bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20"
-            >
-              <Play className="mr-1 h-3 w-3" /> Connect Dummy
+          <div className="flex flex-wrap items-center gap-2">
+            <ConnBadge connected={connected} />
+            <Badge variant="outline" className={`text-[10px] font-medium ${isPaper ? 'border-amber-500/40 bg-amber-500/10 text-amber-700' : 'border-sky-500/40 bg-sky-500/10 text-sky-700'}`}>
+              {isPaper ? 'PAPER' : 'SDK'}
+            </Badge>
+            <Button size="sm" variant="outline" onClick={() => void loadAll()} className="gap-1.5">
+              <RefreshCw className="h-3.5 w-3.5" /> Refresh
             </Button>
-          )}
-          {engine.dummyConnecting && (
-            <Button size="sm" variant="outline" disabled className="opacity-50">
-              <Activity className="mr-1 h-3 w-3 animate-spin" /> Connecting…
-            </Button>
-          )}
+          </div>
         </div>
-      </div>
+      </section>
 
-      {engine.error && (
-        <div className="rounded border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
-          Order Engine unavailable: {engine.error}
+      {error && (
+        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-700">
+          Engine unavailable: {error}
         </div>
       )}
 
-      <MarketDataBanner marketData={engine.marketData} isPaper={isPaper} />
-
-      {/* terminal + engine */}
-      <div className="grid gap-3 lg:grid-cols-4">
-        <Card className="shadow-soft">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Execution path</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Terminal</span>
-              <Badge variant="outline" className={TONE_CLASS[isPaper ? 'amber' : 'sky']}>
-                {broker}
-              </Badge>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Mode</span>
-              <span className="font-mono">{isPaper ? 'PAPER' : 'LIVE BROKER'}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Session</span>
-              <Badge
-                variant="outline"
-                className={TONE_CLASS[(connected || engine.dummyConnected) ? 'emerald' : 'rose']}
-              >
-                {connected || engine.dummyConnected ? 'CONNECTED' : 'NOT CONNECTED'}
-              </Badge>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Realtime link</span>
-              <Badge variant="outline" className={TONE_CLASS[engine.live ? 'emerald' : 'slate']}>
-                {engine.live ? 'STREAMING' : 'POLLING'}
-              </Badge>
-            </div>
-            <p className="pt-1 text-[10px] leading-relaxed text-muted-foreground/80">
-              {isPaper
-                ? 'Paper orders fill from the real market feed at the live LTP, driven by the backend’s own tick pipeline — never from a generated price.'
-                : 'Orders are submitted directly to the broker and its own execution status is authoritative.'}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="shadow-soft">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Engine health</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Engine</span>
-              <span className="font-mono">order_engine</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Registered</span>
-              <Badge variant="outline" className={TONE_CLASS.emerald}>
-                ACTIVE
-              </Badge>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Risk gate</span>
-              <Badge variant="outline" className={TONE_CLASS.emerald}>
-                ENFORCED
-              </Badge>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Orders tracked</span>
-              <span className="font-mono">{fmtNum(engine.counts.TOTAL ?? 0, 0)}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Working now</span>
-              <span className="font-mono text-amber-300">{engine.counts.WORKING ?? 0}</span>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="shadow-soft">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Market data</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Feed</span>
-              <Badge
-                variant="outline"
-                className={TONE_CLASS[engine.marketData?.liveFeedReceiving ? 'emerald' : 'amber']}
-              >
-                {engine.marketData?.liveFeedReceiving ? 'RECEIVING' : 'IDLE'}
-              </Badge>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Ticks / sec</span>
-              <span className="font-mono">{(engine.marketData?.ticksPerSecond ?? 0).toFixed(1)}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Instruments</span>
-              <span className="font-mono">{engine.marketData?.latestTickCount ?? 0}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Source</span>
-              <span className="truncate font-mono text-[10px]">WS#1 tick buffer</span>
-            </div>
-            <p className="pt-1 text-[10px] leading-relaxed text-muted-foreground/80">
-              Prices come from the broker’s own market feed on the server. The browser only
-              displays them.
-            </p>
-          </CardContent>
-        </Card>
-
-        <StateMachinePanel counts={engine.counts} total={engine.counts.TOTAL ?? 0} />
+      {/* BROKER CARDS */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {BROKER_CARDS.map((c) => {
+          const d = cards[c.key];
+          const cardCounts = d?.counts ?? {};
+          return (
+            <Card key={c.key} className={`overflow-hidden border ${c.header} shadow-sm`}>
+              <CardHeader className={`bg-gradient-to-r pb-2 ${c.key === 'dummy' ? 'from-amber-500/10 to-orange-500/5' : c.key === 'kotak' ? 'from-sky-500/10 to-blue-500/5' : 'from-violet-500/10 to-purple-500/5'}`}>
+                <CardTitle className="flex items-center gap-2 text-xs">
+                  <span className={`rounded-lg border p-1.5 ${c.accent}`}>
+                    <c.icon className="h-3.5 w-3.5" />
+                  </span>
+                  {c.label}
+                  <Badge variant="outline" className="ml-auto font-mono text-[10px]">{c.kind}</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 pt-3 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Connection</span>
+                  <Badge variant="outline" className={d?.connected ? OENG_TONE.emerald : OENG_TONE.rose}>
+                    {d == null ? '—' : d.connected ? 'CONNECTED' : 'NOT CONNECTED'}
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    ['Orders', cardCounts.TOTAL ?? d?.total],
+                    ['Working', cardCounts.WORKING],
+                    ['Executed', cardCounts.COMPLETE],
+                  ] as [string, number | undefined][]).map(([label, v]) => (
+                    <div key={label} className="rounded-lg border border-border/60 bg-background px-2 py-1.5">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
+                      <p className="font-mono text-sm font-bold tabular-nums">{fmtN(v ?? NaN, 0)}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span>{d?.engineKind === 'paper' ? 'LTP-matched paper fills' : `SDK: ${d?.sdk?.sdk ?? '—'}`}</span>
+                  <span className="font-mono">{(d?.marketData?.ticksPerSecond ?? 0).toFixed(1)} t/s</span>
+                </p>
+                <Link href={c.href} className="flex items-center justify-between rounded-lg border border-border/60 bg-background px-2.5 py-1.5 text-[11px] font-semibold hover:bg-muted/40">
+                  {c.label} page kholo <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground" />
+                </Link>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
-      {/* how the engine processes an order */}
-      <Card className="shadow-soft">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Order path</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-            {[
-              'Request',
-              'Normalize',
-              'Validate',
-              'Risk check',
-              'Prepare',
-              'Broker adapter',
-              'Broker',
-              'Execution response',
-              'State + audit + UI',
-            ].map((step, i, all) => (
-              <span key={step} className="flex items-center gap-1.5">
-                <Badge variant="outline" className="font-normal">
-                  {step}
-                </Badge>
-                {i < all.length - 1 && <span className="text-muted-foreground/60">→</span>}
-              </span>
-            ))}
-          </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-3">
-            {[
-              {
-                icon: ShieldCheck,
-                title: 'Validation and risk happen before submission',
-                body: 'An invalid quantity or a risk breach never reaches the broker, so it is reported as a local rejection — clearly separate from a broker rejection.',
-              },
-              {
-                icon: Server,
-                title: 'The broker response is authoritative',
-                body: 'Order number, status and rejection reason are preserved exactly as the broker returned them, including the raw message.',
-              },
-              {
-                icon: Activity,
-                title: 'State arrives in realtime',
-                body: 'Fills, partial fills and cancellations push incremental updates to this page without a full reload or a poll loop.',
-              },
-            ].map((item) => (
-              <div key={item.title} className="rounded-md border border-white/10 bg-white/[0.02] px-3 py-2">
-                <div className="flex items-center gap-1.5 text-[11px] font-medium">
-                  <item.icon className="h-3.5 w-3.5 text-primary" />
-                  {item.title}
-                </div>
-                <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{item.body}</p>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      {/* STATE MACHINE */}
+      <StateMachinePanel counts={counts} total={counts.TOTAL ?? 0} />
 
-      {/* recent orders */}
-      <div className="grid gap-3 lg:grid-cols-3">
+      {/* ORDERS TABLE */}
+      <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <OrderTable
-            orders={recent}
-            ltp={engine.ltp}
-            busyOrderId={busyOrderId}
-            onCancel={(o) => void cancel(o.orderId)}
-            emptyMessage={
-              engine.loading
-                ? 'Loading order book…'
-                : connected || engine.dummyConnected
-                  ? 'No orders on this terminal yet (honest zero).'
-                  : `${broker} is not connected — no order book available.`
-            }
-          />
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Recent Orders</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <OrderTable
+                orders={recent}
+                busyOrderId={null}
+                emptyMessage={
+                  loading ? 'Loading…'
+                    : connected || isPaper
+                      ? 'No orders on this terminal yet (honest zero).'
+                      : `${broker} is not connected — no order book available.`
+                }
+              />
+            </CardContent>
+          </Card>
         </div>
         <StateLegend />
       </div>

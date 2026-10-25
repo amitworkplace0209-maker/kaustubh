@@ -19,6 +19,7 @@ through the demo engine functions it reuses for target auto square-off.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -26,6 +27,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
 from database.connection import get_db
+from services import read_cache
 
 logger = logging.getLogger("app")
 
@@ -121,13 +123,42 @@ async def _get_doc(key: str, default: Any) -> Any:
     return default
 
 
-async def _set_doc(key: str, value: Any) -> None:
+async def get_settings_many(keys: list[str]) -> dict[str, Any]:
+    """Read several ``app_settings`` documents in ONE round trip.
+
+    The Dummy state endpoint needs six independent documents. Reading them one
+    by one turns a single poll into six Atlas round trips (seconds of latency);
+    ``$in`` collapses that to one query while preserving each document's own
+    stored value. Missing keys are simply absent from the result.
+    """
+    wanted = [str(k) for k in keys if k]
+    if not wanted:
+        return {}
+    db = get_db()
+    cursor = db.app_settings.find(
+        {"key": {"$in": wanted}},
+        {"key": 1, "value": 1, "_id": 0},
+    )
+    rows = await cursor.to_list(length=len(wanted))
+    return {
+        str(row.get("key")): row.get("value")
+        for row in rows
+        if row.get("key") and row.get("value") is not None
+    }
+
+
+async def _set_doc(key: str, value: Any, *, invalidate_state: bool = True) -> None:
     db = get_db()
     await db.app_settings.update_one(
         {"key": key},
         {"$set": {"key": key, "value": value, "category": "dummy", "description": key, "updatedAt": _now_utc()}},
         upsert=True,
     )
+    # A switched-off / changed preference, alert, target or notification must
+    # be visible on the next poll, never hidden behind the state cache.
+    if invalidate_state:
+        read_cache.invalidate("dummy:state")
+    read_cache.invalidate(f"settings:{key}")
 
 
 # --------------------------------------------------------------------------- #
@@ -191,19 +222,25 @@ async def notify(category: str, title: str, message: str, meta: Optional[dict] =
     return entry
 
 
-async def list_notifications(category: str = "", limit: int = 100) -> dict:
-    """List today's Dummy notifications.
+def filter_today_notifications(items: list, today: str | None = None) -> list:
+    """Today's notifications from an already-loaded list (pure, no I/O).
 
-    Counters (unread / total) are ALWAYS restricted to the current IST trading
-    date so yesterday's records can never leak into today's badge. Older
-    history remains in the store (permanent notification history) but is not
-    reported as today's state.
+    Counters are ALWAYS restricted to the current IST trading date so
+    yesterday's records can never leak into today's badge. Legacy rows without
+    a date are kept only when there is no dated row at all.
     """
+    today = today or _session_aware_trading_date()
+    current = [i for i in (items or []) if i.get("tradingDate") == today]
+    if not current:
+        current = [i for i in (items or []) if not i.get("tradingDate")]
+    return current
+
+
+async def list_notifications(category: str = "", limit: int = 100) -> dict:
+    """List today's Dummy notifications (one document read)."""
     items = await get_dummy_notifications()
     today = _session_aware_trading_date()
-    current = [i for i in items if i.get("tradingDate") == today]
-    if not current:
-        current = [i for i in items if not i.get("tradingDate")]  # legacy fallback
+    current = filter_today_notifications(items, today)
     if category and category != "ALL":
         current = [i for i in current if i.get("category") == category]
     unread = sum(1 for i in current if not i.get("read"))
@@ -724,16 +761,13 @@ async def _load_history() -> list:
 
 async def _save_history(items: list) -> None:
     items = items[:400]
-    await _set_doc(KEY_HISTORY, items)
+    # History never feeds the live state snapshot; invalidating ``dummy:state``
+    # here used to make every Portfolio poll re-read account/positions/orders.
+    await _set_doc(KEY_HISTORY, items, invalidate_state=False)
 
 
-async def ensure_today_snapshot() -> dict:
-    from api.demo import get_dummy_account, get_dummy_orders
-
-    account = await get_dummy_account()
-    orders = await get_dummy_orders()
-    today = _session_aware_trading_date()
-    snapshot = {
+def _today_row(account: dict, today: str) -> dict:
+    return {
         "date": today,
         "balance": round(float(account.get("balance") or 0), 2),
         "usedMargin": round(float(account.get("usedMargin") or 0), 2),
@@ -744,23 +778,62 @@ async def ensure_today_snapshot() -> dict:
         "orders": int(account.get("dailyOrders") or 0),
         "updatedAt": _now_utc().isoformat(),
     }
-    history = await _load_history()
-    for i, h in enumerate(history):
-        if h.get("date") == today:
-            history[i] = snapshot
-            break
-    else:
-        history.insert(0, snapshot)
-    await _save_history(history)
+
+
+def _merge_today_row(history: list, snapshot: dict) -> tuple[list, bool]:
+    """Return ``(history, changed)`` without rewriting an unchanged row.
+
+    ``updatedAt`` is deliberately excluded from the comparison: it changed on
+    every call, forcing a write (and a fresh Atlas round trip) even when the
+    balance and P&L were identical.
+    """
+    rows = list(history or [])
+    today = snapshot["date"]
+    comparable = {k: v for k, v in snapshot.items() if k != "updatedAt"}
+    for i, row in enumerate(rows):
+        if row.get("date") == today:
+            changed = {k: v for k, v in row.items() if k != "updatedAt"} != comparable
+            if changed:
+                rows[i] = snapshot
+            return rows, changed
+    rows.insert(0, snapshot)
+    return rows, True
+
+
+async def _today_snapshot_with_history() -> tuple[dict, list]:
+    """Read account + history concurrently (one Atlas round trip)."""
+    from api.demo import get_dummy_account
+
+    account, history = await asyncio.gather(
+        get_dummy_account(),
+        _load_history(),
+    )
+    return await _finish_today_snapshot(account, history)
+
+
+async def _finish_today_snapshot(account: dict, history: list) -> tuple[dict, list]:
+    snapshot = _today_row(account, _session_aware_trading_date())
+    history, changed = _merge_today_row(history, snapshot)
+    if changed:
+        await _save_history(history)
+    return snapshot, history
+
+
+async def ensure_today_snapshot() -> dict:
+    snapshot, _ = await _today_snapshot_with_history()
     return snapshot
 
 
 async def portfolio_summary() -> dict:
     from api.demo import get_dummy_account
 
-    account = await get_dummy_account()
-    today = await ensure_today_snapshot()
-    history = await _load_history()
+    # Account and history are independent. The old implementation read the
+    # account twice and serialised four round trips before the first paint.
+    account, history = await asyncio.gather(
+        get_dummy_account(),
+        _load_history(),
+    )
+    today, history = await _finish_today_snapshot(account, history)
     balance = float(account.get("balance") or 0)
     realized = float(account.get("realizedPnl") or 0)
     unrealized = float(account.get("unrealizedPnl") or 0)
@@ -779,8 +852,7 @@ async def portfolio_summary() -> dict:
 
 
 async def history_series(days: int = 7) -> dict:
-    await ensure_today_snapshot()
-    history = await _load_history()
+    _, history = await _today_snapshot_with_history()
     return {"data": history[: max(1, min(int(days), 30))], "tradingDate": _session_aware_trading_date()}
 
 
@@ -840,14 +912,11 @@ async def holdings_summary() -> dict:
     return {"data": holdings, "totalValue": total_value, "totalPnl": total_pnl, "count": len(holdings)}
 
 
-async def risk_summary() -> dict:
-    from api.demo import get_dummy_account, get_dummy_positions, get_dummy_orders
-
-    account = await get_dummy_account()
-    positions = await get_dummy_positions()
-    orders = await get_dummy_orders()
-    alerts = await get_alerts()
-    targets = await get_targets()
+def risk_from_components(account: dict, positions: list, orders: list,
+                         alerts: list, targets: list) -> dict:
+    """Risk snapshot from already-loaded rows (pure, never fabricates)."""
+    account = account or {}
+    positions = positions or []
     balance = float(account.get("balance") or 0)
     used = float(account.get("usedMargin") or 0)
     free = float(account.get("freeMargin") or 0)
@@ -858,7 +927,7 @@ async def risk_summary() -> dict:
         for p in positions
     )
     margin_util = round(used / balance * 100, 2) if balance > 0 else 0.0
-    pending_targets = sum(1 for t in targets if t.get("status") == "PENDING")
+    pending_targets = sum(1 for t in (targets or []) if t.get("status") == "PENDING")
     return {
         "balance": round(balance, 2),
         "usedMargin": round(used, 2),
@@ -867,9 +936,25 @@ async def risk_summary() -> dict:
         "exposure": round(exposure, 2),
         "openPositions": open_positions,
         "todayOrders": today_orders,
-        "activeAlerts": sum(1 for a in alerts if a.get("status") == "ACTIVE"),
+        "activeAlerts": sum(1 for a in (alerts or []) if a.get("status") == "ACTIVE"),
         "pendingTargets": pending_targets,
     }
+
+
+async def risk_summary() -> dict:
+    from api.demo import get_dummy_positions
+
+    positions = await get_dummy_positions()
+    docs = await get_settings_many([
+        "demo_account", "demo_orders", KEY_ALERTS, KEY_TARGETS,
+    ])
+    return risk_from_components(
+        docs.get("demo_account") or {},
+        positions,
+        docs.get("demo_orders") or [],
+        docs.get(KEY_ALERTS) or [],
+        docs.get(KEY_TARGETS) or [],
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1115,12 +1200,19 @@ async def _live_report_row() -> dict:
     from services.dummy_session import session_date_for
 
     today = session_date_for(_now_utc())
-    account = await get_dummy_account()
-    orders = await get_dummy_orders()
+    account, orders, prefs = await asyncio.gather(
+        get_dummy_account(),
+        get_dummy_orders(),
+        get_prefs(),
+        return_exceptions=True,
+    )
+    if isinstance(account, BaseException):
+        raise account
+    if isinstance(orders, BaseException):
+        raise orders
     try:
-        prefs = await get_prefs()
-        starting = float(prefs.get("startingCapital") or 100000)
-    except Exception:
+        starting = 100000.0 if isinstance(prefs, BaseException) else float(prefs.get("startingCapital") or 100000)
+    except (TypeError, ValueError):
         starting = 100000.0
     return _book_report_row(today, starting, account, orders, "LIVE")
 
@@ -1198,15 +1290,27 @@ async def build_pnl_reports(range_: str = "daily", limit: int = 60) -> dict:
     limit = max(1, min(int(limit or 60), 365))
     today = session_date_for(_now_utc())
 
-    sessions: list = []
-    try:
+    async def _read_sessions() -> list:
         db = get_db()
         cursor = db["dummy_daily_sessions"].find(
             {"terminal": "dummy"}, sort=[("trading_date", -1)],
         )
-        sessions = await cursor.to_list(length=400)
-    except Exception as exc:
-        logger.warning("pnl reports session read skipped: %s", exc)
+        return await cursor.to_list(length=400)
+
+    # The archived sessions and today's live row are independent reads. The
+    # old code waited for the whole session scan before starting the live row,
+    # adding an Atlas round trip to every P&L/Portfolio load.
+    sessions, live = await asyncio.gather(
+        _read_sessions(),
+        _live_report_row(),
+        return_exceptions=True,
+    )
+    if isinstance(sessions, BaseException):
+        logger.warning("pnl reports session read skipped: %s", sessions)
+        sessions = []
+    if isinstance(live, BaseException):
+        logger.warning("pnl reports live row skipped: %s", live)
+        live = None
 
     daily: list = []
     for s in sessions or []:
@@ -1216,10 +1320,8 @@ async def build_pnl_reports(range_: str = "daily", limit: int = 60) -> dict:
         row = _session_report_row(s)
         if row.get("date"):
             daily.append(row)
-    try:
-        daily.insert(0, await _live_report_row())
-    except Exception as exc:
-        logger.warning("pnl reports live row skipped: %s", exc)
+    if live is not None:
+        daily.insert(0, live)
 
     if want == "weekly":
         rows = _aggregate_rows(daily, _week_key, _week_label)

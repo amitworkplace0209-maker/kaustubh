@@ -101,6 +101,12 @@ async def switch_terminal(mode: str) -> dict:
     session_manager.set_mode(mode, broker=_BROKER_NAMES.get(mode, mode))
 
     _log.info("TERMINAL_SWITCH %s -> %s", current, mode)
+
+    # The new terminal's session is obtained AUTOMATICALLY (Kotak: TOTP+MPIN,
+    # Dummy: managed paper session, Shoonya: the stored OAuth session). A
+    # failure never fails the switch — the terminal is simply "not connected
+    # yet" and the UI shows that state honestly.
+    _schedule_auto_login(mode)
     return {
         "ok": True,
         "mode": mode,
@@ -109,6 +115,51 @@ async def switch_terminal(mode: str) -> dict:
         "message": f"Terminal switched to {mode}",
         "changed": True,
     }
+
+
+#: Background auto-login tasks, kept referenced so they are not garbage
+#: collected mid-flight.
+_AUTO_LOGIN_TASKS: set[Any] = set()
+
+
+def _schedule_auto_login(terminal: str) -> None:
+    """Kick the terminal's auto-login in the background (never blocks a switch)."""
+    try:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        from services.auto_login import auto_login
+    except Exception as exc:  # pragma: no cover
+        _log.warning("auto-login unavailable after the terminal switch: %s", exc)
+        return
+
+    async def _run() -> None:
+        try:
+            result = await auto_login(terminal, source="terminal_switch")
+            if result.ok:
+                _log.info(
+                    "AUTO_LOGIN after switch terminal=%s method=%s ok",
+                    terminal, result.method,
+                )
+            else:
+                _log.info(
+                    "AUTO_LOGIN after switch terminal=%s not connected: %s%s",
+                    terminal, result.message,
+                    f" (requires {result.requires})" if result.requires else "",
+                )
+        except Exception as exc:  # pragma: no cover
+            _log.warning("auto-login failed for terminal=%s: %s", terminal, exc)
+
+    try:
+        task = loop.create_task(_run())
+    except Exception as exc:  # pragma: no cover
+        _log.warning("could not schedule the auto-login for %s: %s", terminal, exc)
+        return
+    _AUTO_LOGIN_TASKS.add(task)
+    task.add_done_callback(_AUTO_LOGIN_TASKS.discard)
 
 
 def active_mode() -> str:

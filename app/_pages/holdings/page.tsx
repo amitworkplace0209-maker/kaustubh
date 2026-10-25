@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { PieChart, Search, RefreshCw, ArrowUpDown, LayoutGrid, Table as TableIcon, TrendingUp, TrendingDown, Wallet, Layers, Activity } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getTradingDashboard } from '@/lib/api';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 import { useLatestTicks } from '@/hooks/use-latest-ticks';
 import { useHoldingsLive, liveTickFor, seedFor } from '@/hooks/use-holdings-live';
 import { cn } from '@/lib/utils';
@@ -19,14 +20,35 @@ function fmtINR(n: number): string {
 }
 
 export default function HoldingsPage() {
-  const [holdings, setHoldings] = useState<any[]>([]);
-  const [todayPnl, setTodayPnl] = useState<number>(0);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<SortField>('symbol');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [view, setView] = useState<'cards' | 'table'>('cards');
   const { latest, connected } = useLatestTicks(true);
+
+  // The portfolio document travels over the WebSocket — one terminal-aware
+  // envelope (funds / positions / holdings / orders). REST is only the
+  // fallback while the socket has no document yet.
+  const portfolio = useRealtimeChannel<Record<string, any>>('portfolio', {
+    fallback: async () => ((await getTradingDashboard()) ?? {}) as Record<string, any>,
+    fallbackKey: 'portfolio',
+    fallbackMs: 10000,
+  });
+
+  const sections = portfolio.data?.sections;
+
+  const holdings = useMemo(() => {
+    const rows = sections?.holdings?.data;
+    return Array.isArray(rows) ? rows : [];
+  }, [sections]);
+
+  const todayPnl = useMemo(() => {
+    const f = sections?.funds?.data;
+    const mtomToday = Number(f?.raw?.RealizedMtomPrsnt ?? 0) + Number(f?.raw?.UnrealizedMtomPrsnt ?? 0);
+    return f?.totalPnl ?? f?.dayPnl ?? (f?.raw ? mtomToday : 0);
+  }, [sections]);
+
+  const loading = portfolio.loading;
 
   // Position + P&L websocket wiring: subscribe holding tokens to the Kotak
   // SDK feed so ticks flow, then read them token-exact from the shared SSE.
@@ -53,27 +75,6 @@ export default function HoldingsPage() {
     }
     return seen.size;
   }, [holdings, live]);
-
-  const fetch = useCallback(async () => {
-    try {
-      const data = await getTradingDashboard();
-      const rows = data?.sections?.holdings?.data;
-      setHoldings(Array.isArray(rows) ? rows : []);
-      const f = data?.sections?.funds?.data;
-      const mtomToday = Number(f?.raw?.RealizedMtomPrsnt ?? 0) + Number(f?.raw?.UnrealizedMtomPrsnt ?? 0);
-      setTodayPnl(f?.totalPnl ?? f?.dayPnl ?? (f?.raw ? mtomToday : 0));
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetch();
-    const interval = setInterval(fetch, 10000);
-    return () => clearInterval(interval);
-  }, [fetch]);
 
   const enriched = useMemo(() => holdings.map((h) => {
     const symbol = h?.symbol ?? h?.tradingSymbol ?? h?.trdSym ?? '—';
@@ -161,7 +162,7 @@ export default function HoldingsPage() {
             <Button size="sm" variant={view === 'table' ? 'secondary' : 'ghost'} className="h-7 px-2" onClick={() => setView('table')}><TableIcon className="h-4 w-4" /></Button>
           </div>
           <Button size="sm" variant="outline" onClick={() => setSortDir(sortDir === 'asc' ? 'desc' : 'asc')}><ArrowUpDown className="h-4 w-4" /></Button>
-          <Button size="sm" variant="ghost" onClick={fetch}><RefreshCw className="h-4 w-4" /></Button>
+          <Button size="sm" variant="ghost" onClick={portfolio.refresh}><RefreshCw className="h-4 w-4" /></Button>
         </div>
       </div>
 

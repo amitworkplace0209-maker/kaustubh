@@ -446,7 +446,7 @@ export function suggestionOutcome(s: DummySuggestion): { label: string; tone: 's
   return { label: status, tone: 'warning' };
 }
 
-async function dapi<T>(path: string, init?: RequestInit, timeoutMs = 15000): Promise<T> {
+async function dapiOnce<T>(path: string, init?: RequestInit, timeoutMs = 15000): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -479,7 +479,19 @@ async function dapi<T>(path: string, init?: RequestInit, timeoutMs = 15000): Pro
   }
 }
 
-export const getDummyState = (): Promise<DummyState> => dedupFetch('dummy:state', () => dapi('/api/dummy/state'));
+async function dapi<T>(path: string, init?: RequestInit, timeoutMs = 15000): Promise<T> {
+  // GET-only in-flight dedupe: React dev StrictMode mounts effects twice, and
+  // several panels request the same Dummy read during one route transition.
+  // Mutations (POST/DELETE/PATCH) are NEVER shared — each call must reach the
+  // backend exactly once.
+  const method = (init?.method || 'GET').toUpperCase();
+  if (method === 'GET' && !init?.body) {
+    return dedupFetch(`dapi:${path}`, () => dapiOnce<T>(path, init, timeoutMs));
+  }
+  return dapiOnce<T>(path, init, timeoutMs);
+}
+
+export const getDummyState = (): Promise<DummyState> => dapi('/api/dummy/state');
 export const getDummySession = () =>
   dapi<{ ok: boolean; session: DummySession }>('/api/dummy/session');
 export const resetDummySession = (startingCapital?: number, force = false) =>

@@ -306,6 +306,26 @@ class ReconcileLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ws.start_calls, 0, "no blind feed start after ws_stop")
         self.assertEqual(sc._state, scheduler.STATE_MARKET_CLOSED)
 
+    # ---- Manual login mid-day with a skipped ws_start job ----------------
+    async def test_manual_session_starts_feed_despite_skipped_ws_start(self):
+        import time as _time
+        import scheduler
+        # Backend down at 08:55 -> the ledger judges ws_start SKIPPED for the
+        # whole day. A manual login at 13:05 is an explicit user decision, so
+        # the feed MUST still come up inside the ws window.
+        statuses = {"login": "SKIPPED", "ws_start": "SKIPPED",
+                    "tick_collection": "SKIPPED", "ws_stop": "PENDING",
+                    "logout": "PENDING"}
+        _sched, sc, _k, ws, _sm, _l = self._setup(
+            session_active=True, statuses=statuses,
+            clock=lambda: _ist(hour=13, minute=5))
+        sc._session_owner = "manual"
+        sc._manual_expire_at = _time.time() + 3600.0
+        await sc._reconcile()
+        self.assertGreaterEqual(ws.start_calls, 1,
+                                "manual session must start the feed in-window")
+        self.assertNotEqual(sc._state, scheduler.STATE_MARKET_CLOSED)
+
     # ---- CASE 16:01 — after logout window -------------------------------
     async def test_1601_wait_next_trading_day(self):
         import scheduler

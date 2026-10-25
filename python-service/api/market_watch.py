@@ -1672,6 +1672,33 @@ async def market_watch_registry():
     }
 
 
+@router.get("/scan")
+async def market_watch_full_scan(
+    refresh: bool = Query(False, description="Force a fresh compute pass"),
+    limit: int = Query(0, ge=0, le=10000),
+):
+    """Full NSE EQ market scan (Data Saver Watch) — the entire scrip master's
+    EQ universe read from the ONE live tick store.
+
+    Rows are real in-memory WS-tick state (ltp/prev-close/net change from the
+    broker feed fields, plus true 1m/5m/10m window moves from the central
+    price history). Nothing is broker-looped, nothing fetched off-box, and an
+    instrument without feed data keeps every price field ``None`` — the UI
+    renders an em dash, never an invented 0. ``?refresh=1`` recomputes
+    immediately; otherwise the cached pass (recomputed when >8s old) returns.
+    """
+    from services.market_scan import market_scan
+
+    doc = await market_scan.document_fresh(force=refresh, timeout=6.0)
+    if doc is None:
+        # Race on a truly cold boot: compute once inline rather than inventing.
+        doc = await asyncio.to_thread(market_scan.compute)
+    data = dict(doc)
+    if limit:
+        data["rows"] = (doc.get("rows") or [])[:limit]
+    return {"ok": True, "data": data}
+
+
 @router.get("/status")
 async def market_watch_status():
     """Market Watch engine observability snapshot (docs §25)."""
@@ -1772,7 +1799,7 @@ async def market_watch_ranking_status():
 # the ONLY way membership changes; nothing here runs per tick.
 # --------------------------------------------------------------------------- #
 @router.get("/weekly")
-async def market_watch_weekly(week_id: str | None = Query(None)):
+async def market_watch_weekly(week_id: str | None = Query(None, alias="weekId")):
     """Full weekly state: current lock, draft, decisions, history, config.
 
     Two different weeks matter and they are NOT the same (doc §2):
@@ -1789,21 +1816,31 @@ async def market_watch_weekly(week_id: str | None = Query(None)):
     mw_universe.invalidate_cache()
     universe = await mw_universe.load_locked_universe(refresh=True)
     target = week_id or mw_universe.review_target_week_id()
-    draft = await mw_universe.get_draft(target)
+    # The draft, lock check, decisions, history and verification are five
+    # independent reads. Running them sequentially made a cold Weekly page pay
+    # five Atlas round trips AFTER the universe read. The verification reuses
+    # the universe already loaded above instead of re-reading the same lock.
+    draft, target_locked, decisions, history, verify = await asyncio.gather(
+        mw_universe.get_draft(target),
+        mw_universe.is_locked(target),
+        mw_universe.decisions_for(target),
+        mw_universe.history(limit=26),
+        mw_universe.verify_week(target, universe),
+    )
     report_week = mw_universe.week_id_for()
     return {
         "ok": True,
         "weekId": target,
         "targetWeekId": target,
-        "targetWeekLocked": bool(await mw_universe.is_locked(target)),
+        "targetWeekLocked": bool(target_locked),
         "reportWeekId": report_week,
         "nextReviewAt": mw_universe.next_review_at(),
         "locked": universe.summary() if universe else None,
         "draft": draft.summary() if draft else None,
         "draftSymbols": list(draft.symbols) if draft else [],
-        "decisions": await mw_universe.decisions_for(target),
-        "history": await mw_universe.history(limit=26),
-        "verify": await mw_universe.verify_week(target),
+        "decisions": decisions,
+        "history": history,
+        "verify": verify,
         "config": mw_config.as_dict(mw_config.load()).get("weekly", {}),
         # Friday 15:25 automatic scan: resolved schedule + last real outcome.
         # The UI never computes "next Friday" itself.
@@ -1860,7 +1897,7 @@ async def market_watch_weekly_scan(body: Any = Body(default=None)):
 
 
 @router.get("/weekly/report")
-async def market_watch_weekly_report(week_id: str | None = Query(None)):
+async def market_watch_weekly_report(week_id: str | None = Query(None, alias="weekId")):
     """Fetch a stored weekly report; ``build=false`` returns a live preview."""
     target = week_id or mw_universe.week_id_for()
     report = await mw_weekly.load_report(target)

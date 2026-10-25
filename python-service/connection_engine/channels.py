@@ -42,6 +42,10 @@ STATE_CHANNELS: dict[str, str] = {
     "engines": "live engine status / metrics snapshots (Engine Registry)",
     "market_watch": "market watch engine frames (ranking / pins / status / feed-state)",
     "data_center": "aggregated Data Center snapshot (single authoritative document)",
+    "portfolio": "holdings + funds + positions document (one envelope, one read)",
+    "dashboard": "Data Saver dashboard live document (pipeline / session / scheduler / market / storage)",
+    "watch_scan": "full-market scan summary (thousands of rows in REST; indexes/breadth/movers on the socket)",
+    "sched_events": "unified user-defined scheduled-events document (any kind: login → shutdown)",
 }
 
 

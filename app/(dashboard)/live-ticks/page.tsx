@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Activity, Pause, Play, Search, Wifi, WifiOff } from 'lucide-react';
-import { getTickStreamUrl, getRecentTicks } from '@/lib/api';
+import { getRecentTicks } from '@/lib/api';
+import { subscribeSseState, subscribeTicks } from '@/lib/shared-sse';
 import { PageHeader } from '@/components/design-system';
 
 type Tick = {
@@ -44,39 +45,9 @@ export default function LiveTickTablePage() {
   const [mounted, setMounted] = useState(false);
   const [filter, setFilter] = useState('');
   const [tickCount, setTickCount] = useState(0);
-  const eventSourceRef = useRef<EventSource | null>(null);
-
-  const connect = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-    const es = new EventSource(getTickStreamUrl());
-    eventSourceRef.current = es;
-
-    es.onopen = () => setConnected(true);
-    es.onerror = () => {
-      setConnected(false);
-      es.close();
-      setTimeout(() => {
-        if (!paused) connect();
-      }, 3000);
-    };
-    es.onmessage = (event) => {
-      try {
-        const tick: Tick = JSON.parse(event.data);
-        setTicks((prev) => {
-          const next = new Map(prev);
-          next.set(tick.symbol, tick);
-          if (next.size > 200) {
-            const firstKey = next.keys().next().value;
-            if (firstKey) next.delete(firstKey);
-          }
-          return next;
-        });
-        setTickCount((c) => c + 1);
-      } catch { /* ignore parse errors */ }
-    };
-  }, [paused]);
+  /** Read inside the tick listener without resubscribing on pause toggles. */
+  const pausedRef = useRef(false);
+  pausedRef.current = paused;
 
   useEffect(() => {
     setMounted(true);
@@ -89,21 +60,31 @@ export default function LiveTickTablePage() {
         setTicks(map);
       }
     }).catch(() => {});
-    connect();
-    return () => {
-      eventSourceRef.current?.close();
-    };
-  }, [connect]);
 
-  useEffect(() => {
-    if (!paused && !connected) {
-      connect();
-    }
-    if (paused && eventSourceRef.current) {
-      eventSourceRef.current.close();
-      setConnected(false);
-    }
-  }, [paused, connected, connect]);
+    // ONE shared browser tick stream for the whole app — this page registers a
+    // listener via `subscribeTicks` (central reconnect/coalescing), not its own
+    // EventSource. While paused the listener just ignores frames.
+    const offState = subscribeSseState((s) => setConnected(Boolean(s.connected)));
+    const offTicks = subscribeTicks((raw) => {
+      const tick: Tick = raw as Tick;
+      if (pausedRef.current) return;
+      setTicks((prev) => {
+        const next = new Map(prev);
+        next.set(tick.symbol, tick);
+        if (next.size > 200) {
+          const firstKey = next.keys().next().value;
+          if (firstKey) next.delete(firstKey);
+        }
+        return next;
+      });
+      setTickCount((c) => c + 1);
+    });
+
+    return () => {
+      offState();
+      offTicks();
+    };
+  }, []);
 
   const tickList = Array.from(ticks.values()).filter((t) =>
     !filter || t.symbol.toLowerCase().includes(filter.toLowerCase()),

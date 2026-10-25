@@ -43,6 +43,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { fmtPrice, fmtNumber, fmtCompact, sign } from '@/components/design-system';
 import { cn } from '@/lib/utils';
+import { dedupeFetch } from '@/lib/shared-request';
 import { useInstrumentSearch } from '@/hooks/use-instrument-search';
 import { SEARCH_SUGGESTION_LIMIT, type CanonicalInstrument } from '@/lib/instrument-search';
 import { subscribeTicks, subscribeSseState } from '@/lib/shared-sse';
@@ -130,6 +131,8 @@ export default function UnifiedWatchlist() {
 
   // live
   const [connected, setConnected] = useState(false);
+  const connectedRef = useRef(false);
+  connectedRef.current = connected;
   const [flash, setFlash] = useState<Record<string, 'up' | 'down'>>({});
   const [now, setNow] = useState(() => new Date());
   const [favs, setFavs] = useState<Set<string>>(new Set());
@@ -173,8 +176,13 @@ export default function UnifiedWatchlist() {
   // ---- data load (single backend for both pages)
   const load = useCallback(async () => {
     try {
-      const res = await fetch('/api/phase2/watch-list', { cache: 'no-store' });
-      const d = await res.json();
+      // Both watchlist routes mount this component; StrictMode mounts it
+      // twice in dev. Share the in-flight GET but keep zero TTL so an explicit
+      // refresh still reaches the backend.
+      const d = await dedupeFetch('phase2:watch-list', async () => {
+        const res = await fetch('/api/phase2/watch-list', { cache: 'no-store' });
+        return res.json();
+      }, { ttlMs: 0 });
       if (!mountedRef.current) return;
       if (d.ok && Array.isArray(d.data)) {
         setItems(d.data);
@@ -191,8 +199,23 @@ export default function UnifiedWatchlist() {
 
   useEffect(() => {
     void load();
-    const t = setInterval(() => void load(), 20000); // momentum refresh fallback
-    return () => clearInterval(t);
+    // Momentum/score patches ride the shared tick stream (the SSE handler
+    // above), so the list itself only needs a slow reconcile — REST is the
+    // fallback for when the stream (and the socket) cannot deliver.
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (connectedRef.current) return;
+      void load();
+    }, 20000);
+    const onFocus = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void load();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [load]);
 
   // ---- shared SSE: ONE connection, flash on LTP move

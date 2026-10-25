@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -11,7 +11,8 @@ import {
   Clock, TrendingUp, ArrowUpDown, ArrowUp, ArrowDown, X, Settings2, Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getTickStreamUrl, getRecentTicks } from '@/lib/api';
+import { getRecentTicks } from '@/lib/api';
+import { subscribeSseState, subscribeTicks } from '@/lib/shared-sse';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -358,69 +359,69 @@ export default function LiveTickTablePage() {
   const [enabledPeriods, setEnabledPeriods] = useState<Set<number>>(new Set([9, 20, 50]));
   const [mobileDetail, setMobileDetail] = useState<string | null>(null);
 
-  const eventSourceRef = useRef<EventSource | null>(null);
   const tickCountRef = useRef(0);
+  /** Mirrors `latestTicks` so the tick listener reads fresh rows. */
+  const latestTicksRef = useRef<Map<string, RawTick>>(latestTicks);
+  useEffect(() => {
+    latestTicksRef.current = latestTicks;
+  }, [latestTicks]);
+  /** Read inside the tick listener without resubscribing on pause toggles. */
+  const pausedRef = useRef(false);
+  pausedRef.current = paused;
 
-  // ─── WebSocket ───────────────────────────────────────────────────
+  // ─── WebSocket — the SHARED browser tick session ────────────────
 
-  const connect = useCallback(() => {
-    if (eventSourceRef.current) eventSourceRef.current.close();
+  useEffect(() => {
+    // ONE EventSource per browser session (`subscribeTicks` handles reconnect
+    // and coalescing centrally); the pause button simply ignores frames.
+    const offState = subscribeSseState((s) => setConnected(Boolean(s.connected)));
+    const offTicks = subscribeTicks((raw) => {
+      const tick: RawTick = raw as RawTick;
+      if (pausedRef.current || !tick?.symbol) return;
 
-    const es = new EventSource(getTickStreamUrl());
-    eventSourceRef.current = es;
+      setLatestTicks((prev) => {
+        const next = new Map(prev);
+        next.set(tick.symbol, tick);
+        if (next.size > 200) {
+          const firstKey = next.keys().next().value;
+          if (firstKey) next.delete(firstKey);
+        }
+        return next;
+      });
 
-    es.onopen = () => setConnected(true);
+      setTickHistory((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(tick.symbol) || { ticks: [], emaValues: {} };
+        const newTicks = [...existing.ticks, tick.ltp].filter((v): v is number => v != null);
+        if (newTicks.length > MAX_HISTORY) newTicks.splice(0, newTicks.length - MAX_HISTORY);
+        next.set(tick.symbol, {
+          ticks: newTicks,
+          emaValues: computeEmas(newTicks, EMA_PERIODS),
+        });
+        return next;
+      });
 
-    es.onerror = () => {
-      setConnected(false);
-      es.close();
-      setTimeout(() => { if (!paused) connect(); }, 3000);
+      setPrevLtps((prev) => {
+        const next = new Map(prev);
+        const old = latestTicksRef.current.get(tick.symbol);
+        if (old?.ltp != null && old.ltp !== tick.ltp) {
+          next.set(tick.symbol, old.ltp);
+        } else if (!next.has(tick.symbol)) {
+          next.set(tick.symbol, null);
+        }
+        return next;
+      });
+
+      tickCountRef.current += 1;
+      setTickCount(tickCountRef.current);
+      setLastTickTs(tick.ts || tick.receivedAt || null);
+    });
+
+    return () => {
+      offState();
+      offTicks();
     };
-
-    es.onmessage = (event) => {
-      try {
-        const tick: RawTick = JSON.parse(event.data);
-        if (!tick?.symbol) return;
-
-        setLatestTicks((prev) => {
-          const next = new Map(prev);
-          next.set(tick.symbol, tick);
-          if (next.size > 200) {
-            const firstKey = next.keys().next().value;
-            if (firstKey) next.delete(firstKey);
-          }
-          return next;
-        });
-
-        setTickHistory((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(tick.symbol) || { ticks: [], emaValues: {} };
-          const newTicks = [...existing.ticks, tick.ltp].filter((v): v is number => v != null);
-          if (newTicks.length > MAX_HISTORY) newTicks.splice(0, newTicks.length - MAX_HISTORY);
-          next.set(tick.symbol, {
-            ticks: newTicks,
-            emaValues: computeEmas(newTicks, EMA_PERIODS),
-          });
-          return next;
-        });
-
-        setPrevLtps((prev) => {
-          const next = new Map(prev);
-          const old = latestTicks.get(tick.symbol);
-          if (old?.ltp != null && old.ltp !== tick.ltp) {
-            next.set(tick.symbol, old.ltp);
-          } else if (!next.has(tick.symbol)) {
-            next.set(tick.symbol, null);
-          }
-          return next;
-        });
-
-        tickCountRef.current += 1;
-        setTickCount(tickCountRef.current);
-        setLastTickTs(tick.ts || tick.receivedAt || null);
-      } catch { /* ignore parse errors */ }
-    };
-  }, [paused, latestTicks]);
+  }, []);
 
   // Load recent ticks on mount for EMA seeding
   useEffect(() => {
@@ -437,7 +438,7 @@ export default function LiveTickTablePage() {
         }
 
         // Compute EMAs for historical data
-        for (const [sym, hist] of historyMap) {
+        for (const [, hist] of historyMap) {
           hist.emaValues = computeEmas(hist.ticks, EMA_PERIODS);
         }
 
@@ -445,19 +446,7 @@ export default function LiveTickTablePage() {
         setLatestTicks(tickMap);
       }
     }).catch(() => {});
-
-    connect();
-    return () => { eventSourceRef.current?.close(); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Reconnect on unpause
-  useEffect(() => {
-    if (!paused && !connected) connect();
-    if (paused && eventSourceRef.current) {
-      eventSourceRef.current.close();
-      setConnected(false);
-    }
-  }, [paused, connected, connect]);
+  }, []);
 
   // ─── Derived Data ──────────────────────────────────────────────
 

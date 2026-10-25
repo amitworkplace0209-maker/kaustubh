@@ -102,6 +102,59 @@ deliberately left untouched rather than silently rewritten.
 - Order flow fits one 390×844 screen — **PASS**
 - No console errors, no exceptions, no type/lint/test regression — **PASS**
 
+---
+
+## Update 2026-10-21 — the page was deleted and rebuilt
+
+The page was rebuilt from zero (`docs/implementation/033-trade-page-full-rebuild.md`,
+verified in `docs/verification/041-trade-page-full-rebuild.md`). The two backend defects
+that made the page unable to place an order were fixed in the same task:
+
+- `python-service/api/demo.py` — the missing `_to_engine_order_intent()` (every paper order
+  answered HTTP 500).
+- `python-service/core/engines/risk_engine.py` — the risk **preview** no longer records an
+  order intent, so the page's own pre-check can no longer make the following real order be
+  rejected as a duplicate.
+
+What this changes for the items above:
+
+| Item | New state |
+|---|---|
+| 1. Physical-device swipe feel | still **NOT_VERIFIED** — unchanged; headless touch emulation only. The rebuilt control is a fresh implementation (`components/trading/order-actions.tsx`), so the tuning note must be applied to IT, not to the deleted `slide-to-order.tsx`. |
+| 2. Production build | unchanged — delegated to `PENDING-002-build-and-test-verification.md`. |
+| 3. Accepted Kotak order end to end | still **NOT_VERIFIED** — the routing and the payload are proven (the request is intercepted and aborted; the captured body is the real broker body), but no order was ever sent to the live broker. |
+| 4. `tests/trade-quote-fallback.test.ts` | **CLOSED** — the guard was rewritten against the new quote chain and passes (12 assertions). |
+
+Newly verified in the rebuilt page (2026-10-21):
+
+- A **paper order placed from the page FILLED** — `Filled · FILLED, Qty 1, id DEMO1792576469294469`
+  (`--allow-order` run against the Dummy terminal).
+- The risk verdict is the server's verdict (`PASS — Order passes the active risk policy`).
+- The price is served by the shared SSE tick channel and labelled `LIVE TICK STREAM`.
+- The capabilities (order types, products, currency) come from the BACKEND registry.
+- The risk pre-check fires ONCE per order intent (it used to fire every ~2.5 s).
+- 0 uncaught exceptions, 0 console errors, 0 failed responses.
+
+## Runbook for the items that are still open
+
+**`docs/pending/PENDING-008-trade-page-live-verification.md`** is the single executable
+runbook for everything that is still unverified (items 1 and 3 above, plus the production
+build, the PWA on a phone and the CASH charge check). It carries the environment
+preflight, the exact commands, the expected results, the evidence to capture, the safety
+rules and the restore procedure. This file (PENDING-005) keeps the item list; PENDING-008
+owns the execution.
+
+**Update 2026-10-22 — the runbook was executed** (`docs/verification/042-trade-page-live-verification.md`):
+
+| Item | New state |
+|---|---|
+| 1. Physical-device swipe feel | The gesture **mechanics** are proven with real touch events (a short drag springs back and places NOTHING; a drag past the commit line sends the order with the correct payload). The **feel** on a handset is still unverified — it needs a device. |
+| 2. Production build | **CLOSED** — `next build` compiled successfully (10.9 s), TypeScript clean, `/trading/trade` emitted, no route collision. Run in an isolated copy so the operator's dev server was never stopped. |
+| 3. Accepted Kotak order end to end | Still **NOT_VERIFIED** — the routing and the payload are proven (the request is intercepted and aborted; the captured body is the real broker body). Sending a real order needs the operator's written authorization, and the broker account currently holds Net ₹10. |
+| 4. `tests/trade-quote-fallback.test.ts` | **CLOSED** — the guard was rewritten against the new quote chain and passes (12 assertions). |
+| — | The phone's network path is **proven** (the page, the APIs and the SSE tick stream all answer on the host's LAN address) — the on-screen PWA check still needs a handset. |
+| — | The **CASH charge** check is **closed**: CASH uses the delivery STT (0.1 %), MIS the intraday STT (0 % on a buy). |
+
 ## Final status of the parent task
 
 `VERIFIED_WITH_LIMITATIONS` until items 1 and 3 close.

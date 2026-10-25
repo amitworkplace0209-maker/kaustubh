@@ -231,7 +231,7 @@ export function PwaInstallButton({ compact }: { compact?: boolean }) {
   const { canInstall, installed, promptInstall } = usePwaInstall();
   if (installed) {
     return (
-      <Badge variant="outline" className="bg-emerald-500/10 text-emerald-300 border-emerald-500/25">
+      <Badge variant="outline" className="bg-emerald-500/10 text-emerald-700 border-emerald-500/25">
         <Download className="mr-1 h-3 w-3" /> Installed
       </Badge>
     );
@@ -258,7 +258,7 @@ export function NotificationBell() {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button size="sm" variant="ghost" className="relative" aria-label="Session alerts">
-          {critical > 0 ? <BellRing className="h-4 w-4 text-amber-300" /> : <Bell className="h-4 w-4" />}
+          {critical > 0 ? <BellRing className="h-4 w-4 text-amber-700" /> : <Bell className="h-4 w-4" />}
           {badge > 0 && (
             <span className={`absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-[10px] font-bold ${critical > 0 ? 'bg-rose-500 text-white' : 'bg-amber-500 text-black'}`}>
               {badge}
@@ -274,7 +274,7 @@ export function NotificationBell() {
         <DropdownMenuSeparator />
         <div className="px-2 py-1.5">
           {permission === 'granted' ? (
-            <p className="text-[11px] text-emerald-300">Browser notifications ON — critical alerts pop up even in background.</p>
+            <p className="text-[11px] text-emerald-700">Browser notifications ON — critical alerts pop up even in background.</p>
           ) : permission === 'denied' ? (
             <p className="text-[11px] text-muted-foreground">Browser notifications blocked in site settings.</p>
           ) : permission === 'unsupported' ? (

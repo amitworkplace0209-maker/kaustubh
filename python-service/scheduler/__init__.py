@@ -49,6 +49,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from auth.kotak_client import kotak_session
 from config.settings import settings
@@ -225,6 +226,170 @@ def _now_ist() -> datetime:
 
 
 # ---------------------------------------------------------------------------
+# Configurable market timezone + trading-day interpretation (REAL settings)
+# ---------------------------------------------------------------------------
+# `sched_market_timezone` and `sched_trading_day_behavior` are live consumed
+# here: every decision site below uses the MARKET-zone instant and the
+# configured day interpretation, so editing either in the settings UI
+# re-shapes the lifecycle within one reconcile tick (also on save, the
+# settings service wakes this controller). With the default `Asia/Kolkata` +
+# `trading_days` the resolution is identical to previous hardcoded behaviour —
+# only non-default values change what the machine does.
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover — zoneinfo is stdlib on 3.9+
+    ZoneInfo = None  # type: ignore[assignment]
+
+_MARKET_TZ_DEFAULT = "Asia/Kolkata"
+_TZ_CACHE: dict[str, Any] = {}
+_TZ_LOCK = threading.Lock()
+
+
+def _market_tz():
+    """Resolve the configured IANA market timezone (cached); invalid values
+    fall back to IST so a typo can never stall the lifecycle."""
+    name = _configured_market_tzname()
+    with _TZ_LOCK:
+        cached = _TZ_CACHE.get(name)
+    if cached is not None:
+        return cached
+    tz = None
+    if ZoneInfo is not None:
+        try:
+            tz = ZoneInfo(name)
+        except Exception:
+            tz = None
+    if tz is None:
+        tz = IST
+        logger.warning("sched_market_timezone=%r is not a valid IANA zone — using Asia/Kolkata", name)
+    with _TZ_LOCK:
+        _TZ_CACHE[name] = tz
+    return tz
+
+
+def _configured_market_tzname() -> str:
+    raw = get_runtime_setting("sched_market_timezone")
+    value = str(raw).strip() if raw is not None else ""
+    return value or _MARKET_TZ_DEFAULT
+
+
+def _now_market() -> datetime:
+    """Decision clock — the wall clock IN the configured market timezone.
+
+    Identical to _now_ist() when the market timezone is Asia/Kolkata (the
+    shipped default), so tests and default behaviour are unchanged.
+    """
+    if _TEST_CLOCK is not None:
+        return _TEST_CLOCK().astimezone(_market_tz())
+    return datetime.now(_market_tz())
+
+
+_TRADING_DAY_BEHAVIORS = ("trading_days", "weekdays", "calendar_days")
+
+
+def _market_tz_label() -> str:
+    """The configured market zone as a display label, e.g. 'Asia/Kolkata (IST, +05:30)'."""
+    name = _configured_market_tzname()
+    try:
+        tz = _market_tz()
+        stamp = datetime.now(tz)
+        offset = stamp.strftime("%z")
+        pretty = stamp.strftime("%Z") or name
+        return f"{name} ({pretty}, {offset[:3]}:{offset[3:] or '00'})"
+    except Exception:
+        return name
+
+
+def _trading_day_behavior() -> str:
+    raw = get_runtime_setting("sched_trading_day_behavior")
+    value = str(raw).strip().lower() if raw is not None else ""
+    return value if value in _TRADING_DAY_BEHAVIORS else "trading_days"
+
+
+def _effective_trading_day(now: datetime) -> bool:
+    """Interpret the calendar for the configured behaviour:
+
+    * ``trading_days``  — real NSE calendar + weekend/holiday closures (default)
+    * ``weekdays``      — Mon..Fri run regardless of exchange holidays
+    * ``calendar_days`` — every single day runs (paper / soak testing)
+    """
+    behavior = _trading_day_behavior()
+    if behavior == "calendar_days":
+        return True
+    if behavior == "weekdays":
+        return _is_weekday(now)
+    return _is_trading_day(now)
+
+
+def _next_effective_trading_day(day) -> datetime.date | None:
+    """Next date whose run is admitted under the configured behaviour."""
+    behavior = _trading_day_behavior()
+    d = day + timedelta(days=1)
+    for _ in range(366):
+        sched_day = datetime.combine(d, datetime.min.time(), tzinfo=IST)
+        if _effective_trading_day(sched_day):
+            return d
+        d += timedelta(days=1)
+    return None
+
+
+def _validation_issues(times: dict[str, tuple[int, int]]) -> list[dict]:
+    """Cross-key schedule validation from the REAL configured values.
+
+    The lifecycle order is fixed (login → ws → tick → phases → square-off →
+    feed stop → ws stop → logout). Consecutive events may share a value
+    (warn — the later phase still gates correctly, but the window collapses);
+    any inversion is an error because that phase can never fire.
+    """
+    chain = [
+        ("login", "ws_start"),
+        ("ws_start", "tick_collection_start"),
+        ("tick_collection_start", "pre_market"),
+        ("pre_market", "limit_order"),
+        ("limit_order", "equilibrium"),
+        ("equilibrium", "buffer"),
+        ("buffer", "feed_start"),
+        ("feed_start", "square_off"),
+        ("square_off", "feed_stop"),
+        ("feed_stop", "ws_stop"),
+        ("ws_stop", "logout"),
+    ]
+    labels = {
+        "login": "Login", "ws_start": "WS Connect",
+        "tick_collection_start": "Tick collection", "pre_market": "Pre-market",
+        "limit_order": "Limit-order window", "equilibrium": "Equilibrium",
+        "buffer": "Buffer", "feed_start": "Live feed", "square_off": "Square-off",
+        "feed_stop": "Feed stop", "ws_stop": "WS Disconnect", "logout": "Logout",
+    }
+    issues: list[dict] = []
+    seen: set[tuple[int, int]] = set()
+    for first, second in chain:
+        a, b = times.get(first), times.get(second)
+        if not a or not b:
+            continue
+        if a < b:
+            continue
+        severity = "warn" if a == b else "error"
+        message = (
+            f"{labels[first]} ({a[0]:02d}:{a[1]:02d}) {labels[second]} ({b[0]:02d}:{b[1]:02d}) se"
+            + (" same hai — window collapse ho gaya hai" if a == b else " pehle ho raha hai — "
+               "ye phase kabhi fire nahi hoga")
+        )
+        issues.append({
+            "code": "ORDERING" if a > b else "WINDOW_COLLAPSE",
+            "severity": severity,
+            "first_key": first,
+            "second_key": second,
+            "first": f"{a[0]:02d}:{a[1]:02d}",
+            "second": f"{b[0]:02d}:{b[1]:02d}",
+            "message": message,
+        })
+        if a > b:
+            seen.add((a[0] * 60 + a[1], b[0] * 60 + b[1]))  # keep shape stable
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Multi-broker enablement (spec: independent simultaneous broker lifecycles)
 # ---------------------------------------------------------------------------
 def _broker_enabled(broker: str) -> bool:
@@ -312,7 +477,7 @@ def _next_occurrence(now: datetime, hour: int, minute: int) -> datetime:
 def _day_at(d: datetime | datetime.date, hour: int, minute: int) -> datetime:
     if isinstance(d, datetime):
         d = d.date()
-    return datetime.combine(d, datetime.min.time().replace(hour=hour, minute=minute), tzinfo=IST)
+    return datetime.combine(d, datetime.min.time().replace(hour=hour, minute=minute), tzinfo=_market_tz())
 
 
 def _login_backoff(attempt: int) -> float:
@@ -656,7 +821,7 @@ class SchedulerController:
     # ------------------------------------------------------------------
 
     def get_scheduler_info(self) -> dict:
-        now = _now_ist()
+        now = _now_market()
         slot = self._market_slot(now)
         sched = self.get_schedule()
         market_state_snap = market_state_service.get_snapshot()
@@ -720,7 +885,7 @@ class SchedulerController:
         }
 
     def get_scheduler_state(self) -> dict:
-        now = _now_ist()
+        now = _now_market()
         slot = self._market_slot(now)
         sched = self.get_schedule()
         times = _sched_times()
@@ -809,7 +974,7 @@ class SchedulerController:
         + the real trading calendar + the real session/feed/market state. The
         frontend only reads this; it never computes or fabricates state.
         """
-        now = _now_ist()
+        now = _now_market()
         today_iso = now.date().isoformat()
         try:
             business_date = today_iso
@@ -899,7 +1064,7 @@ class SchedulerController:
     def get_schedule(self) -> dict:
         """Next-event snapshot (#14). Backend is the source of truth — no
         frontend countdowns."""
-        now = _now_ist()
+        now = _now_market()
         today = now.date()
         now_str = now.strftime("%H:%M")
         times = _sched_times()
@@ -935,7 +1100,7 @@ class SchedulerController:
                 "logout": _day_at(d, logout_t[0], logout_t[1]),
             }
 
-        today_trading = market_calendar.is_trading_day(today)
+        today_trading = _effective_trading_day(now)
         today_events = build(today) if today_trading else None
 
         if today_trading:
@@ -943,9 +1108,9 @@ class SchedulerController:
             if future:
                 ref = today
             else:
-                ref = market_calendar.next_trading_day(today) or today
+                ref = _next_effective_trading_day(today) or today
         else:
-            ref = market_calendar.next_trading_day(today) or today
+            ref = _next_effective_trading_day(today) or today
 
         ref_events = build(ref)
         candidates = [(n, t) for n, t in ref_events.items()]
@@ -970,7 +1135,13 @@ class SchedulerController:
             phase_candidates = list(phase_ref.items())
         next_phase = min(phase_candidates, key=lambda x: x[1]) if phase_candidates else None
 
+        issues = _validation_issues(times)
         return {
+            "issues": issues,
+            "issues_error_count": sum(1 for i in issues if i["severity"] == "error"),
+            "issues_warning_count": sum(1 for i in issues if i["severity"] == "warn"),
+            "trading_day_behavior": _trading_day_behavior(),
+            "market_timezone": _configured_market_tzname(),
             "schedule": {
                 "login": f"{login_t[0]:02d}:{login_t[1]:02d}",
                 "ws_connect": f"{ws_start_t[0]:02d}:{ws_start_t[1]:02d}",
@@ -984,7 +1155,7 @@ class SchedulerController:
                 "feed_stop": f"{fstop_t[0]:02d}:{fstop_t[1]:02d}",
                 "ws_disconnect": f"{ws_stop_t[0]:02d}:{ws_stop_t[1]:02d}",
                 "logout": f"{logout_t[0]:02d}:{logout_t[1]:02d}",
-                "timezone": "Asia/Kolkata (IST, +05:30)",
+                "timezone": _market_tz_label(),
             },
             "phases": {
                 name: dt.isoformat() for name, dt in (today_phase_times or {}).items()
@@ -1183,7 +1354,7 @@ class SchedulerController:
         except Exception:
             pass
 
-        now = _now_ist()
+        now = _now_market()
         slot = self._market_slot(now)
         times = _sched_times()
         session_active = kotak_session.session_active
@@ -1415,7 +1586,16 @@ class SchedulerController:
         # ws_start (now 08:55) and tick_collection_start (08:59) share the
         # same ws_window validity. The tick collection window is valid
         # as long as the ws window is still open.
-        tick_blocked = today_status.get("ws_start") in {"MISSED_EXPIRED", "SKIPPED"}
+        #
+        # A MANUAL session is an explicit user login, so the day's
+        # missed/skipped scheduled jobs (which describe the AUTOMATIC
+        # lifecycle) must not keep its feed down: honoring them here parked a
+        # mid-day manual login forever with "feed window expired; feed not
+        # started for the day" while the ws window was still open.
+        tick_blocked = (
+            self._session_owner != "manual"
+            and today_status.get("ws_start") in {"MISSED_EXPIRED", "SKIPPED"}
+        )
 
         # ── Confirmation window lifecycle ──────────────────────────
         # At 09:13 IST: start the confirmation window
@@ -1735,7 +1915,7 @@ class SchedulerController:
         # Always guarantee the primary broker has a card even before the first
         # reconcile tick (boot/restart race) — derived, never fabricated.
         if "kotak" not in reports and "kotak" in self._enabled_brokers:
-            self._build_kotak_report(_now_ist(), self._market_slot(_now_ist()),
+            self._build_kotak_report(_now_market(), self._market_slot(_now_market()),
                                      _sched_times(), {})
             reports = dict(self._brokers_report)
         return reports
@@ -2020,7 +2200,7 @@ class SchedulerController:
         scheduled_expires_at = None
         if source == "scheduler":
             try:
-                slot = self._market_slot(datetime.now(IST))
+                slot = self._market_slot(_now_market())
                 if slot["logout_at"] is not None:
                     scheduled_expires_at = slot["logout_at"].timestamp()
             except Exception as exc:
@@ -2364,7 +2544,7 @@ class SchedulerController:
     # ------------------------------------------------------------------
 
     def _market_slot(self, now: datetime) -> dict:
-        trading_day = _is_trading_day(now)
+        trading_day = _effective_trading_day(now)
         times = _sched_times()
         login_h, login_m = times["login"]
         logout_h, logout_m = times["logout"]
@@ -2626,3 +2806,112 @@ async def get_scheduler_run(run_id: str) -> dict | None:
     """One run by its deterministic execution_id (None when not found)."""
     from scheduler.persist import scheduler_ledger
     return await scheduler_ledger.get_run_by_execution_id(run_id)
+
+
+# ---------------------------------------------------------------------------
+# Settings-page preview — the LIVE effective scheduler configuration
+# ---------------------------------------------------------------------------
+
+_PREVIEW_ORDER = [
+    ("sched_login_time", "login", "Broker session login"),
+    ("sched_ws_start_time", "ws_start", "WebSocket feed connect"),
+    ("sched_tick_collection_start_time", "tick_collection_start", "Tick capture start"),
+    ("sched_pre_market_start_time", "pre_market", "Pre-market phase"),
+    ("sched_limit_order_start_time", "limit_order", "Limit-order window"),
+    ("sched_equilibrium_start_time", "equilibrium", "Equilibrium phase"),
+    ("sched_buffer_start_time", "buffer", "Buffer phase"),
+    ("sched_feed_start_time", "feed_start", "Live feed phase"),
+    ("sched_square_off_time", "square_off", "Square-off trigger"),
+    ("sched_feed_stop_time", "feed_stop", "Broker feed stop"),
+    ("sched_ws_stop_time", "ws_stop", "WebSocket disconnect"),
+    ("sched_logout_time", "logout", "Broker session logout"),
+    ("mwr_friday_scan_hhmm", "market_watch_friday_scan", "Market Watch Friday scan"),
+]
+
+
+async def effective_settings_preview() -> dict:
+    """GET /api/scheduler/settings-preview backend payload.
+
+    Resolves every scheduled key EXACTLY the way the engine resolves it —
+    runtime cache (TTL-cached Mongo) → env default — and pairs it with the
+    persisted source (`db` vs `default`), the effective HH:MM, the next
+    occurrence under the configured trading-day behaviour, and the ordering
+    validation issues. Nothing is invented: keys resolve through the same
+    ``_sched_times()`` path the state machine uses on every tick.
+    """
+    from services.settings_service import DEFAULTS as _DEFS, get_all_settings
+
+    sched = _scheduler.get_schedule()
+    times = _sched_times()
+    now = _now_market()
+    try:
+        stored = await get_all_settings()
+    except Exception:
+        stored = {}
+
+    # For the "next occurrence" computation: today when the event's time is
+    # still ahead AND today is admitted by the behaviour, otherwise the next
+    # admitted day.
+    behavior_ref = _next_effective_trading_day(now.date()) or now.date()
+
+    def _hhmm(pair) -> str:
+        return f"{pair[0]:02d}:{pair[1]:02d}"
+
+    entries: list[dict] = []
+    for db_key, sched_key, label in _PREVIEW_ORDER:
+        pair = times.get(sched_key)
+        value_doc = stored.get(db_key)
+        # get_all_settings() always returns a FULL map — an effective value
+        # exists for every DEFAULTS key even when Mongo has no row. The
+        # persisted-override marker is `updatedAt`, never doc presence.
+        has_db = value_doc is not None and value_doc.get("updatedAt") is not None
+        default_hhmm = _DEFS.get(db_key, {}).get("value")
+        entry: dict[str, Any] = {
+            "key": db_key,
+            "label": label,
+            "effective": _hhmm(pair) if pair else None,
+            "source": "db" if has_db else "default",
+            "db_value": value_doc.get("value") if has_db else None,
+            "default_value": default_hhmm,
+            "live": True,
+        }
+        if pair is not None and sched_key != "market_watch_friday_scan":
+            target = None
+            # "Today if ahead" applies ONLY when today is actually admitted by
+            # the configured trading-day behaviour — on a weekend / holiday the
+            # engine will NOT fire today's slot, so the next occurrence rolls
+            # to the next admitted day (behaviour-aware, same as the machine).
+            if sched.get("today_trading_day") is not False:
+                today_at = _day_at(now, pair[0], pair[1])
+                if today_at > now:
+                    target = today_at
+            if target is None:
+                target = _day_at(behavior_ref, pair[0], pair[1])
+            entry["next_at"] = target.isoformat()
+            entry["remaining_seconds"] = round((target - now).total_seconds(), 1)
+        entries.append(entry)
+
+    issues = sched.get("issues", [])
+    return {
+        "now": now.isoformat(),
+        "market_timezone": _configured_market_tzname(),
+        "timezone_label": _market_tz_label(),
+        "timezone_is_default": _configured_market_tzname() == _MARKET_TZ_DEFAULT,
+        "trading_day_behavior": _trading_day_behavior(),
+        "today_trading_day": sched.get("today_trading_day"),
+        "next_trading_day": sched.get("next_trading_day"),
+        "next_event": sched.get("next_event"),
+        "next_event_at": sched.get("next_event_at"),
+        "next_event_remaining_seconds": sched.get("remaining_seconds"),
+        "entries": entries,
+        "issues": issues,
+        "issues_ok": not any(i["severity"] == "error" for i in issues),
+        "issue_error_count": sched.get("issues_error_count", 0),
+        "issue_warning_count": sched.get("issues_warning_count", 0),
+        "reconcile_tick_seconds": getattr(_scheduler, "_tick_seconds", 5),
+        "note": (
+            "Save karte hi settings_service runtime cache turant refresh karti hai "
+            "aur scheduler wake ho jata hai — engine is preview ko reconcile tick "
+            f"(~{getattr(_scheduler, '_tick_seconds', 5)}s) me live adopt karta hai."
+        ),
+    }

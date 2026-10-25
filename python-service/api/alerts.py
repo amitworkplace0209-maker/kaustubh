@@ -10,6 +10,7 @@ index on ``expires_at``), so the center only ever reflects recent real events.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -78,10 +79,15 @@ async def get_alerts(
 
 @router.get("/summary")
 async def get_summary():
-    data = await ncenter.alert_summary()
-    active = await ncenter._alert_count()
-    data["activeCount"] = active
-    data["unreadCount"] = await ncenter._notify_count()
+    # ``alert_summary`` already computes the active count in its single
+    # aggregation; re-counting it here doubled the round trips. The unread
+    # notification count is an independent collection, so run it concurrently.
+    data, unread = await asyncio.gather(
+        ncenter.alert_summary(),
+        ncenter._notify_count(),
+    )
+    data["activeCount"] = data.get("active", 0)
+    data["unreadCount"] = unread
     return data
 
 

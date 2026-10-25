@@ -38,7 +38,7 @@ export interface InstrumentTickQuote {
   changePct: number | null;
   upperCircuit: number | null;
   lowerCircuit: number | null;
-  /** Feed event time (ms) of the last tick, or null when unknown. */
+  /** Backend receive time (ms) of the last tick — the canonical freshness clock. */
   ts: number | null;
 }
 
@@ -53,6 +53,29 @@ export interface UseInstrumentTickResult {
 function num(v: unknown): number | null {
   const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Event time in epoch MILLISECONDS.
+ *
+ * A feed may report seconds (Kotak's `last_update_time` is epoch seconds),
+ * while an ISO string parses straight to milliseconds. Mixing the two makes
+ * every age computation wrong — a seconds value reads as "1970" and every
+ * price looks stale. Anything below 2001-09-09 (≈1e12 ms) is treated as
+ * seconds and scaled.
+ */
+function toEpochMs(v: unknown): number | null {
+  if (v == null || v === '') return null;
+  if (typeof v === 'string') {
+    const parsed = Date.parse(v);
+    if (Number.isFinite(parsed)) return parsed;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    return n < 1e12 ? n * 1000 : n;
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return n < 1e12 ? n * 1000 : n;
 }
 
 function toQuote(t: Record<string, any>): InstrumentTickQuote {
@@ -71,7 +94,11 @@ function toQuote(t: Record<string, any>): InstrumentTickQuote {
     changePct: num(t.changePercent) ?? num(t.changePct) ?? num(raw.net_change_percent),
     upperCircuit: num(t.upper_circuit_limit) ?? num(t.upperCircuit) ?? num(raw.upper_circuit_limit),
     lowerCircuit: num(t.lower_circuit_limit) ?? num(t.lowerCircuit) ?? num(raw.lower_circuit_limit),
-    ts: typeof t.ts === 'string' ? Date.parse(t.ts) || null : num(t.last_update_time),
+    // Freshness is measured from the BACKEND receive time (`receivedAt`),
+    // not from the broker's feed event time (`ts`): the Kotak SFeed stamps
+    // `ts` with the exchange's event clock, which lags the receive time by
+    // minutes. Using it made every streaming price look STALE.
+    ts: toEpochMs(t.receivedAt ?? t.received_at ?? t.last_update_time ?? t.ts),
   };
 }
 

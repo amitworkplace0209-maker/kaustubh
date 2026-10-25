@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Bell, CheckCheck, Trash2, RefreshCw, AlertCircle, Info,
-  AlertTriangle, CheckCircle2,
-  Settings as SettingsIcon, Clock, Layers,
+  AlertTriangle, CheckCircle2, Smartphone,
+  Send, Power, PowerOff,
+  Settings as SettingsIcon, Layers, Clock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,14 +14,15 @@ import {
   getNotifications, markNotificationRead, markAllNotificationsRead,
   deleteNotification, clearAllNotifications,
 } from '@/lib/api';
-import { useToast } from '@/hooks/use-toast';
 import {
-  PageHeader,
-  SectionCard,
-  StatusBadge,
-  EmptyState,
-  LoadingState,
-  ErrorState,
+  isPushNotificationSupported, getNotificationPermission,
+  fetchPushStatus, enablePush, disablePush, sendTestPush,
+  hasActivePushSubscription,
+} from '@/lib/push-notifications';
+import { useToast } from '@/hooks/use-toast';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
+import {
+  PageHeader, SectionCard, StatusBadge, EmptyState, LoadingState, ErrorState,
 } from '@/components/design-system';
 
 type Notification = {
@@ -45,17 +47,11 @@ const LEVEL_ICONS: Record<string, React.ElementType> = {
 };
 
 const LEVEL_COLORS: Record<string, string> = {
-  info: 'text-info',
-  warn: 'text-warning',
-  error: 'text-destructive',
-  success: 'text-success',
+  info: 'text-info', warn: 'text-warning', error: 'text-destructive', success: 'text-success',
 };
 
 const LEVEL_BG: Record<string, string> = {
-  info: 'bg-info/10',
-  warn: 'bg-warning/10',
-  error: 'bg-destructive/10',
-  success: 'bg-success/10',
+  info: 'bg-info/10', warn: 'bg-warning/10', error: 'bg-destructive/10', success: 'bg-success/10',
 };
 
 function toIst(ts: string): string {
@@ -64,11 +60,7 @@ function toIst(ts: string): string {
     const d = new Date(ts);
     if (isNaN(d.getTime())) return '—';
     return d.toLocaleString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
+      timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     }) + ' IST';
   } catch { return '—'; }
 }
@@ -78,56 +70,132 @@ function toIstDate(ts: string): string {
   try {
     const d = new Date(ts);
     if (isNaN(d.getTime())) return '';
-    return d.toLocaleDateString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-    });
+    return d.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
   } catch { return ''; }
 }
 
-/** Notifications feed — list only. All preference switches live in
- *  Settings → Notifications; this page only shows, reads and deletes. */
 export default function NotificationsPage() {
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
   const [activeTab, setActiveTab] = useState('all');
-  const [loading, setLoading] = useState(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
   const { toast } = useToast();
 
-  const fetch = useCallback(async () => {
+  const { data, live, loading, error: fetchError, refresh } =
+    useRealtimeChannel<{ notifications: Notification[]; unreadCount: number }>('notifications', {
+      fallbackMs: 10000,
+      fallbackKey: 'notifications:feed',
+      fallback: () => {
+        const params = activeTab !== 'all' ? `?category=${activeTab}` : '';
+        return getNotifications(params).then((r) => ({
+          notifications: (r?.notifications ?? []) as Notification[],
+          unreadCount: Number(r?.unreadCount ?? 0),
+        }));
+      },
+      select: (doc) => {
+        const d = doc as { notifications?: any[]; unreadCount?: number };
+        const all = (d.notifications ?? []) as Notification[];
+        return {
+          notifications: activeTab === 'all' ? all : all.filter((n) => n.category === activeTab),
+          unreadCount: Number(d.unreadCount ?? 0),
+        };
+      },
+    });
+
+  const notifications = data?.notifications ?? [];
+  const unreadCount = data?.unreadCount ?? 0;
+
+  // ---- Push (PWA / Web) state ----
+  const [pushStatus, setPushStatus] = useState<{ enabled: boolean; vapidPublicKey: string | null; subscriptions: number } | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushPerm, setPushPerm] = useState<NotificationPermission>('default');
+
+  const refreshPush = useCallback(async () => {
+    if (!isPushNotificationSupported()) { setPushStatus({ enabled: false, vapidPublicKey: null, subscriptions: 0 }); return; }
     try {
-      const params = activeTab !== 'all' ? `?category=${activeTab}` : '';
-      const data = await getNotifications(params);
-      setNotifications(data.notifications || []);
-      setUnreadCount(data.unreadCount || 0);
-      setFetchError(null);
-    } catch (e: any) {
-      setFetchError(e?.message ?? String(e));
+      const s = await fetchPushStatus();
+      setPushStatus({ enabled: !!s.enabled, vapidPublicKey: s.vapidPublicKey ?? null, subscriptions: Number(s.subscriptions ?? 0) });
+    } catch {
+      setPushStatus({ enabled: false, vapidPublicKey: null, subscriptions: 0 });
     }
-    finally { setLoading(false); }
-  }, [activeTab]);
+    setPushPerm(getNotificationPermission());
+  }, []);
 
-  useEffect(() => {
-    fetch();
-    const interval = setInterval(fetch, 10000);
-    return () => clearInterval(interval);
-  }, [fetch]);
+  useEffect(() => { void refreshPush(); }, [refreshPush]);
 
-  const handleMarkRead = async (id: string) => { await markNotificationRead(id); fetch(); };
-  const handleMarkAllRead = async () => { await markAllNotificationsRead(); toast({ title: 'All marked as read' }); fetch(); };
-  const handleDelete = async (id: string) => { await deleteNotification(id); fetch(); };
-  const handleClearAll = async () => { await clearAllNotifications(); toast({ title: 'All cleared' }); fetch(); };
+  const handleEnablePush = async () => {
+    setPushBusy(true);
+    try {
+      const res = await enablePush('notifications-page');
+      if (res.ok) {
+        toast({ title: 'Push enabled', description: 'This device will receive notifications even when the app is closed.' });
+      } else {
+        toast({ title: 'Push not enabled', description: res.reason ?? 'unknown reason' });
+      }
+    } finally {
+      setPushBusy(false);
+      void refreshPush();
+    }
+  };
+
+  const handleDisablePush = async () => {
+    setPushBusy(true);
+    try {
+      await disablePush();
+      toast({ title: 'Push disabled' });
+    } finally {
+      setPushBusy(false);
+      void refreshPush();
+    }
+  };
+
+  const handleTestPush = async () => {
+    setPushBusy(true);
+    try {
+      const res = await sendTestPush();
+      if (res.ok) {
+        toast({ title: 'Test push sent', description: `delivered to ${res.sent ?? 0} device(s)` });
+      } else {
+        toast({ title: 'Test push failed', description: (res as any).reason ?? 'backend not ready' });
+      }
+    } catch (err: any) {
+      toast({ title: 'Test push failed', description: err?.message ?? String(err) });
+    } finally {
+      setPushBusy(false);
+      void refreshPush();
+    }
+  };
+
+  const handleMarkRead = async (id: string) => {
+    await markNotificationRead(id);
+    refresh();
+  };
+  const handleMarkAllRead = async () => {
+    await markAllNotificationsRead();
+    toast({ title: 'All marked as read' });
+    refresh();
+  };
+  const handleDelete = async (id: string) => {
+    await deleteNotification(id);
+    refresh();
+  };
+  const handleClearAll = async () => {
+    await clearAllNotifications();
+    toast({ title: 'All cleared' });
+    refresh();
+  };
+
+  const pushSupported = isPushNotificationSupported();
+  const pushEnabled = !!pushStatus?.enabled;
+  const subscribed = hasActivePushSubscription();
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Notifications"
-        subtitle="Trading, system & download alerts · notification_engine · real-time via /api/notifications"
+        subtitle="Trading, system & download alerts · notification_engine · real-time via /api/notifications · PWA/Web Push"
       >
         <StatusBadge status={unreadCount > 0 ? 'danger' : 'success'} label={unreadCount > 0 ? `${unreadCount} unread` : 'all read'} />
+        <Badge variant="outline" className={live ? 'border-success/40 text-success' : 'border-warning/40 text-warning'} title={live ? 'Pushed over the WebSocket' : 'REST fallback polling'}>
+          {live ? 'WS live' : 'REST fallback'}
+        </Badge>
         <Badge variant="outline" className="hidden sm:inline-flex font-mono text-[10px]">
           {notifications.length} total · {activeTab}
         </Badge>
@@ -139,7 +207,7 @@ export default function NotificationsPage() {
         <Button size="sm" variant="outline" onClick={handleMarkAllRead} disabled={unreadCount === 0}>
           <CheckCheck className="h-4 w-4 mr-1" /> Mark All Read
         </Button>
-        <Button size="sm" variant="ghost" onClick={fetch} aria-label="Refresh">
+        <Button size="sm" variant="ghost" onClick={() => refresh()} aria-label="Refresh">
           <RefreshCw className="h-4 w-4" />
         </Button>
         <Button size="sm" variant="destructive" onClick={handleClearAll} disabled={notifications.length === 0}>
@@ -147,7 +215,69 @@ export default function NotificationsPage() {
         </Button>
       </PageHeader>
 
-      {fetchError && <ErrorState message={fetchError} onRetry={fetch} />}
+      {fetchError && <ErrorState message={fetchError} onRetry={() => refresh()} />}
+
+      {/* Push Notifications (PWA + Web) */}
+      <SectionCard title="Push Notifications (PWA + Web)" icon={Smartphone} className="shadow-soft">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+          <div className="rounded-lg border border-border/60 bg-background px-3 py-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Backend push</p>
+            <p className={`font-mono text-sm font-bold ${pushEnabled ? 'text-success' : 'text-warning'}`}>
+              {pushStatus === null ? '—' : pushEnabled ? 'ENABLED' : 'DISABLED'}
+            </p>
+          </div>
+          <div className="rounded-lg border border-border/60 bg-background px-3 py-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Subscribed devices</p>
+            <p className="font-mono text-sm font-bold">{pushStatus ? pushStatus.subscriptions : '—'}</p>
+          </div>
+          <div className="rounded-lg border border-border/60 bg-background px-3 py-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Browser permission</p>
+            <p className={`font-mono text-sm font-bold ${pushPerm === 'granted' ? 'text-success' : pushPerm === 'denied' ? 'text-destructive' : 'text-warning'}`}>
+              {pushSupported ? pushPerm.toUpperCase() : 'UNSUPPORTED'}
+            </p>
+          </div>
+          <div className="rounded-lg border border-border/60 bg-background px-3 py-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">This device</p>
+            <p className={`font-mono text-sm font-bold ${subscribed ? 'text-success' : 'text-muted-foreground'}`}>
+              {subscribed ? 'SUBSCRIBED' : 'NOT SUBSCRIBED'}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" onClick={handleEnablePush} disabled={pushBusy || !pushSupported || !pushEnabled}>
+            <Power className="h-3.5 w-3.5 mr-1" /> {pushBusy ? 'Working…' : 'Enable push on this device'}
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleDisablePush} disabled={pushBusy || !subscribed}>
+            <PowerOff className="h-3.5 w-3.5 mr-1" /> Disable
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleTestPush} disabled={pushBusy || !pushEnabled}>
+            <Send className="h-3.5 w-3.5 mr-1" /> Send test push
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => void refreshPush()} disabled={pushBusy}>
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
+        {!pushSupported && (
+          <p className="mt-2 text-[11px] text-warning">
+            This browser does not support Web Push (no service worker / PushManager). Use Chrome/Edge/Firefox on desktop or Android.
+          </p>
+        )}
+        {pushSupported && pushPerm === 'denied' && (
+          <p className="mt-2 text-[11px] text-destructive">
+            Notification permission is blocked. Re-enable it in the browser site settings, then click "Enable push".
+          </p>
+        )}
+        {pushEnabled && pushStatus?.vapidPublicKey && (
+          <p className="mt-2 font-mono text-[10px] text-muted-foreground/70 break-all">
+            VAPID public key: {pushStatus.vapidPublicKey}
+          </p>
+        )}
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Pushes are sent by the backend on every new notification (fan-out to all subscribed devices). Dead endpoints (404/410) are pruned automatically.
+        </p>
+      </SectionCard>
 
       {/* Category Tabs */}
       <SectionCard title="Categories" icon={Layers} className="shadow-soft">

@@ -134,22 +134,22 @@ export function normalizePosition(raw: any): NormalizedPosition {
   const r = raw || {};
 
   const symbol = str(r.sym || r.symbol || r.symbol_name).split('-')[0];
-  const tradingSymbol = str(r.trdSym || r.trdSym_clean || r.trading_symbol || r.tradingsymbol);
+  const tradingSymbol = str(r.trdSym || r.trdSym_clean || r.trading_symbol || r.tradingsymbol || r.tradingSymbol);
   const companyName = str(r.company_name || r.companyName || r.pDesc);
-  const exchange = str(r.exSeg || r.exSeg_clean || r.exchange || r.exchange_segment);
+  const exchange = str(r.exSeg || r.exSeg_clean || r.exchange || r.exchange_segment || r.exchangeSegment);
   const product = str(r.prod || r.prod_clean || r.product || r.product_type);
   const instrumentToken = str(r.tok || r.instrument_token || r.instrumentToken || r.token);
 
-  const buyQty = num(r.buy_quantity ?? r.buy_qty ?? r.cfBuyQty ?? r.flBuyQty);
-  const sellQty = num(r.sell_quantity ?? r.sell_qty ?? r.cfSellQty ?? r.flSellQty);
+  const buyQty = num(r.buy_quantity ?? r.buy_qty ?? r.cfBuyQty ?? r.flBuyQty ?? r.buyQuantity);
+  const sellQty = num(r.sell_quantity ?? r.sell_qty ?? r.cfSellQty ?? r.flSellQty ?? r.sellQuantity);
 
-  const sdkNetQty = num(r.qty ?? r.net_qty ?? r.net_quantity);
+  const sdkNetQty = num(r.qty ?? r.net_qty ?? r.net_quantity ?? r.netQuantity);
   const rawNetQty = sdkNetQty !== 0 ? sdkNetQty : (buyQty - sellQty);
   const absNetQty = Math.abs(rawNetQty);
 
-  const avgBuy = num(r.buy_avg ?? r.buy_average ?? r.avg_price ?? r.average_price);
-  const avgSell = num(r.sell_avg ?? r.sell_average);
-  const netAvg = num(r.net_average_price ?? r.avg_price ?? r.average_price);
+  const avgBuy = num(r.buy_avg ?? r.buy_average ?? r.avg_price ?? r.average_price ?? r.averageBuyPrice);
+  const avgSell = num(r.sell_avg ?? r.sell_average ?? r.averageSellPrice);
+  const netAvg = num(r.net_average_price ?? r.avg_price ?? r.average_price ?? r.averagePrice);
   const buyValue = num(r.buy_value) || (buyQty * avgBuy);
   const sellValue = num(r.sell_value) || (sellQty * avgSell);
 
@@ -161,7 +161,7 @@ export function normalizePosition(raw: any): NormalizedPosition {
   if (rawNetQty > 0) side = 'LONG';
   else if (rawNetQty < 0) side = 'SHORT';
   else {
-    const pt = str(r.position_type || r.trnsTp || r.side).toUpperCase();
+    const pt = str(r.position_type || r.trnsTp || r.side || r.positionType).toUpperCase();
     if (pt === 'LONG' || pt === 'BUY' || pt === 'B') side = 'LONG';
     else if (pt === 'SHORT' || pt === 'SELL' || pt === 'S') side = 'SHORT';
   }
@@ -172,14 +172,14 @@ export function normalizePosition(raw: any): NormalizedPosition {
   if (side !== 'FLAT' && !isClosed) status = 'OPEN';
   else if (isClosed || (rawNetQty === 0 && (buyQty > 0 || sellQty > 0))) status = 'CLOSED';
 
-  let brokerRealized = num(r.realised ?? r.realized ?? r.realized_pnl);
+  let brokerRealized = num(r.realised ?? r.realized ?? r.realized_pnl ?? r.realizedPnl);
   if (brokerRealized === 0 && rawNetQty === 0 && buyValue > 0 && sellValue > 0) {
     brokerRealized = sellValue - buyValue;
   }
-  const brokerUnrealized = num(r.unrealised ?? r.unrealized ?? r.unrealized_pnl);
-  const brokerGrossPnl = num(r.gross_pnl);
-  const brokerNetPnl = num(r.net_pnl);
-  const brokerCharges = num(r.estimated_charges ?? r.charges);
+  const brokerUnrealized = num(r.unrealised ?? r.unrealized ?? r.unrealized_pnl ?? r.unrealizedPnl);
+  const brokerGrossPnl = num(r.gross_pnl ?? r.grossPnl);
+  const brokerNetPnl = num(r.net_pnl ?? r.netPnl);
+  const brokerCharges = num(r.estimated_charges ?? r.charges ?? r.estimatedCharges);
 
   const effectiveLtp = ltp > 0 ? ltp : (lastKnownLtp != null ? lastKnownLtp : 0);
   const hasLtp = effectiveLtp > 0;

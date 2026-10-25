@@ -23,6 +23,19 @@ export { API_BASE };
 const DEFAULT_TIMEOUT_MS = 15000;
 
 /**
+ * Browser-only in-flight dedupe for identical GETs.
+ *
+ * React StrictMode mounts effects twice in development, and several panels
+ * legitimately read the same endpoint at once. This collapses those into ONE
+ * network request. It is deliberately NOT a response cache: the entry is
+ * removed as soon as the request settles, so the next poll still observes new
+ * server data. Requests with a caller-supplied AbortSignal or a body are never
+ * shared (an abort must stay caller-local, and writes must never be merged).
+ * Server-side calls are excluded because module state is shared across users.
+ */
+const inFlightGets = new Map<string, Promise<any>>();
+
+/**
  * Build a query-string suffix from a params object, OMITTING any optional
  * parameter whose value is `undefined`, `null`, or an empty string, and any
  * `NaN` number. This prevents invalid URLs like `?limit=&status=active` that
@@ -52,7 +65,7 @@ export function buildQuery(
   return parts.length ? `?${parts.join('&')}` : '';
 }
 
-async function apiFetch(base: string, path: string, options?: RequestInit & { timeoutMs?: number }): Promise<any> {
+async function apiFetchOnce(base: string, path: string, options?: RequestInit & { timeoutMs?: number }): Promise<any> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, ...init } = options ?? {};
   // Timeout is only owned here when the caller didn't bring their own signal
   // (external aborts must surface as AbortError so callers can react to them).
@@ -104,6 +117,38 @@ async function apiFetch(base: string, path: string, options?: RequestInit & { ti
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function apiFetch(base: string, path: string, options?: RequestInit & { timeoutMs?: number }): Promise<any> {
+  const init = options ?? {};
+  const method = (init.method ?? 'GET').toUpperCase();
+  // Only the bare GET shape used by the shared readers is eligible. Anything
+  // that can change the response for the same URL — custom headers,
+  // credentials, mode, redirect handling, cache policy, etc. — stays
+  // caller-local instead of being merged with an unrelated request.
+  const extraInitKeys = Object.keys(init).filter((key) => key !== 'method' && key !== 'timeoutMs');
+  const canShare =
+    typeof window !== 'undefined' &&
+    method === 'GET' &&
+    init.body == null &&
+    init.signal == null &&
+    extraInitKeys.length === 0;
+
+  if (!canShare) return apiFetchOnce(base, path, options);
+
+  const key = `${base}${path}|${init.timeoutMs ?? DEFAULT_TIMEOUT_MS}`;
+  const existing = inFlightGets.get(key);
+  if (existing) return existing;
+
+  const pending = apiFetchOnce(base, path, options);
+  inFlightGets.set(key, pending);
+  const release = () => {
+    if (inFlightGets.get(key) === pending) inFlightGets.delete(key);
+  };
+  // Attach both handlers so a rejection is still observed by the waiter and
+  // the map cannot retain a settled promise.
+  pending.then(release, release);
+  return pending;
 }
 
 // ---- System / Health ----
@@ -384,6 +429,7 @@ export const getScheduleEventsUrl = (): string => `${API_BASE}/api/schedule-even
 
 // ---- Scheduler Engine (IST-FIVE lifecycle; raw dict payloads, not {ok,data}) ----
 export const getSchedulerStatus = (): Promise<any> => apiFetch(API_BASE, '/api/scheduler/status');
+export const getSchedulerSettingsPreview = (): Promise<any> => apiFetch(API_BASE, '/api/scheduler/settings-preview');
 export const getSchedulerReadiness = (): Promise<any> => apiFetch(API_BASE, '/api/scheduler/readiness');
 export const getSchedulerSummary = (): Promise<any> => apiFetch(API_BASE, '/api/scheduler/summary');
 export const getSchedulerHistory = (limit = 50, business_date?: string): Promise<any> =>
@@ -994,8 +1040,11 @@ export const triggerLogout = (): Promise<any> => apiFetch(API_BASE, '/api/logout
 export const getPythonSession = (): Promise<any> => apiFetch(API_BASE, '/api/session/status');
 
 // ---- Live Ticks ----
-export const getRecentTicks = (limit = 50, symbol = ''): Promise<any> =>
-  apiFetch(API_BASE, `/api/ticks/recent?limit=${limit}${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ''}`);
+export const getRecentTicks = (limit = 50, symbol = '', compact = false): Promise<any> =>
+  apiFetch(
+    API_BASE,
+    `/api/ticks/recent?limit=${limit}${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ''}${compact ? '&compact=1' : ''}`,
+  );
 export const getTickStreamUrl = (): string => `${API_BASE}/api/ticks/stream`;
 
 // ---- Centralized realtime system stream (backend SSR/state push) ----
@@ -1269,3 +1318,84 @@ export const resetDemoAccount = (startingBalance = 100000): Promise<any> =>
 /** Connect / ensure-ready the Dummy (paper) terminal from the frontend. */
 export const connectDummyTerminal = (): Promise<any> =>
   apiFetch(API_BASE, '/api/demo/connect', { method: 'POST' });
+
+// ---------------------------------------------------------------------------
+// Per-broker ORDER ENGINE pages — Dummy / Kotak / Shoonya / Settings
+// ---------------------------------------------------------------------------
+
+/** Terminal-specific block shapes (kept loose — the page renders defensively). */
+export interface OrderEngineTerminalDetail {
+  ok: boolean;
+  terminal: string;
+  broker: string;
+  brokerName?: string;
+  isPaper: boolean;
+  engineKind: 'paper' | 'sdk' | string;
+  enginePath: string;
+  sdk: { sdk?: string; module?: string };
+  connected: boolean;
+  capabilities: Record<string, any>;
+  marketData: MarketDataStatus;
+  orders: CanonicalOrder[];
+  counts: Record<string, number>;
+  total: number;
+  message?: string;
+  /** dummy-only: real paper-engine verification (producers, fills, feeds). */
+  paper?: {
+    store?: string;
+    producers?: Record<string, number>;
+    byStatus?: Record<string, number>;
+    totalDistinct?: number;
+    placedLast24h?: number;
+    filledLast24h?: number;
+    restingNow?: number;
+    fillSources?: Record<string, number>;
+    lastFill?: Record<string, any> | null;
+    lastResting?: Record<string, any> | null;
+    account?: Record<string, any>;
+    prefs?: Record<string, any>;
+    feed?: Record<string, any>;
+  };
+  /** kotak-only: Kotak WS#2 order-feed supervisor status. */
+  orderFeed?: Record<string, any>;
+  /** shoonya-only: OAuth availability + url. */
+  oauth?: { available: boolean; url?: string | null; error?: string };
+}
+
+export const getOrderEngineTerminalDetail = (
+  terminal: 'dummy' | 'kotak' | 'shoonya',
+  opts?: RequestInit & { timeoutMs?: number; summary?: boolean },
+): Promise<OrderEngineTerminalDetail> =>
+  apiFetch(
+    ORDER_ENGINE_BASE,
+    `/api/order-engine/engine/${terminal}${opts?.summary !== false ? '?summary=1' : ''}`,
+    opts,
+  );
+
+export interface OrderEngineSettingsResponse {
+  ok: boolean;
+  prefs: Record<string, any>;
+  modeLock: Record<string, any>;
+  engineRuntime: Record<string, any>;
+  paperModel: Record<string, any>;
+}
+
+export const getOrderEngineSettings = (): Promise<OrderEngineSettingsResponse> =>
+  apiFetch(ORDER_ENGINE_BASE, '/api/order-engine/settings');
+
+/** Apply paper-engine prefs (unknown keys dropped server-side). */
+export const saveOrderEngineSettings = (prefs: Record<string, unknown>): Promise<any> =>
+  apiFetch(ORDER_ENGINE_BASE, '/api/order-engine/settings', {
+    method: 'POST',
+    body: JSON.stringify({ prefs }),
+  });
+
+/** Order Engine facade settings schema (engines plane — real persisted keys). */
+export const getOrderEngineFacadeConfig = (): Promise<any> =>
+  apiFetch(ORDER_ENGINE_BASE, '/api/services/engines/order_engine/config');
+
+export const updateOrderEngineFacadeConfig = (updates: Record<string, unknown>): Promise<any> =>
+  apiFetch(ORDER_ENGINE_BASE, '/api/services/engines/order_engine/config', {
+    method: 'PATCH',
+    body: JSON.stringify({ settings: updates }),
+  });

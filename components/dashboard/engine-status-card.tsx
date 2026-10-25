@@ -3,7 +3,7 @@
 // Engine Status — ultra-compact modern colorful card
 // Size reduced ~35% vs previous, colorful donut chart, premium drawer
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSystem } from '@/components/system-provider';
 import { Card, CardContent } from '@/components/ui/card';
@@ -11,26 +11,14 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ChevronDown, ChevronRight, Cpu, ExternalLink, Activity, Timer } from 'lucide-react';
 import { useServerNow, ageLabel } from '@/lib/time-engine';
+import {
+  loadEnginesOverview,
+  type EngineStatus as EngineStatusRow,
+} from '@/lib/system-engines';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
+import type { EnginesDocument } from '@/lib/system-engines';
 
-type EngineStatus = {
-  engineId: string;
-  engineName: string;
-  engineCategory: string;
-  state: string;
-  health: string;
-  healthReason: string;
-  startedAt: number;
-  lastHeartbeat: number;
-  heartbeatAge: number | null;
-  connectionState: string;
-  metrics: {
-    eventCount: number;
-    errorCount: number;
-    warningCount: number;
-    queueSize: number;
-    workload: number;
-  };
-};
+type EngineStatus = EngineStatusRow;
 
 const STATE_DOT: Record<string, string> = {
   RUNNING: 'bg-success [box-shadow:0_0_6px_hsl(var(--success)/0.7)]',
@@ -112,30 +100,22 @@ function CompactBar({ value, total, color }: { value: number; total: number; col
 export function EngineStatusCard({ className }: { className?: string }) {
   const { state: sysState } = useSystem();
   const serverNow = useServerNow();
-  const [engines, setEngines] = useState<EngineStatus[]>([]);
   const [expanded, setExpanded] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const mountedRef = useRef(true);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch('/api/services/engines', { cache: 'no-store' });
-      const json = await res.json();
-      if (mountedRef.current) setEngines(json?.data ?? []);
-    } catch { /* keep last */ }
-  }, []);
+  // The dashboard card reads the same `engines` WebSocket document the Service
+  // Control Center uses — no dashboard-only poll timer. The channel hook's
+  // REST fallback already seeds the first paint, so a separate mount-time
+  // `loadEnginesOverview()` was a duplicate request of the same endpoint.
+  const { data: controlPlane, live } = useRealtimeChannel<EnginesDocument>('engines', {
+    fallback: loadEnginesOverview,
+    fallbackKey: 'engines-overview',
+    fallbackMs: 20000,
+  });
 
-  useEffect(() => {
-    mountedRef.current = true;
-    void load();
-    pollRef.current = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) void load();
-    }, 10000);
-    return () => {
-      mountedRef.current = false;
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [load]);
+  const engines = useMemo<EngineStatus[]>(() => {
+    const liveList = controlPlane ? Object.values(controlPlane.engines ?? {}) : null;
+    return (liveList ?? []) as EngineStatus[];
+  }, [controlPlane]);
 
   const total = engines.length;
   const running = engines.filter((e) => (e.state || '').toUpperCase() === 'RUNNING').length;
@@ -143,7 +123,7 @@ export function EngineStatusCard({ className }: { className?: string }) {
   const degraded = engines.filter((e) => (e.health || '').toUpperCase() === 'DEGRADED').length;
   const unhealthy = engines.filter((e) => (e.health || '').toUpperCase() === 'UNHEALTHY').length;
   const issues = degraded + unhealthy;
-  const connected = sysState === 'ok';
+  const connected = sysState === 'ok' || live;
   const avgEvents = total > 0 ? Math.round(engines.reduce((s, e) => s + (e.metrics?.eventCount ?? 0), 0) / total) : 0;
   const totalQueue = engines.reduce((s, e) => s + (e.metrics?.queueSize ?? 0), 0);
 

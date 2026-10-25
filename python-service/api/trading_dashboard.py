@@ -24,6 +24,7 @@ Caching
     ``position_engine`` (normalise + target overlay).
 """
 from __future__ import annotations
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -491,11 +492,21 @@ async def trading_dashboard(terminal: str = ""):
     elif not logged_in:
         sections = _unavailable_sections("not_logged_in", adapter)
     else:
+        # Four independent reads. They used to run sequentially, so a cold
+        # dashboard paid SUM(funds, positions, holdings, orders). The shared
+        # broker cache is single-flight per endpoint, so gathering them cannot
+        # duplicate a broker call; it only overlaps the waits.
+        funds, positions, holdings, orders = await asyncio.gather(
+            _read_section(active, adapter, "funds", _normalize_funds),
+            _positions_section(active, adapter),
+            _read_section(active, adapter, "holdings", _normalize_holdings),
+            _read_section(active, adapter, "orders", _normalize_orders),
+        )
         sections = {
-            "funds": await _read_section(active, adapter, "funds", _normalize_funds),
-            "positions": await _positions_section(active, adapter),
-            "holdings": await _read_section(active, adapter, "holdings", _normalize_holdings),
-            "orders": await _read_section(active, adapter, "orders", _normalize_orders),
+            "funds": funds,
+            "positions": positions,
+            "holdings": holdings,
+            "orders": orders,
         }
 
     return {

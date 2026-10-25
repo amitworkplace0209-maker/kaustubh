@@ -101,6 +101,17 @@ class WebSocketEngineWrapper(EngineBase):
 
     def __init__(self) -> None:
         super().__init__()
+        # status_snapshot() is polled every ~2s by several independent loops
+        # (engine registry status, connection-engine broadcasts, the alert
+        # reporter, data-quality views) and each rebuild walks the whole feed
+        # engine (rates genexprs, per-instrument quality, live-feed metrics).
+        # Concurrent polls duplicated that work on the event loop and starved
+        # the HTTP surface (dashboard REST timeouts, profiled). A short TTL
+        # quarter-collapses those rebuilds: every consumer already treats the
+        # payload as a polling-time status view.
+        self._status_snapshot_ttl_s = 1.5
+        self._status_snapshot_cache: dict | None = None
+        self._status_snapshot_at: float = 0.0
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -218,6 +229,12 @@ class WebSocketEngineWrapper(EngineBase):
     # Metrics / status
     # ------------------------------------------------------------------ #
     def status_snapshot(self) -> dict:
+        import time as _time
+
+        cached = self._status_snapshot_cache
+        now = _time.monotonic()
+        if cached is not None and now - self._status_snapshot_at < self._status_snapshot_ttl_s:
+            return cached
         base = super().status_snapshot()
         base["metrics"]["custom"] = dict(self.get_metrics().get("custom", {}))
         base["realStatus"] = True
@@ -254,6 +271,8 @@ class WebSocketEngineWrapper(EngineBase):
             base["liveFeed"] = None
             base["ownerStatus"] = None
 
+        self._status_snapshot_cache = base
+        self._status_snapshot_at = _time.monotonic()
         return base
 
 

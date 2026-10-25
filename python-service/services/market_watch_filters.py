@@ -34,10 +34,18 @@ FILTER_CATALOG: dict[str, dict[str, Any]] = {
     "oi": {"label": "Open Interest", "type": "range", "field": "oi"},
     "spread": {"label": "Spread", "type": "range", "field": "spread"},
     "traded_value": {"label": "Traded Value", "type": "range", "field": "tradedValue"},
-    "momentum_5m": {"label": "5 min move", "type": "range", "field": "fiveMinPercent"},
-    "momentum_10m": {"label": "10 min move", "type": "range", "field": "tenMinPercent"},
+    # Momentum reads the flat per-timeframe % change the engine publishes on
+    # every ranked row (doc §19). ``fiveMinPercent``/``tenMinPercent`` stay as
+    # compatibility fields, but ``change_*_pct`` is the always-populated source.
+    "momentum_1m": {"label": "1 min move %", "type": "range", "field": "change_1m_pct"},
+    "momentum_5m": {"label": "5 min move %", "type": "range", "field": "change_5m_pct"},
+    "momentum_10m": {"label": "10 min move %", "type": "range", "field": "change_10m_pct"},
+    "momentum_30m": {"label": "30 min move %", "type": "range", "field": "change_30m_pct"},
+    "circuit_distance": {"label": "Circuit distance %", "type": "range", "field": "circuitDistancePct"},
+    "margin_multiplier": {"label": "Margin multiplier", "type": "range", "field": "marginMultiplier"},
     "segment": {"label": "Segment", "type": "enum", "field": "segment"},
     "exchange": {"label": "Exchange", "type": "enum", "field": "exchange"},
+    "classification": {"label": "Classification", "type": "enum", "field": "classification"},
     "symbol": {"label": "Symbol (contains)", "type": "text", "field": "symbol"},
     "freshness": {"label": "Feed freshness", "type": "enum", "field": "status"},
     "liquidity": {"label": "Minimum volume", "type": "minimum", "field": "volume"},
@@ -63,6 +71,7 @@ def catalog() -> list[dict[str, Any]]:
 _ENUM_OPTIONS: dict[str, list[str]] = {
     "segment": ["EQUITY"],
     "exchange": ["NSE", "nse_cm"],
+    "classification": ["GAINER", "LOSER", "NORMAL", "DANGER", "INTRADAY_UNAVAILABLE"],
     "freshness": ["LIVE", "STALE", "PENDING", "NO_DATA", "INACTIVE"],
 }
 

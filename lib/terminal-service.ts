@@ -13,6 +13,7 @@
 import { fromTerminalId, toTerminalId, type TerminalId, type TradingMode } from '@/lib/settings-store';
 import { buildQuery } from '@/lib/api';
 import { API_BASE as browserApiBase } from '@/lib/api-base';
+import { dedupFetch } from '@/lib/request-dedup';
 
 // Same-origin in the browser: 127.0.0.1 is the DEVICE on a phone, so an
 // absolute backend URL can never work there. See lib/api-base.ts.
@@ -238,7 +239,7 @@ export type ModeLockStatus = {
 export type UnlockResult = { ok: boolean; unlockToken?: string | null; error?: string; code?: string };
 
 export async function getModeLockStatus(): Promise<ModeLockStatus> {
-  return terminalFetch('/api/terminal/security');
+  return dedupFetch('terminal:security-status', () => terminalFetch('/api/terminal/security'));
 }
 
 export async function securityCall(path: string, body: Record<string, any>): Promise<any> {

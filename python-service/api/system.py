@@ -81,7 +81,61 @@ class ClearLogsRequest(BaseModel):
 
 @router.get("")
 async def system_status(request: Request):
-    return await _system_snapshot()
+    # This is the topbar poll hit on EVERY page mount (Next proxies
+    # /api/phase2/system straight to it per request with no cache). Building
+    # _system_snapshot() inline per call took 11-14s under live-feed load
+    # (broker gate + Mongo round-trips over a busy cluster) and made every
+    # page navigation crawl. Serve the latest snapshot immediately and refresh
+    # it in the background — a status view polled per page is expected to be
+    # at most a couple of seconds old.
+    global _SYSTEM_SNAPSHOT_CACHE, _SYSTEM_SNAPSHOT_AT
+    now = time.monotonic()
+    if (
+        _SYSTEM_SNAPSHOT_CACHE is not None
+        and now - _SYSTEM_SNAPSHOT_AT < _SYSTEM_SNAPSHOT_TTL_S
+    ):
+        return _SYSTEM_SNAPSHOT_CACHE
+    if _SYSTEM_SNAPSHOT_CACHE is not None:
+        _schedule_system_snapshot_rebuild()
+        return _SYSTEM_SNAPSHOT_CACHE
+    snapshot = await _system_snapshot()
+    _SYSTEM_SNAPSHOT_CACHE = snapshot
+    _SYSTEM_SNAPSHOT_AT = time.monotonic()
+    return snapshot
+
+
+_SYSTEM_SNAPSHOT_TTL_S = 2.0
+_SYSTEM_SNAPSHOT_CACHE: dict | None = None
+_SYSTEM_SNAPSHOT_AT = 0.0
+_SYSTEM_SNAPSHOT_REBUILD_TASK: asyncio.Task | None = None
+
+
+def _schedule_system_snapshot_rebuild() -> None:
+    """Refresh the /api/system snapshot in the background (single-flight).
+
+    Concurrent polls share one rebuild; the result replaces the cache as soon
+    as it is ready. Guarded so a burst of page mounts cannot stack several
+    10s+ builds on a slow broker network.
+    """
+    global _SYSTEM_SNAPSHOT_REBUILD_TASK
+    task = _SYSTEM_SNAPSHOT_REBUILD_TASK
+    if task is not None and not task.done():
+        return
+    try:
+        _SYSTEM_SNAPSHOT_REBUILD_TASK = asyncio.ensure_future(_rebuild_system_snapshot_bg())
+    except RuntimeError:
+        pass
+
+
+async def _rebuild_system_snapshot_bg() -> None:
+    global _SYSTEM_SNAPSHOT_CACHE, _SYSTEM_SNAPSHOT_AT
+    try:
+        snapshot = await _system_snapshot()
+    except Exception as exc:
+        logger.warning("background /api/system snapshot rebuild failed: %s", exc)
+        return
+    _SYSTEM_SNAPSHOT_CACHE = snapshot
+    _SYSTEM_SNAPSHOT_AT = time.monotonic()
 
 
 def _runtime_snapshot() -> dict:
@@ -283,6 +337,11 @@ async def _system_snapshot():
     # Trading stats — real values only when a session is live; broker calls are
     # bounded + cached via broker_cache. Use a short overall budget so the
     # dashboard never blocks for a degenerate broker network path.
+    # The four reads used to run back-to-back; on a slow broker endpoint each
+    # burned its full 3s budget (12s+ wall) and dominated the dashboard's cold
+    # build (the mount ~15-25s before timing out on the frontend proxy). They
+    # are independent cached reads, so they run concurrently now (worst wall ≈
+    # one budget, not four).
     total_orders = None
     total_positions = None
     holdings_count = None
@@ -294,22 +353,35 @@ async def _system_snapshot():
                 return await asyncio.wait_for(fn(*args, **kwargs), timeout=3.0)
             except (asyncio.TimeoutError, Exception):
                 return None
-        order_book = await broker_cache.get("order_book", lambda: _bounded(kotak_session.async_order_book), ttl=15.0, fail_cooldown=20.0, timeout=3.0)
+        async def _broker_read():
+            return await asyncio.gather(
+                broker_cache.get("order_book", lambda: _bounded(kotak_session.async_order_book), ttl=15.0, fail_cooldown=20.0, timeout=3.0),
+                broker_cache.get("positions", lambda: _bounded(kotak_session.async_positions), ttl=15.0, fail_cooldown=20.0, timeout=3.0),
+                broker_cache.get("holdings", lambda: _bounded(kotak_session.async_holdings), ttl=20.0, fail_cooldown=20.0, timeout=3.0),
+                broker_cache.get("limits", lambda: _bounded(kotak_session.async_limits), ttl=30.0, fail_cooldown=20.0, timeout=3.0),
+                return_exceptions=True,
+            )
+        try:
+            broker_read = await asyncio.wait_for(_broker_read(), timeout=6.0)
+        except asyncio.TimeoutError:
+            # Serialized behind broker_cache's gate, four cold reads can queue
+            # longer than the sum of their own budgets. The dashboard ships
+            # honest nulls for the one cycle (the reads keep filling the
+            # cache in the background — the asks were already issued).
+            broker_read = (None, None, None, None)
+        order_book, positions, holdings, limits = broker_read
         if isinstance(order_book, dict):
             data = order_book.get("data", order_book)
             if isinstance(data, list):
                 total_orders = len(data)
-        positions = await broker_cache.get("positions", lambda: _bounded(kotak_session.async_positions), ttl=15.0, fail_cooldown=20.0, timeout=3.0)
         if isinstance(positions, dict):
             data = positions.get("data", positions)
             if isinstance(data, list):
                 total_positions = len(data)
-        holdings = await broker_cache.get("holdings", lambda: _bounded(kotak_session.async_holdings), ttl=20.0, fail_cooldown=20.0, timeout=3.0)
         if isinstance(holdings, dict):
             data = holdings.get("data", holdings)
             if isinstance(data, list):
                 holdings_count = len(data)
-        limits = await broker_cache.get("limits", lambda: _bounded(kotak_session.async_limits), ttl=30.0, fail_cooldown=20.0, timeout=3.0)
         if isinstance(limits, dict):
             data = limits.get("data", limits)
             if isinstance(data, list):
@@ -824,10 +896,65 @@ _MONGO_TTL = 10.0
 
 
 @router.get("/mongo-stats")
+def _schedule_mongo_stats_rebuild() -> None:
+    """Refresh the Mongo stats cache in the background (single-flight).
+
+    Callers keep the last-known stats immediately; the rebuild result replaces
+    the cache as soon as it is ready. Guarded by an inflight flag so a burst of
+    dashboard polls cannot stack several long builds on a slow cluster.
+    """
+    global _MONGO_BG_TASK
+    task = _MONGO_BG_TASK
+    if task is not None and not task.done():
+        return
+    try:
+        _MONGO_BG_TASK = asyncio.ensure_future(_rebuild_mongo_stats_bg())
+    except RuntimeError:
+        pass
+
+
+async def _rebuild_mongo_stats_bg() -> None:
+    try:
+        payload = await _compute_mongo_stats()
+    except Exception as exc:
+        logger.warning("background mongo stats rebuild failed: %s", exc)
+        return
+    _MONGO_CACHE.clear()
+    _MONGO_CACHE.update(payload)
+    _MONGO_CACHE_AT = time.monotonic()
+
+
+async def prewarm_mongo_stats(delay_s: float = 12.0) -> None:
+    """Build the Mongo collection-stats cache once at boot, off the request path.
+
+    The first build walks every collection (collStats + bounds per collection)
+    and can take tens of seconds on a remote cluster. Paying it in the
+    background at startup means dashboards always find a warm cache instead of
+    running the only-then-inline build against the frontend timeout.
+    """
+    try:
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
+        await _rebuild_mongo_stats_bg()
+        logger.info("mongo stats prewarming complete")
+    except Exception as exc:  # never let observability prewarm break boot
+        logger.warning("mongo stats prewarm failed (non-critical): %s", exc)
+
+
+_MONGO_BG_TASK: asyncio.Task | None = None
+
+
 async def mongo_stats():
     global _MONGO_CACHE_AT
     now = time.monotonic()
     if _MONGO_CACHE_AT and now - _MONGO_CACHE_AT < _MONGO_TTL:
+        return _MONGO_CACHE
+    if _MONGO_CACHE_AT:
+        # A previous build exists but is STALE: serve it immediately and
+        # refresh in the background. Rebuilding inline here blocked the ONLY
+        # caller (the dashboard aggregation) for the whole cold build —
+        # 12s+ on Atlas M0 — and turned into REST timeouts.
+        _schedule_mongo_stats_rebuild()
         return _MONGO_CACHE
     try:
         payload = await _compute_mongo_stats()
@@ -846,11 +973,15 @@ async def _collection_bounds(client, db_name, collection: str):
     try:
         coll = client[db_name][collection]
         # Quick existence probe for a ts field using a single sample doc.
-        sample = await coll.find_one({}).limit(1)
+        # Each leg is individually bounded: a slow provider must not hold this
+        # open-ended — the caller accumulates round-trips for every collection.
+        sample = await asyncio.wait_for(coll.find_one({}).limit(1), 2.5)
         if not sample or "ts" not in sample:
             return None, None, False
-        first = await coll.find({}, {"ts": 1, "_id": 0}).sort("ts", 1).limit(1).to_list(1)
-        last = await coll.find({}, {"ts": 1, "_id": 0}).sort("ts", -1).limit(1).to_list(1)
+        first = await asyncio.wait_for(
+            coll.find({}, {"ts": 1, "_id": 0}).sort("ts", 1).limit(1).to_list(1), 2.5)
+        last = await asyncio.wait_for(
+            coll.find({}, {"ts": 1, "_id": 0}).sort("ts", -1).limit(1).to_list(1), 2.5)
         first_iso = _iso_dt(first[0].get("ts")) if first else None
         last_iso = _iso_dt(last[0].get("ts")) if last else None
         return first_iso, last_iso, True
@@ -899,11 +1030,37 @@ async def _compute_mongo_stats():
         logger.warning("list_collection_names failed: %s", exc)
         collections_info = []
 
+    # Per-command bounds + an overall loop budget: this build walks EVERY
+    # collection with several round-trips each (collStats + bounds) and, on a
+    # slow provider (Atlas M0 over TLS), a single unbounded build could block
+    # its ONLY caller (the dashboard aggregation) for minutes — the observable
+    # symptom was "/api/system/dashboard never returns". Partial stats with a
+    # `statsComplete: False` marker are strictly better than a hung request.
+    _STATS_CMD_TIMEOUT_S = 5.0
+    _BOUNDS_TIMEOUT_S = 2.5
+    _COLLECTIONS_LOOP_BUDGET_S = 25.0
+    loop_started = time.monotonic()
+    stats_complete = True
+
     for name in collections_info:
         try:
-            count = await client[db_name][name].estimated_document_count()
-            stats = sanitize_for_json(await client[db_name].command("collstats", name))
-            first_iso, last_iso, has_ts = await _collection_bounds(client, db_name, name)
+            if time.monotonic() - loop_started > _COLLECTIONS_LOOP_BUDGET_S:
+                logger.warning(
+                    "mongo collection stats budget exceeded after %d/%d collections — returning partial stats",
+                    len(collections), len(collections_info),
+                )
+                stats_complete = False
+                break
+            count = await asyncio.wait_for(
+                client[db_name][name].estimated_document_count(), _STATS_CMD_TIMEOUT_S)
+            stats = sanitize_for_json(await asyncio.wait_for(
+                client[db_name].command("collstats", name), _STATS_CMD_TIMEOUT_S))
+            # Empty collections have no first/last record (skipping the three
+            # sorted-find round-trips is honest, not fabricated — nothing exists).
+            if count:
+                first_iso, last_iso, has_ts = await _collection_bounds(client, db_name, name)
+            else:
+                first_iso, last_iso, has_ts = None, None, False
             wt = stats.get("wiredTiger") or {}
             collections.append({
                 "name": name,
@@ -952,6 +1109,7 @@ async def _compute_mongo_stats():
         "host": info.get("host") or None,
         "serverVersion": info.get("serverVersion"),
         "error": None,
+        "statsComplete": stats_complete,
         "stats": {
             "dbName": db_name,
             "collections": collections,
@@ -1221,24 +1379,25 @@ def _sync_alert_events(active: dict[str, dict], now_mono: float) -> None:
 
 @router.get("/dashboard")
 async def system_dashboard(hours: str | None = None):
-    """Aggregated Data Saver dashboard block (cached + request-deduped)."""
+    """Aggregated Data Saver dashboard block (cached + request-deduped).
+
+    Serve-stale: once a keyed build exists, expired caches return the last
+    payload instantly and refresh in the background. The previous inline
+    rebuild-on-expiry blocked the ONLY first hit after each idle window for
+    the full ~16s build (the dashboard mount's 25s proxy budget — user-visible
+    as a "rendering" stall on the page after every break).
+    """
     _h = int(hours) if hours else 168
     key = min(max(_h, 1), 720)
     now = time.monotonic()
     cached = _DASHBOARD_CACHE.get(key)
     if cached is not None and now - cached[0] < _DASHBOARD_TTL:
         return cached[1]
-
-    fut = _DASHBOARD_INFLIGHT.get(key)
-    if isinstance(fut, asyncio.Future):
-        try:
-            await fut
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
-        cached = _DASHBOARD_CACHE.get(key)
-        return cached[1] if cached else None
+    if cached is not None:
+        fut = _DASHBOARD_INFLIGHT.get(key)
+        if not isinstance(fut, asyncio.Future) or fut.done():
+            _schedule_dashboard_rebuild(key)
+        return cached[1]
 
     fut = asyncio.ensure_future(_build_dashboard(hours))
     _DASHBOARD_INFLIGHT[key] = fut
@@ -1258,6 +1417,48 @@ async def system_dashboard(hours: str | None = None):
     if payload is not None:
         _DASHBOARD_CACHE[key] = (time.monotonic(), payload)
     return payload
+
+
+_DASHBOARD_REBUILD_TASK: dict[int, asyncio.Task] = {}
+
+
+def _schedule_dashboard_rebuild(key: int) -> None:
+    """Refresh one dashboard build in the background (single-flight per key)."""
+    global _DASHBOARD_REBUILD_TASK
+    task = _DASHBOARD_REBUILD_TASK.get(key)
+    if task is not None and not task.done():
+        return
+    try:
+        _DASHBOARD_REBUILD_TASK[key] = asyncio.ensure_future(_rebuild_dashboard_bg(key))
+    except RuntimeError:
+        pass
+
+
+async def _rebuild_dashboard_bg(key: int) -> None:
+    try:
+        payload = await _build_dashboard(str(key))
+    except Exception as exc:
+        logger.warning("background dashboard rebuild failed for %sh: %s", key, exc)
+        return
+    if payload is not None:
+        _DASHBOARD_CACHE[key] = (time.monotonic(), payload)
+
+
+async def prewarm_system_dashboard(delay_s: float = 20.0) -> None:
+    """Build the default-hours dashboard once at boot, off the request path.
+
+    The first build aggregates system + quality + mongo + events and can take
+    tens of seconds under live-feed load; paying it in the background at
+    startup means the first page that mounts the dashboard finds a warm cache
+    instead of running the only-then-inline build against the proxy timeout.
+    """
+    try:
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
+        await _rebuild_dashboard_bg(168)
+        logger.info("system dashboard prewarming complete (168h)")
+    except Exception as exc:  # never let observability prewarm break boot
+        logger.warning("system dashboard prewarm failed (non-critical): %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1620,11 +1821,31 @@ async def _build_dashboard(hours: int) -> dict:
             logger.warning("quality_metrics hours=%s failed: %s", h, exc)
             return {"qualityScore": None, "total": 0, "duplicates": 0, "missing": None, "outOfOrder": 0, "saveFailures": 0, "timestampErrors": 0, "schemaErrors": 0, "invalidLtp": 0, "range": None}
 
+    async def _mongo_capped():
+        # _compute_mongo_stats walks every collection (collStats + bounds per
+        # collection). Even with per-command bounds a few slow round-trips can
+        # stack up; the dashboard must never hang on the slowest branch while
+        # system/quality/events are already done. A degraded-but-honest
+        # payload (connected flag, no collection stats) keeps the Data Center
+        # card alive and the endpoint within the frontend 25s budget.
+        try:
+            return await asyncio.wait_for(mongo_stats(), timeout=12.0)
+        except asyncio.TimeoutError:
+            logger.warning("mongo_stats timed out for the dashboard, returning connected-only fallback")
+            return {
+                "connected": bool(is_mongo_connected()),
+                "stats": None,
+                "statsNote": "collection stats build exceeded the dashboard budget — retrying next cycle",
+            }
+        except Exception as exc:
+            logger.warning("mongo_stats failed: %s", exc)
+            return {"connected": False, "stats": None, "error": str(exc)}
+
     try:
         system, quality, mongo, events, storage = await asyncio.gather(
             _system_snapshot(),
             _quality_capped(hours),
-            mongo_stats(),
+            _mongo_capped(),
             _system_events_rows(limit=500),
             _storage_dir_sizes(),
         )
@@ -1638,7 +1859,7 @@ async def _build_dashboard(hours: int) -> dict:
         except Exception:
             quality = {"qualityScore": None, "total": 0, "duplicates": 0, "missing": 0, "outOfOrder": 0, "saveFailures": 0}
         try:
-            mongo = await mongo_stats()
+            mongo = await _mongo_capped()
         except Exception:
             mongo = {"connected": False, "stats": None}
         try:

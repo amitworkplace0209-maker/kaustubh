@@ -8,7 +8,9 @@ import {
   useRef,
   useState,
 } from 'react';
-import { getSystemStreamUrl, getSystemStreamStatus } from '@/lib/api';
+import { getSystemStreamStatus } from '@/lib/api';
+import { subscribeSystemFrames, subscribeSystemSseState } from '@/lib/system-sse';
+import { useRealtimeChannel } from '@/hooks/use-realtime-channel';
 
 export type AppConnectionState = 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED' | 'OFFLINE';
 
@@ -147,9 +149,6 @@ export function useRealtime() {
   return useContext(RealtimeContext);
 }
 
-const BASE_DELAY = 1000;
-const MAX_DELAY = 15000;
-
 function parseFrame(buf: string): any | null {
   const trimmed = buf.trim();
   if (!trimmed) return null;
@@ -210,10 +209,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   const [pipelineEpoch, setPipelineEpoch] = useState(0);
   const [tickAnalytics, setTickAnalytics] = useState<Record<string, any> | null>(null);
   const [tickAnalyticsEpoch, setTickAnalyticsEpoch] = useState(0);
-  const retryRef = useRef(0);
-  const esRef = useRef<EventSource | null>(null);
   const mountedRef = useRef(true);
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listenersRef = useRef<Set<(frame: Record<string, unknown>) => void>>(new Set());
 
   const subscribeToNotificationEvents = useCallback(
@@ -350,24 +346,18 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const openStream = useCallback(() => {
-    if (!mountedRef.current) return;
+  const frameOffRef = useRef<(() => void) | null>(null);
+  const stateOffRef = useRef<(() => void) | null>(null);
+
+  // ONE system-stream EventSource per browser session, owned by the shared
+  // module (reconnect with coalescing). The provider registers a raw-frame
+  // listener and keeps deriving all of its state from the frames.
+  useEffect(() => {
+    mountedRef.current = true;
     setAppConnection('CONNECTING');
-    let es: EventSource;
-    try {
-      es = new EventSource(getSystemStreamUrl());
-    } catch {
-      return;
-    }
-    esRef.current = es;
 
-    es.onopen = () => {
-      retryRef.current = 0;
-      setAppConnection('CONNECTED');
-    };
-
-    es.onmessage = (ev) => {
-      const frame = parseFrame(ev.data ?? '');
+    frameOffRef.current = subscribeSystemFrames((raw) => {
+      const frame = parseFrame(raw);
       if (!frame) return;
       setLastEventAt(Date.now());
       const type = frame.type;
@@ -447,37 +437,64 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       } else if (isNotificationFrame(type) || isAlertFrame(type) || type === 'notification_count_changed') {
         applyFrame(frame);
       }
-    };
+    });
 
-    es.onerror = () => {
-      // EventSource auto-reconnects; only bump our backoff bookkeeping when it
-      // actually errors/closed so we don't double-open a stream.
-      es.close();
-      esRef.current = null;
-      setAppConnection((cur) => (cur === 'CONNECTED' ? 'RECONNECTING' : cur));
-      scheduleReconnect();
+    stateOffRef.current = subscribeSystemSseState((s) => {
+      setAppConnection((cur) => {
+        if (cur === 'OFFLINE') return cur;
+        return s.connected ? 'CONNECTED' : (cur === 'CONNECTED' ? 'RECONNECTING' : cur);
+      });
+    });
+
+    return () => {
+      mountedRef.current = false;
+      frameOffRef.current?.();
+      frameOffRef.current = null;
+      stateOffRef.current?.();
+      stateOffRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyFrame]);
 
-  const scheduleReconnect = useCallback(() => {
-    if (!mountedRef.current) return;
-    const delay = Math.min(BASE_DELAY * 2 ** retryRef.current, MAX_DELAY);
-    retryRef.current += 1;
-    setAppConnection('RECONNECTING');
-    pollTimerRef.current = setTimeout(() => openStream(), delay);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Canonical system state arrives over the persistent WebSocket: the
+  // `system` channel carries the SAME document `/api/websocket/system/status`
+  // returns (the backend builds it from the very same `state_snapshot`).
+  // The HTTP reconcile poll that used to run every 5 s is therefore only the
+  // degraded fallback — it runs while the socket has no document and stops
+  // as soon as one arrives.
+  // No REST fallback here: the reconcile effect below is the single degraded
+  // path, and its immediate mount fetch already covers the case where the
+  // socket has no document yet. Giving this hook its own fallback loader made
+  // both paths request /api/websocket/system/status on first paint.
+  const { data: systemDoc } = useRealtimeChannel<{ state?: Record<string, any> }>('system', {
+    select: (doc) => {
+      const state = (doc as { state?: Record<string, any> })?.state ?? undefined;
+      return state ? { state } : null;
+    },
+  });
 
-  // Reconciliation poll. It used to run ONLY while the SSE stream was down,
-  // which meant a stream that merely *looked* connected but was silently
-  // stalled — or a single missed `state_changed` delta — left the GlobalTopBar
-  // indicators (WEBSOCKET / SCHEDULER / SESSION especially) frozen for minutes
-  // until the socket finally reconnected. It now runs ALWAYS: faster while the
-  // stream is down (fast recovery) and paced while it is up (self-heal), so no
-  // indicator can ever be stale for more than a few seconds. The payload is a
-  // few KB now that the session bloat is gone, so this is cheap.
   useEffect(() => {
+    const next = systemDoc?.state;
+    if (!next) return;
+    setState((prev) => ({ ...prev, ...next }));
+    setHydrated(true);
+    setLastEventAt(Date.now());
+    if (next.notifications) {
+      const ent = next.notifications as Partial<RealtimeNotificationsState>;
+      setNotificationsState((prev) => ({
+        ...prev,
+        unreadCount: typeof ent.unreadCount === 'number' ? ent.unreadCount : prev.unreadCount,
+        activeAlerts: typeof ent.activeAlerts === 'number' ? ent.activeAlerts : prev.activeAlerts,
+        checkedAt: ent.checkedAt ?? prev.checkedAt,
+      }));
+    }
+  }, [systemDoc]);
+
+  // Reconciliation poll — degraded mode only. While the socket is healthy the
+  // `system` document above is authoritative and this poll stays OFF, so the
+  // app no longer downloads a fresh multi-KB status payload every 5 s.
+  useEffect(() => {
+    if (systemDoc) return;
     const intervalMs = appConnection === 'CONNECTED' ? 5000 : 2500;
     let inFlight = false;
     const reconcile = () => {
@@ -509,28 +526,17 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     reconcile();
     const id = setInterval(reconcile, intervalMs);
     return () => clearInterval(id);
-  }, [appConnection]);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    openStream();
-    return () => {
-      mountedRef.current = false;
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-      if (esRef.current) esRef.current.close();
-      esRef.current = null;
-    };
-  }, [openStream]);
+  }, [appConnection, systemDoc]);
 
   // Navigator online/offline — the appConnection state goes OFFLINE the moment
-  // the browser reports no network (independent of the backend stream), and a
-  // stream is reopened on return. Consumers (WebSocket / Ticks / Analytics
-  // pages) turn their indicators red without any extra polling.
+  // the browser reports no network, and returns to CONNECTING on recovery (the
+  // shared stream then flips it to CONNECTED once a frame flow proves it).
+  // Consumers (WebSocket / Ticks / Analytics pages) turn their indicators red
+  // without any extra polling.
   useEffect(() => {
     const goOffline = () => setAppConnection('OFFLINE');
     const goOnline = () => {
       setAppConnection((cur) => (cur === 'OFFLINE' ? 'CONNECTING' : cur));
-      if (esRef.current == null && mountedRef.current) openStream();
     };
     if (typeof navigator !== 'undefined' && !navigator.onLine) goOffline();
     window.addEventListener('offline', goOffline);
@@ -539,7 +545,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('offline', goOffline);
       window.removeEventListener('online', goOnline);
     };
-  }, [openStream]);
+  }, []);
 
   // ---- Derived status (tri-state: never a fabricated false on first paint) ----
   const sessionRec = state.session ?? {};

@@ -1,15 +1,26 @@
 'use client';
 
 // Client for the Khumbha AI local Python runtime (separate from the trading backend).
+// The endpoint is read per call so a downloaded copy can use the AI runtime on
+// *this* device, and a user can change it without rebuilding the app.
+import { getAiEndpoint, getAiToken } from '@/lib/ai-endpoint';
 import { dedupeFetch } from '@/lib/shared-request';
 
-const AI_BASE = process.env.NEXT_PUBLIC_AI_API_BASE || 'http://127.0.0.1:8001';
+function aiKey(resource: string): string {
+  return `${resource}:${getAiEndpoint()}`;
+}
 
 async function aiFetch<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${AI_BASE}${path}`, {
+  const endpoint = getAiEndpoint();
+  const token = getAiToken();
+  const res = await fetch(`${endpoint}${path}`, {
     ...init,
     cache: 'no-store',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'X-Khumbha-AI-Token': token } : {}),
+      ...(init?.headers || {}),
+    },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -21,22 +32,22 @@ async function aiFetch<T = any>(path: string, init?: RequestInit): Promise<T> {
 export const aiHealth = () => aiFetch('/health');
 
 export const aiDashboard = () =>
-  dedupeFetch('ai:dashboard', () => aiFetch('/api/dashboard'), { ttlMs: 4000 });
+  dedupeFetch(aiKey('ai:dashboard'), () => aiFetch('/api/dashboard'), { ttlMs: 4000 });
 
 export const aiHardware = () =>
-  dedupeFetch('ai:hardware', () => aiFetch('/api/hardware'), { ttlMs: 5000 });
+  dedupeFetch(aiKey('ai:hardware'), () => aiFetch('/api/hardware'), { ttlMs: 5000 });
 
 export const aiModels = () =>
-  dedupeFetch('ai:models', () => aiFetch('/api/models'), { ttlMs: 4000 });
+  dedupeFetch(aiKey('ai:models'), () => aiFetch('/api/models'), { ttlMs: 4000 });
 
 export const aiDatasets = () =>
-  dedupeFetch('ai:datasets', () => aiFetch('/api/datasets'), { ttlMs: 4000 });
+  dedupeFetch(aiKey('ai:datasets'), () => aiFetch('/api/datasets'), { ttlMs: 4000 });
 
 export const aiJobs = () =>
-  dedupeFetch('ai:jobs', () => aiFetch('/api/jobs'), { ttlMs: 3000 });
+  dedupeFetch(aiKey('ai:jobs'), () => aiFetch('/api/jobs'), { ttlMs: 3000 });
 
 export const aiAgents = () =>
-  dedupeFetch('ai:agents', () => aiFetch('/api/agents'), { ttlMs: 4000 });
+  dedupeFetch(aiKey('ai:agents'), () => aiFetch('/api/agents'), { ttlMs: 4000 });
 
 export const aiLogs = () => aiFetch('/api/logs');
 

@@ -103,14 +103,14 @@ export default function SessionManagerDiagnosticsPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {!loading && !error && (
-              <Badge className={healthy ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-200' : 'border border-amber-500/40 bg-gradient-to-r from-amber-500/25 to-amber-500/10 text-amber-200'}>
+              <Badge className={healthy ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-800' : 'border border-amber-500/40 bg-gradient-to-r from-amber-500/25 to-amber-500/10 text-amber-800'}>
                 <span className={cn('mr-1.5 inline-block h-1.5 w-1.5 rounded-full', healthy ? 'animate-pulse bg-emerald-400' : 'bg-amber-400')} />
                 {healthy ? 'HEALTHY' : 'DEGRADED'}
               </Badge>
             )}
             <IstClock />
             <Button size="sm" variant="outline" onClick={copyJson} disabled={!data} className="gap-1.5">
-              {copied ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />} {copied ? 'Copied' : 'Copy JSON'}
+              {copied ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-700" /> : <Copy className="h-3.5 w-3.5" />} {copied ? 'Copied' : 'Copy JSON'}
             </Button>
             <Button size="sm" onClick={() => refresh()} className="gap-1.5 bg-gradient-to-r from-emerald-500 to-cyan-500 shadow-md">
               <RefreshCw className="h-3.5 w-3.5" /> Refresh
@@ -120,13 +120,13 @@ export default function SessionManagerDiagnosticsPage() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-700">
           <span className="min-w-0">Diagnostics load failed: {error} — retry karo, fake health nahi dikhayenge.</span>
           <Button size="sm" variant="outline" className="ml-auto shrink-0" onClick={() => refresh()}>Retry</Button>
         </div>
       )}
       {data?.lastRestError && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-300">
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-700">
           last REST error: <span className="font-mono">{String(data.lastRestError)}</span>
         </div>
       )}
@@ -135,9 +135,9 @@ export default function SessionManagerDiagnosticsPage() {
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {([
           { icon: Cpu, label: 'Session engine', value: String(smEngine.state ?? '—'), sub: 'registry live state', bar: 'bg-cyan-400', chip: 'bg-gradient-to-br from-cyan-500 to-sky-600 text-white shadow-lg shadow-cyan-500/25', tone: '' },
-          { icon: ShieldCheck, label: 'Session health', value: loading ? '…' : healthy ? 'HEALTHY' : 'DEGRADED', sub: reasons[0] ?? (data ? 'no problems reported' : 'waiting for backend'), bar: healthy ? 'bg-emerald-400' : 'bg-amber-400', chip: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/25', tone: healthy ? 'text-emerald-300' : 'text-amber-300' },
-          { icon: HardDrive, label: 'MongoDB', value: loading ? '…' : mongo.connected ? 'CONNECTED' : 'DOWN', sub: String(cfg?.collection ?? 'session_manager_config'), bar: mongo.connected ? 'bg-emerald-400' : 'bg-rose-400', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/25', tone: mongo.connected ? 'text-emerald-300' : 'text-rose-300' },
-          { icon: Wrench, label: 'Revision drift', value: loading ? '…' : rev.fully_applied ? 'APPLIED' : 'DRIFT', sub: `desired ${fmtNum(rev.desired)}`, bar: rev.fully_applied ? 'bg-emerald-400' : 'bg-amber-400', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25', tone: rev.fully_applied ? 'text-emerald-300' : 'text-amber-300' },
+          { icon: ShieldCheck, label: 'Session health', value: loading ? '…' : healthy ? 'HEALTHY' : 'DEGRADED', sub: reasons[0] ?? (data ? 'no problems reported' : 'waiting for backend'), bar: healthy ? 'bg-emerald-400' : 'bg-amber-400', chip: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/25', tone: healthy ? 'text-emerald-700' : 'text-amber-700' },
+          { icon: HardDrive, label: 'MongoDB', value: loading ? '…' : mongo.connected ? 'CONNECTED' : 'DOWN', sub: String(cfg?.collection ?? 'session_manager_config'), bar: mongo.connected ? 'bg-emerald-400' : 'bg-rose-400', chip: 'bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg shadow-violet-500/25', tone: mongo.connected ? 'text-emerald-700' : 'text-rose-700' },
+          { icon: Wrench, label: 'Revision drift', value: loading ? '…' : rev.fully_applied ? 'APPLIED' : 'DRIFT', sub: `desired ${fmtNum(rev.desired)}`, bar: rev.fully_applied ? 'bg-emerald-400' : 'bg-amber-400', chip: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25', tone: rev.fully_applied ? 'text-emerald-700' : 'text-amber-700' },
         ] as const).map((k) => (
           <Card key={k.label} className="relative overflow-hidden shadow-soft transition-all duration-200 hover:-translate-y-1 hover:shadow-soft-lg">
             <span aria-hidden className={cn('absolute inset-x-0 top-0 h-1', k.bar)} />
@@ -175,7 +175,7 @@ export default function SessionManagerDiagnosticsPage() {
                   </div>
                 ))}
                 {reasons.length > 0 && (
-                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-2 text-[11px] text-amber-300">
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-2 text-[11px] text-amber-700">
                     backend reasons: {reasons.join('; ')}
                   </div>
                 )}
@@ -197,13 +197,13 @@ export default function SessionManagerDiagnosticsPage() {
               <div className="h-16 animate-pulse rounded-lg bg-muted/60" />
             ) : (
               <>
-                <div className={cn('rounded-lg border px-2.5 py-2 text-xs font-semibold', rev.fully_applied ? 'border-emerald-500/30 bg-emerald-500/[0.06] text-emerald-300' : 'border-amber-500/30 bg-amber-500/[0.06] text-amber-300')}>
+                <div className={cn('rounded-lg border px-2.5 py-2 text-xs font-semibold', rev.fully_applied ? 'border-emerald-500/30 bg-emerald-500/[0.06] text-emerald-700' : 'border-amber-500/30 bg-amber-500/[0.06] text-amber-700')}>
                   {rev.fully_applied ? 'All connections caught up — intent fully applied.' : 'Drift — intent har connection par apply nahi hua.'}
                 </div>
                 {Object.entries((rev.lag ?? {}) as Record<string, number>).map(([cid, lag]) => (
                   <div key={cid} className="flex items-center gap-2 rounded-lg border border-border/50 bg-white/[0.02] px-2.5 py-2 text-[11px]">
                     <span className="min-w-0 flex-1 truncate font-mono" title={cid}>{cid}</span>
-                    <Badge variant="outline" className={cn('tabular-nums', Number(lag) > 0 ? 'border-amber-500/40 bg-amber-500/10 text-amber-300' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300')}>lag {fmtNum(lag)}</Badge>
+                    <Badge variant="outline" className={cn('tabular-nums', Number(lag) > 0 ? 'border-amber-500/40 bg-amber-500/10 text-amber-700' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700')}>lag {fmtNum(lag)}</Badge>
                   </div>
                 ))}
                 {!Object.keys(rev.lag ?? {}).length && <p className="py-2 text-center text-[11px] text-muted-foreground">No per-connection lag reported.</p>}
@@ -235,8 +235,8 @@ export default function SessionManagerDiagnosticsPage() {
                   <div key={eid} className={cn('rounded-xl border p-3 transition-colors hover:border-primary/40', running ? 'border-emerald-500/25 bg-emerald-500/[0.03]' : 'border-border/50 bg-white/[0.02]')}>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-mono text-sm font-bold">{eid}</span>
-                      <Badge variant="outline" className={running ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200' : ''}>{String(e.state ?? '—')}</Badge>
-                      <Badge variant="outline" className={e.health === 'HEALTHY' ? 'border-emerald-500/30 text-emerald-300' : e.health === 'DEGRADED' ? 'border-amber-500/30 text-amber-300' : ''}>{String(e.health ?? '—')}</Badge>
+                      <Badge variant="outline" className={running ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-800' : ''}>{String(e.state ?? '—')}</Badge>
+                      <Badge variant="outline" className={e.health === 'HEALTHY' ? 'border-emerald-500/30 text-emerald-700' : e.health === 'DEGRADED' ? 'border-amber-500/30 text-amber-700' : ''}>{String(e.health ?? '—')}</Badge>
                       {e.managed && <Badge variant="outline" className="text-[10px]">managed</Badge>}
                       <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">v{e.version ?? '—'} · hb {e.heartbeatAge != null ? `${e.heartbeatAge}s ago` : '—'}</span>
                     </div>
@@ -244,7 +244,7 @@ export default function SessionManagerDiagnosticsPage() {
                     {(e.recentErrors ?? []).length > 0 && (
                       <div className="mt-1.5 flex flex-wrap gap-1">
                         {(e.recentErrors ?? []).map((er: any, i: number) => (
-                          <Badge key={i} variant="outline" className="border-rose-500/30 bg-rose-500/10 text-[10px] text-rose-300">{String(er?.error ?? er)}</Badge>
+                          <Badge key={i} variant="outline" className="border-rose-500/30 bg-rose-500/10 text-[10px] text-rose-700">{String(er?.error ?? er)}</Badge>
                         ))}
                       </div>
                     )}
@@ -263,7 +263,7 @@ export default function SessionManagerDiagnosticsPage() {
             <CardTitle className="flex items-center gap-2 text-xs">
               <span className="rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 p-1.5 text-white shadow"><Gauge className="h-3.5 w-3.5" /></span>
               Effective configuration · live
-              <Badge variant="outline" className={cn('ml-auto', String(cfg.cacheSource) === 'mongo' ? 'border-emerald-500/30 text-emerald-300' : '')}>cache {String(cfg.cacheSource ?? '—')}</Badge>
+              <Badge variant="outline" className={cn('ml-auto', String(cfg.cacheSource) === 'mongo' ? 'border-emerald-500/30 text-emerald-700' : '')}>cache {String(cfg.cacheSource ?? '—')}</Badge>
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-1.5 pt-3 text-xs">
@@ -293,7 +293,7 @@ export default function SessionManagerDiagnosticsPage() {
               <>
                 {Object.entries(eventCounts).sort((a, b) => Number(b[1]) - Number(a[1])).map(([k, v]) => (
                   <div key={k} className="flex items-center gap-2 text-[11px]">
-                    <span className="w-44 shrink-0 truncate font-mono text-emerald-300" title={k}>{k}</span>
+                    <span className="w-44 shrink-0 truncate font-mono text-emerald-700" title={k}>{k}</span>
                     <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted/70">
                       <div className="h-full rounded-full bg-gradient-to-r from-fuchsia-500 to-pink-400" style={{ width: `${(Number(v) / maxEvt) * 100}%` }} />
                     </div>
@@ -314,7 +314,7 @@ export default function SessionManagerDiagnosticsPage() {
             {conns.map((c: any) => (
               <div key={c.connection_id ?? c.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/40 px-2.5 py-1.5">
                 <span className="font-mono font-semibold">{c.connection_id ?? c.id}</span>
-                <Badge variant="outline" className={c.state === 'CONNECTED' ? 'border-emerald-500/30 text-emerald-300' : 'border-rose-500/30 text-rose-300'}>{String(c.state ?? '—')}</Badge>
+                <Badge variant="outline" className={c.state === 'CONNECTED' ? 'border-emerald-500/30 text-emerald-700' : 'border-rose-500/30 text-rose-700'}>{String(c.state ?? '—')}</Badge>
                 <span className="ml-auto font-mono text-muted-foreground">applied {fmtNum(c.last_applied_revision)} · broker {c.broker ?? '—'}</span>
               </div>
             ))}

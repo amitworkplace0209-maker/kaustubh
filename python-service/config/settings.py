@@ -114,8 +114,19 @@ class Settings:
     # regenerable market data whenever usage crosses the budget, so the cluster
     # is never driven into the write-blocked state in the first place.
     storage_guard_enabled: bool = field(default_factory=lambda: _env("STORAGE_GUARD_ENABLED", "true").lower() in {"1", "true", "yes", "on"})
-    storage_budget_mb: int = field(default_factory=lambda: int(_optional("STORAGE_BUDGET_MB", "300")))  # type: ignore[arg-type]
-    storage_guard_interval_sec: int = field(default_factory=lambda: int(_optional("STORAGE_GUARD_INTERVAL_SEC", "300")))  # type: ignore[arg-type]
+    # The budget is measured on the APPLICATION database, while Atlas enforces
+    # the quota on the WHOLE CLUSTER (database + oplog + engine overhead). The
+    # gap on a 512 MB free-tier cluster is ~250 MB, so a 300 MB application
+    # budget lets the cluster cross its limit (and write-block every writer)
+    # while the guard still reports "43 % full". 180 MB keeps the application
+    # database small enough for the CLUSTER to stay under the quota.
+    storage_budget_mb: int = field(default_factory=lambda: int(_optional("STORAGE_BUDGET_MB", "180")))  # type: ignore[arg-type]
+    # The guard checks the REAL usage often: the Atlas quota is enforced on the
+    # WHOLE cluster, so the application database can cross it between two
+    # checks (the market-watch writer alone adds ~50 MB per session). A slow
+    # check means every writer is failing in the meantime — which is what
+    # makes the whole product (and every page) feel hung.
+    storage_guard_interval_sec: int = field(default_factory=lambda: int(_optional("STORAGE_GUARD_INTERVAL_SEC", "60")))  # type: ignore[arg-type]
     # ---- Auto-cleanup at % full ----
     # The MongoDB driver never reports the Atlas cluster quota, so "90% full"
     # is measured against this configured capacity (Atlas M0 free tier = 512).

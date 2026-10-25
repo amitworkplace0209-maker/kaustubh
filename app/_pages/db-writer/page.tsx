@@ -1,22 +1,26 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
-  Activity, AlertTriangle, CheckCircle2, Copy, Database, Download, Gauge,
+  Activity, AlertTriangle, ArrowUpRight, CheckCircle2, Copy, Database, Download, Gauge,
   HardDrive, HeartPulse, Layers, Play, Power, RefreshCw, RotateCw, SendHorizontal,
-  Server, Settings, Stethoscope, Timer, X,
+  Server, Stethoscope, Timer, X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
-import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useEngineStatus } from '@/lib/engine-realtime';
-import { updateSetting } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 /**
- * SERVICES → DB Writer Engine — redesigned from zero (buttons + advance).
+ * SERVICES → DB Writer — OVERVIEW (engine controls + snapshot cards).
+ *
+ * This is FOUR pages now: overview (this file, WS#2 engine channel) ·
+ * storage (day-wise + all-time, /db_writer_engine/storage) · permissions
+ * (GET/PUT tick-persistence) · settings (/api/settings explorer). Every page
+ * keeps its OWN data connection; this page only READS the engine snapshot and
+ * the DB monitoring plane — permission switches live on the Permissions page.
  *
  * Persistence layer: tick pipeline (bounded buffer → MongoDB bulk writes) +
  * audit pipeline. Live status over WS#2 (`engines` channel), REST fallback
@@ -24,12 +28,11 @@ import { cn } from '@/lib/utils';
  *
  * Buttons (all real backend calls):
  *  Flush · Restart · Start · Stop (2-click confirm) · Heartbeat ping ·
- *  Health-check · Enable-all/Disable-all permissions · Copy snapshot · CSV.
+ *  Health-check · Copy snapshot · CSV.
  */
 
 const ENGINE = '/api/services/engines/db_writer_engine';
 const ENGINES = '/api/services/engines';
-const TICK_PERSISTENCE = `${ENGINE}/tick-persistence`;
 
 const PERMISSIONS = [
   {
@@ -48,8 +51,6 @@ const PERMISSIONS = [
     description: 'Ticks for the Market Watch active universe. Market Watch offers the tick; the DB Writer alone decides to store it.',
   },
 ] as const;
-
-type PermissionKey = (typeof PERMISSIONS)[number]['key'];
 
 type PermissionState = {
   label?: string;
@@ -109,8 +110,41 @@ function fmtNum(n?: number | null): string {
 
 function fmtTs(iso?: string | number | null): string {
   if (iso == null || iso === '') return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' });
+  // Backend stamps are epoch SECONDS (time.time()); a number < 1e12 is
+  // seconds, >= is milliseconds. Both render as real IST wall-clock time.
+  const ms = typeof iso === 'number' ? (iso < 1e12 ? iso * 1000 : iso) : new Date(iso).getTime();
+  return Number.isFinite(ms)
+    ? new Date(ms).toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' })
+    : '—';
+}
+
+/** Full date+time IST (for persisted ledger rows that can be older than today). */
+function fmtDayTs(iso?: string | number | null): string {
+  if (iso == null || iso === '') return '—';
+  const ms = typeof iso === 'number' ? (iso < 1e12 ? iso * 1000 : iso) : new Date(iso).getTime();
+  return Number.isFinite(ms)
+    ? new Date(ms).toLocaleString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' })
+    : '—';
+}
+
+/** Tiny SVG trend line of REAL backend-reported values (no client math). */
+function Spark({ values, tone = '#0d9488', width = 64, height = 20 }: { values: number[]; tone?: string; width?: number; height?: number }) {
+  if (values.length < 2) return <span style={{ width, height }} className="inline-block shrink-0" aria-hidden />;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const pts = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * (width - 2) + 1;
+    const y = height - 2 - ((v - min) / span) * (height - 4);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = pts[pts.length - 1].split(',');
+  return (
+    <svg width={width} height={height} className="shrink-0" aria-hidden>
+      <polyline points={pts.join(' ')} fill="none" stroke={tone} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={last[0]} cy={last[1]} r="1.8" fill={tone} />
+    </svg>
+  );
 }
 
 function IstClock() {
@@ -122,128 +156,53 @@ function IstClock() {
   return <Badge variant="outline" className="tabular-nums">IST {now.toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' })}</Badge>;
 }
 
-export default function DbWriterPage() {
+export default function DbWriterOverviewPage() {
   const { data, error, refresh } = useEngineStatus<any>('db_writer_engine', ENGINE);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [permissions, setPermissions] = useState<Record<string, PermissionState> | null>(null);
-  const [permError, setPermError] = useState<string | null>(null);
-  const [permUnavailable, setPermUnavailable] = useState(false);
-  const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [storageCapReason, setStorageCapReason] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [savingCap, setSavingCap] = useState<string | null>(null);
-  const [capReasonDraft, setCapReasonDraft] = useState<string | null>(null);
+  const [collections, setCollections] = useState<any>(null);
+  const [ping, setPing] = useState<any>(null);
+  const [pinging, setPinging] = useState(false);
+  // Bounded client rings of REAL pushed engine values → KPI sparklines.
+  const historyRef = useRef<Record<string, number[]>>({ tps: [], writes: [], buffer: [] });
+  const [sparks, setSparks] = useState<Record<string, number[]>>({ tps: [], writes: [], buffer: [] });
 
   const say = useCallback((kind: 'ok' | 'err', text: string) => setNotice({ kind, text }), []);
 
-  const loadPermissions = useCallback(async (
-    preserveError = false,
-  ): Promise<Record<string, PermissionState> | null> => {
+  const loadCollections = useCallback(async () => {
     try {
-      const res = await fetch(TICK_PERSISTENCE, { cache: 'no-store' });
-      const json = await res.json();
-      if (!json.ok) {
-        setPermError(json.error ?? `HTTP ${res.status}`);
-        setPermUnavailable(/unavailable|could not persist/i.test(String(json.error ?? '')));
-        return null;
-      }
-      setPermissions(json.data?.permissions ?? null);
-      setStorageCapReason(json.data?.storageCapReason ?? null);
-      if (!preserveError) setPermError(null);
-      return json.data?.permissions ?? null;
-    } catch (e: unknown) {
-      setPermError(e instanceof Error ? e.message : String(e));
-      return null;
+      const r = await fetch('/api/database/collections', { cache: 'no-store' });
+      const j = await r.json().catch(() => ({}));
+      if (j?.ok) setCollections(j.data);
+    } catch {
+      /* ignore */
     }
   }, []);
 
-  const toggleSettings = () => {
-    if (!settingsOpen) void loadPermissions();
-    setSettingsOpen((v) => !v);
-  };
+  // collStats runs one Mongo command per collection — heavy..refreshing on
+  // every WS push would hammer the database, so: mount + 30 s interval +
+  // explicitly after flush/actions instead of on every engine snapshot.
+  useEffect(() => {
+    void loadCollections();
+    const t = setInterval(() => void loadCollections(), 30000);
+    return () => clearInterval(t);
+  }, [loadCollections]);
 
-  const applyPermissions = useCallback(async (patch: Record<string, boolean>, label: string) => {
-    setSavingKey('__all__');
-    setPermError(null);
-    setPermUnavailable(false);
+  /** Real MongoDB reachability probe (ping + collection count, server-side). */
+  const dbPing = useCallback(async () => {
+    setPinging(true);
     try {
-      const res = await fetch(TICK_PERSISTENCE, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      const json = await res.json();
-      if (!json.ok) {
-        const message = json.error ?? `HTTP ${res.status}`;
-        setPermError(message);
-        setPermUnavailable(/unavailable|could not persist|storage cap/i.test(message));
-        await loadPermissions(true);
-      } else {
-        setPermissions(json.data?.permissions ?? null);
-        setStorageCapReason(json.data?.storageCapReason ?? null);
-        say('ok', label);
-      }
+      const r = await fetch('/api/database/ping', { cache: 'no-store' });
+      const j = await r.json().catch(() => ({}));
+      setPing(j?.ok ? j.data : { ok: false, error: j?.error ?? `HTTP ${r.status}` });
     } catch (e: unknown) {
-      setPermError(e instanceof Error ? e.message : String(e));
-      setPermUnavailable(true);
-      await loadPermissions(true);
+      setPing({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setPinging(false);
     }
-    setSavingKey(null);
-    refresh();
-  }, [loadPermissions, say, refresh]);
-
-  const togglePermission = (key: PermissionKey, next: boolean) => {
-    setSavingKey(key);
-    void applyPermissions({ [key]: next }, `${PERMISSIONS.find((p) => p.key === key)?.label} ${next ? 'enabled' : 'disabled'}.`)
-      .finally(() => setSavingKey((k) => (k === key ? null : k)));
-  };
-
-  /** Master switch: DB me tick save karna hai ya nahi (real backend kill-switch). */
-  const toggleMaster = (next: boolean) => {
-    setSavingKey('master');
-    void applyPermissions({ master: next }, next ? 'Master ON — tick saving allowed (permissions decide).' : 'Master OFF — koi tick DB me save nahi hoga.')
-      .finally(() => setSavingKey((k) => (k === 'master' ? null : k)));
-  };
-
-  /** Storage-cap brake per stream: ON = us stream ko rok do (permission ON ho tab bhi). */
-  const toggleCap = (settingKey: string, label: string, next: boolean) => {
-    setSavingCap(settingKey);
-    setPermError(null);
-    setPermUnavailable(false);
-    void (async () => {
-      try {
-        await updateSetting(settingKey, next);
-        say('ok', `${label} cap ${next ? 'lagaya — stream rok diya' : 'hataya — permission wapas effective'}.`);
-        await loadPermissions();
-      } catch (e: unknown) {
-        setPermError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setSavingCap(null);
-        refresh();
-      }
-    })();
-  };
-
-  const saveCapReason = () => {
-    if (capReasonDraft == null) return;
-    setSavingCap('reason');
-    setPermError(null);
-    void (async () => {
-      try {
-        await updateSetting('dbw_storage_cap_reason', capReasonDraft);
-        say('ok', 'Cap reason save ho gaya.');
-        await loadPermissions();
-      } catch (e: unknown) {
-        setPermError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setSavingCap(null);
-        refresh();
-      }
-    })();
-  };
+  }, []);
 
   /** Generic engine POST button helper (flush/restart/start/stop/heartbeat/health-check). */
   const runAction = useCallback(async (name: string, path: string, body?: unknown, okText?: string) => {
@@ -268,8 +227,7 @@ export default function DbWriterPage() {
     refresh();
   }, [say, refresh]);
 
-  const flush = () => runAction('Flush', `${ENGINE}/flush`, {},
-    'Flush done.');
+  const flush = () => { void runAction('Flush', `${ENGINE}/flush`, {}, 'Flush done.').then(() => void loadCollections()); };
   const restart = () => runAction('Restart', `${ENGINES}/db_writer_engine/restart`, {}, 'Restart requested.');
   const start = () => runAction('Start', `${ENGINES}/db_writer_engine/start`, {}, 'Start requested.');
   const stop = () => {
@@ -337,7 +295,44 @@ export default function DbWriterPage() {
   const master = (data?.tickPersistence as any)?.master as { enabled?: boolean; configuredEnabled?: boolean; settingKey?: string } | undefined;
   const masterOn = master ? master.enabled !== false : true;
   const effectiveSaving = (data?.tickPersistence as any)?.effectiveSaving ?? (masterOn && onCount > 0);
-  const capsLive = ((data?.tickPersistence as any)?.storageCaps ?? {}) as Record<string, boolean>;
+
+  // Sparkline rings: every WS#2 engine snapshot pushes REAL reported values
+  // into bounded rings; the KPI tiles render those — nothing is computed
+  // client-side beyond plotting what the backend actually said.
+  useEffect(() => {
+    if (!data) return;
+    const push = (k: string, v: number | null | undefined) => {
+      if (v == null || !Number.isFinite(v)) return;
+      const ring = historyRef.current[k] ?? [];
+      ring.push(Number(v));
+      if (ring.length > 24) ring.splice(0, ring.length - 24);
+      historyRef.current[k] = ring;
+    };
+    push('tps', Number(p.ticksPerSecond ?? NaN));
+    push('writes', Number(p.writesPerSecond ?? NaN));
+    push('buffer', hardCap > 0 ? (bufferLen / hardCap) * 100 : null);
+    setSparks({
+      tps: [...(historyRef.current.tps ?? [])],
+      writes: [...(historyRef.current.writes ?? [])],
+      buffer: [...(historyRef.current.buffer ?? [])],
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  // ---- real payload slices for the detail cards (all optional-honest) ----
+  const flushHistory = (Array.isArray(data?.flushHistory) ? data.flushHistory : []) as any[];
+  const lastDecision = (data?.lastDecision ?? null) as any;
+  const loss = (data?.dataLossAccounting ?? null) as any;
+  const latency = (data?.pipelineLatency ?? null) as any;
+  const latencyStages = Object.entries(((latency?.stages ?? {}) as Record<string, any>))
+    .sort((a, b) => String(a[1]?.bucket ?? '').localeCompare(String(b[1]?.bucket ?? '')));
+  const latencyRejected = Object.values(((latency?.rejectedSamples ?? {}) as Record<string, number>))
+    .reduce((s: number, n) => s + (Number(n) || 0), 0);
+  const mw = (data?.marketWatch ?? null) as any;
+  const instr = Object.entries(((data?.instruments ?? {}) as Record<string, any>))
+    .map(([token, t]) => ({ token, ...(t as any) }))
+    .sort((a, b) => (Number.isFinite(Number(a.lastTickAgeSec)) ? Number(a.lastTickAgeSec) : Infinity)
+      - (Number.isFinite(Number(b.lastTickAgeSec)) ? Number(b.lastTickAgeSec) : Infinity));
 
   return (
     <div className="space-y-4 pb-6">
@@ -358,18 +353,18 @@ export default function DbWriterPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {data?.health && (
-              <Badge className={healthOk ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-200' : healthBad ? 'border border-rose-500/40 bg-rose-500/15 text-rose-200' : 'border border-amber-500/40 bg-amber-500/10 text-amber-200'}>
-                <span className={cn('mr-1.5 inline-block h-1.5 w-1.5 rounded-full', healthOk ? 'animate-pulse bg-emerald-400' : healthBad ? 'bg-rose-400' : 'bg-amber-400')} />
+              <Badge className={healthOk ? 'border border-emerald-500/40 bg-gradient-to-r from-emerald-500/25 to-emerald-500/10 text-emerald-700' : healthBad ? 'border border-rose-500/40 bg-rose-500/15 text-rose-700' : 'border border-amber-500/40 bg-amber-500/10 text-amber-700'}>
+                <span className={cn('mr-1.5 inline-block h-1.5 w-1.5 rounded-full', healthOk ? 'animate-pulse bg-emerald-500' : healthBad ? 'bg-rose-500' : 'bg-amber-500')} />
                 {health}
               </Badge>
             )}
-            <Badge variant="outline" className={cn('tabular-nums', running ? 'border-emerald-500/40 text-emerald-300' : 'border-amber-500/40 text-amber-300')}>
+            <Badge variant="outline" className={cn('tabular-nums', running ? 'border-emerald-500/40 text-emerald-700' : 'border-amber-500/40 text-amber-700')}>
               {running ? '● RUNNING' : '○ STOPPED'}
             </Badge>
-            <Badge variant="outline" className={cn('tabular-nums font-mono', effectiveSaving ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-rose-500/40 bg-rose-500/10 text-rose-300')}>
+            <Badge variant="outline" className={cn('tabular-nums font-mono', effectiveSaving ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700' : 'border-rose-500/40 bg-rose-500/10 text-rose-700')}>
               {effectiveSaving ? 'SAVING ON — DB me write ho raha' : 'SAVING OFF — DB write rukha hai'}
             </Badge>
-            {notice && <Badge variant="outline" className={notice.kind === 'ok' ? 'border-emerald-500/40 text-emerald-300' : 'border-rose-500/40 text-rose-300'}>{notice.text}</Badge>}
+            {notice && <Badge variant="outline" className={notice.kind === 'ok' ? 'border-emerald-500/40 text-emerald-700' : 'border-rose-500/40 text-rose-700'}>{notice.text}</Badge>}
             <IstClock />
             <Button size="sm" onClick={() => refresh()} className="gap-1.5 bg-gradient-to-r from-teal-500 to-emerald-500 shadow-md">
               <RefreshCw className="h-3.5 w-3.5" /> Refresh
@@ -383,7 +378,7 @@ export default function DbWriterPage() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+        <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-700">
           <span className="min-w-0">Engine reachable: {error}</span>
           <Button size="sm" variant="outline" className="ml-auto shrink-0" onClick={() => refresh()}>Retry</Button>
         </div>
@@ -426,21 +421,24 @@ export default function DbWriterPage() {
                 <Stethoscope className="h-3.5 w-3.5" /> {busy === 'Health-check' ? 'Checking…' : 'Health-check'}
               </Button>
               <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
-              <Button size="sm" variant="outline" onClick={toggleSettings} className="gap-1.5">
-                <Settings className="h-3.5 w-3.5" /> {settingsOpen ? 'Hide settings' : 'Permissions'}
-              </Button>
+              <Link
+                href="/services/db-writer/permissions"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-transparent px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted/60"
+              >
+                <ArrowUpRight className="h-3.5 w-3.5" /> Permission desk (read-only yahan)
+              </Link>
               <Button size="sm" variant="ghost" onClick={copySnapshot} className="ml-auto gap-1.5">
-                {copied ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />} {copied ? 'Copied' : 'Copy snapshot'}
+                {copied ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />} {copied ? 'Copied' : 'Copy snapshot'}
               </Button>
             </CardContent>
           </Card>
 
-          {/* PERMISSIONS STRIP */}
+          {/* PERMISSIONS STRIP — READ-ONLY preview (control: Permissions page) */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {PERMISSIONS.map(({ key, label }, i) => {
               const perm = perms[key] ?? {};
               const on = perm.enabled === true;
-              const bar = ['bg-emerald-400', 'bg-cyan-400', 'bg-violet-400'][i];
+              const bar = ['bg-emerald-500', 'bg-cyan-500', 'bg-violet-500'][i];
               return (
                 <Card key={key} className="relative overflow-hidden shadow-soft transition-all duration-200 hover:-translate-y-0.5">
                   <span aria-hidden className={cn('absolute inset-x-0 top-0 h-1', on ? bar : 'bg-muted-foreground/30')} />
@@ -450,7 +448,7 @@ export default function DbWriterPage() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
-                      <p className={cn('font-mono text-lg font-bold tabular-nums leading-7', on ? 'text-emerald-300' : 'text-muted-foreground')}>{on ? 'ON' : 'OFF'}</p>
+                      <p className={cn('font-mono text-lg font-bold tabular-nums leading-7', on ? 'text-emerald-700' : 'text-muted-foreground')}>{on ? 'ON' : 'OFF'}</p>
                       <p className="truncate font-mono text-[10px] tabular-nums text-muted-foreground">
                         {fmtNum(perm.accepted)} accepted · {fmtNum(perm.skipped)} skipped{perm.hardCapped ? ' · CAPPED' : ''}
                       </p>
@@ -461,25 +459,25 @@ export default function DbWriterPage() {
             })}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="outline" disabled={savingKey != null} onClick={() => void applyPermissions({ master: true, personalNoExpiry: true, personalOneDay: true, marketWatchOneDay: true }, 'Master ON + all three streams enabled.')}>
-              Enable all
-            </Button>
-            <Button size="sm" variant="outline" disabled={savingKey != null} onClick={() => void applyPermissions({ personalNoExpiry: false, personalOneDay: false, marketWatchOneDay: false }, 'All three permissions disabled.')}>
-              Disable all
-            </Button>
-            <span className="text-[11px] text-muted-foreground">{onCount}/3 ON · toggles neeche Settings me (backend-confirmed, capped lock respected)</span>
+            <Link
+              href="/services/db-writer/permissions"
+              className="inline-flex items-center gap-1 rounded-lg border border-teal-500/40 bg-teal-500/10 px-2.5 py-1 text-xs font-semibold text-teal-700 transition-colors hover:bg-teal-500/20"
+            >
+              <ArrowUpRight className="h-3 w-3" /> Master + stream switches Permissions page par (apna connection)
+            </Link>
+            <span className="text-[11px] text-muted-foreground">{onCount}/3 ON · ye strip WS#2 snapshot ka read-only preview hai</span>
             {data?.tickPersistence?.storageCapActive && (
-              <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-300">STORAGE CAP ACTIVE</Badge>
+              <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-700">STORAGE CAP ACTIVE</Badge>
             )}
           </div>
 
           {/* KPI STRIP */}
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             {([
-              { icon: Activity, label: 'Pipeline', value: running ? 'RUNNING' : 'STOPPED', sub: `since ${fmtTs(p.pipelineStartedAt)}`, tone: running ? 'text-emerald-300' : 'text-amber-300', bar: running ? 'bg-emerald-400' : 'bg-amber-400', chip: running ? 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg' : 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg' },
-              { icon: Gauge, label: 'Throughput', value: `${fmtNum(p.ticksPerSecond)}/s`, sub: `${fmtNum(p.totalReceived)} recv · ${fmtNum(p.totalWritten)} written`, tone: 'text-teal-300', bar: 'bg-teal-400', chip: 'bg-gradient-to-br from-teal-500 to-cyan-600 text-white shadow-lg' },
-              { icon: HardDrive, label: 'Buffer', value: `${pct.toFixed(0)}%`, sub: `${fmtNum(bufferLen)} / ${fmtNum(hardCap)}`, tone: pct > 80 ? 'text-rose-300' : pct > 50 ? 'text-amber-300' : '', bar: pct > 80 ? 'bg-rose-400' : pct > 50 ? 'bg-amber-400' : 'bg-emerald-400', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg' },
-              { icon: AlertTriangle, label: 'Write errors', value: fmtNum(writeErrors), sub: p.feedLatencyMs?.currentMs != null ? `${Number(p.feedLatencyMs.currentMs).toFixed(1)} ms feed` : health, tone: writeErrors > 0 ? 'text-rose-300' : '', bar: writeErrors > 0 ? 'bg-rose-400' : 'bg-emerald-400', chip: 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg' },
+              { icon: Activity, label: 'Pipeline', value: running ? 'RUNNING' : 'STOPPED', sub: `since ${fmtTs(p.pipelineStartedAt)}`, tone: running ? 'text-emerald-700' : 'text-amber-700', bar: running ? 'bg-emerald-500' : 'bg-amber-500', chip: running ? 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg' : 'bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg', spark: null as string | null, color: '#059669' },
+              { icon: Gauge, label: 'Throughput', value: `${fmtNum(p.ticksPerSecond)}/s`, sub: `${fmtNum(p.totalReceived)} recv · ${fmtNum(p.totalWritten)} written`, tone: 'text-teal-700', bar: 'bg-teal-500', chip: 'bg-gradient-to-br from-teal-500 to-cyan-600 text-white shadow-lg', spark: 'writes', color: '#0d9488' },
+              { icon: HardDrive, label: 'Buffer', value: `${pct.toFixed(0)}%`, sub: `${fmtNum(bufferLen)} / ${fmtNum(hardCap)}`, tone: pct > 80 ? 'text-rose-700' : pct > 50 ? 'text-amber-700' : '', bar: pct > 80 ? 'bg-rose-500' : pct > 50 ? 'bg-amber-500' : 'bg-emerald-500', chip: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-lg', spark: 'buffer', color: '#0284c7' },
+              { icon: AlertTriangle, label: 'Write errors', value: fmtNum(writeErrors), sub: p.feedLatencyMs?.currentMs != null ? `${Number(p.feedLatencyMs.currentMs).toFixed(1)} ms feed` : health, tone: writeErrors > 0 ? 'text-rose-700' : '', bar: writeErrors > 0 ? 'bg-rose-500' : 'bg-emerald-500', chip: 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg', spark: null, color: '#dc2626' },
             ] as const).map((k) => (
               <Card key={k.label} className="relative overflow-hidden shadow-soft transition-all duration-200 hover:-translate-y-0.5">
                 <span aria-hidden className={cn('absolute inset-x-0 top-0 h-1', k.bar)} />
@@ -490,6 +488,7 @@ export default function DbWriterPage() {
                     <p className={cn('truncate font-mono text-lg font-bold tabular-nums leading-7', k.tone)}>{k.value}</p>
                     <p className="truncate text-[11px] text-muted-foreground">{k.sub}</p>
                   </div>
+                  <Spark values={k.spark ? (sparks[k.spark] ?? []) : []} tone={k.color} />
                 </CardContent>
               </Card>
             ))}
@@ -557,9 +556,269 @@ export default function DbWriterPage() {
                 <p className="pt-1 text-[11px] text-muted-foreground">
                   Overlapping deduped: {fmtNum(data.tickPersistence.overlappingSourcesDeduped)} · unknown source rejected: {fmtNum(data.tickPersistence.unknownSourceSkipped)}
                 </p>
+                {lastDecision && (
+                  <p className="rounded-lg border border-border/40 bg-muted/30 px-2.5 py-1.5 font-mono text-[10px] tabular-nums">
+                    last decision: <span className={cn('font-bold', lastDecision.persist ? 'text-emerald-700' : 'text-amber-700')}>{lastDecision.persist ? 'SAVE' : 'DROP'} · {lastDecision.reasonCode}</span>
+                    {lastDecision.symbol ? ` · ${lastDecision.symbol}` : ''} @ {fmtDayTs(lastDecision.at)}
+                    {lastDecision.overlapping ? ' (overlapping → ek hi document)' : ''}
+                  </p>
+                )}
               </CardContent>
             </Card>
           </div>
+
+          {/* FLUSH HISTORY + TRUE PIPELINE LATENCY (real ledgers) */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card className="overflow-hidden shadow-soft">
+              <CardHeader className="bg-gradient-to-r from-teal-500/10 to-cyan-500/5 pb-2">
+                <CardTitle className="flex items-center gap-2 text-xs">
+                  <span className="rounded-lg bg-gradient-to-br from-teal-500 to-cyan-600 p-1.5 text-white shadow"><Timer className="h-3.5 w-3.5" /></span>
+                  Flush history · actual MongoDB writes (bounded ledger)
+                  <Badge variant="outline" className="ml-auto font-mono">{fmtNum(flushHistory.length)} entries</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-3">
+                {flushHistory.length ? (
+                  <div className="space-y-1">
+                    {flushHistory.slice(0, 12).map((row: any, i: number) => (
+                      <div key={`${row.at}-${i}`} className="flex items-center justify-between gap-2 rounded-lg border-b border-border/40 px-2 py-1 font-mono text-[10px] tabular-nums">
+                        <span className="shrink-0 text-muted-foreground">{fmtDayTs(row.at)}</span>
+                        <span className={cn('font-bold', Number(row.failed) > 0 ? 'text-rose-600' : 'text-emerald-700')}>{fmtNum(row.written)} written{Number(row.failed) > 0 ? ` · ${fmtNum(row.failed)} failed` : ''}</span>
+                        <span className="text-muted-foreground">batch {fmtNum(row.batch)} · {row.durationMs != null ? `${Number(row.durationMs).toFixed(1)} ms` : '—'}</span>
+                      </div>
+                    ))}
+                    <p className="pt-1 text-[10px] text-muted-foreground">
+                      Naya ledger: har real bulk-write ka outcome bounded ring (25) me. Purane lifetime totals ke saath reconcile: {fmtNum(p.totalWritten)} total.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="py-4 text-center text-[11px] text-muted-foreground">
+                    Abhi koi write hua hi nahi (buffer khali tha). Flush karke dekho — turant ek real row aayegi.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="overflow-hidden shadow-soft">
+              <CardHeader className="bg-gradient-to-r from-sky-500/10 to-indigo-500/5 pb-2">
+                <CardTitle className="flex items-center gap-2 text-xs">
+                  <span className="rounded-lg bg-gradient-to-br from-sky-500 to-indigo-600 p-1.5 text-white shadow"><Gauge className="h-3.5 w-3.5" /></span>
+                  True pipeline latency · A→G hop percentiles (ms)
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-3">
+                {latencyStages.length ? (
+                  <div className="space-y-1">
+                    {latencyStages.map(([stage, b]: [string, any]) => (
+                      <div key={stage} className="flex items-center justify-between gap-2 rounded-lg border-b border-border/40 px-2 py-1 font-mono text-[10px] tabular-nums">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {b.bucket && <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px]">{b.bucket}</Badge>}
+                          <span className="truncate" title={b.label}>{b.label ?? stage}</span>
+                        </span>
+                        <span className="shrink-0 text-muted-foreground">
+                          p50 <span className="font-bold text-foreground">{fmtNum(b.p50_ms)}</span> · p95 <span className="font-bold text-foreground">{fmtNum(b.p95_ms)}</span> · {fmtNum(b.samples)} samples
+                        </span>
+                      </div>
+                    ))}
+                    <p className="pt-1 text-[11px] text-muted-foreground">
+                      F = WS engine → DB Writer ingest · G = → Mongo write complete. Backend clock, broker skew se free.
+                      {latencyRejected > 0 && <> · <span className="text-amber-700">{fmtNum(latencyRejected)} implausible samples rejected</span></>}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="py-4 text-center text-[11px] text-muted-foreground">
+                    No latency samples yet — is process me abhi tak market tick flow nahi hua. Tick aate hi real percentiles yahan.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* DATA-LOSS ACCOUNTING + MARKET WATCH DOC PIPELINE */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card className="overflow-hidden shadow-soft">
+              <CardHeader className="bg-gradient-to-r from-emerald-500/10 to-teal-500/5 pb-2">
+                <CardTitle className="flex items-center gap-2 text-xs">
+                  <span className="rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 p-1.5 text-white shadow"><CheckCircle2 className="h-3.5 w-3.5" /></span>
+                  Data-loss accounting · reconciliation
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-3">
+                {loss ? (
+                  <div className="space-y-2 text-xs">
+                    <div className="grid grid-cols-4 gap-2">
+                      {([['Received', loss.received, 'text-foreground'], ['Duplicates', loss.duplicates, 'text-sky-700'], ['Invalid', loss.invalid, 'text-amber-700'], ['Accepted', loss.accepted, 'text-emerald-700']] as const).map(([l, v, tone]) => (
+                        <div key={l} className="rounded-xl border border-border/50 bg-muted/30 px-2 py-2 text-center">
+                          <p className={cn('font-mono text-base font-bold tabular-nums', tone)}>{fmtNum(v as number)}</p>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">{l}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {([['Written', loss.written, 'text-teal-700'], ['Write failed', loss.writeFailed, loss.writeFailed > 0 ? 'text-rose-700' : 'text-muted-foreground'], ['Pending (buffer)', loss.pending, 'text-amber-700']] as const).map(([l, v, tone]) => (
+                        <div key={l} className="rounded-xl border border-border/50 bg-muted/30 px-2 py-2 text-center">
+                          <p className={cn('font-mono text-base font-bold tabular-nums', tone)}>{fmtNum(v as number)}</p>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">{l}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="space-y-1 rounded-lg border border-border/40 px-2.5 py-1.5 font-mono text-[10px]">
+                      <p className="text-muted-foreground">RECEIVED = DUPLICATES + INVALID + ACCEPTED</p>
+                      <p className="text-muted-foreground">ACCEPTED = WRITTEN + WRITE_FAILED + PENDING</p>
+                      <p className="flex gap-2 pt-0.5">
+                        <Badge variant="outline" className={loss.reconciliation?.receivedEqualsSum ? 'border-emerald-500/40 text-emerald-700' : 'border-rose-500/40 text-rose-700'}>{loss.reconciliation?.receivedEqualsSum ? '✓ balanced' : '✗ MISMATCH'}</Badge>
+                        <Badge variant="outline" className={loss.reconciliation?.acceptedEqualsSum ? 'border-emerald-500/40 text-emerald-700' : 'border-rose-500/40 text-rose-700'}>{loss.reconciliation?.acceptedEqualsSum ? '✓ balanced' : '✗ MISMATCH'}</Badge>
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="py-4 text-center text-xs text-muted-foreground">Accounting unavailable — pipeline snapshot me nahi aaya.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="overflow-hidden shadow-soft">
+              <CardHeader className="bg-gradient-to-r from-violet-500/10 to-fuchsia-500/5 pb-2">
+                <CardTitle className="flex items-center gap-2 text-xs">
+                  <span className="rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-600 p-1.5 text-white shadow"><Layers className="h-3.5 w-3.5" /></span>
+                  Market Watch document pipeline · candles/decisions
+                  <Badge variant="outline" className={cn('ml-auto tabular-nums', mw?.pipelineRunning ? 'border-emerald-500/40 text-emerald-700' : 'border-amber-500/40 text-amber-700')}>{mw?.pipelineRunning ? 'RUNNING' : 'IDLE'}</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-3">
+                {mw ? (
+                  <div className="space-y-2 text-xs">
+                    <div className="grid grid-cols-4 gap-2">
+                      {([['Pending', mw.pendingTotal, ''], ['Received', mw.totalReceived, ''], ['Written', mw.totalWritten, 'text-teal-700'], ['Errors', mw.totalWriteErrors, Number(mw.totalWriteErrors) > 0 ? 'text-rose-700' : '']] as const).map(([l, v, tone]) => (
+                        <div key={l} className="rounded-xl border border-border/50 bg-muted/30 px-2 py-2 text-center">
+                          <p className={cn('font-mono text-base font-bold tabular-nums', tone)}>{fmtNum(v as number)}</p>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">{l}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-2 font-mono text-[10px] text-muted-foreground">
+                      <span>gated drops: <span className="font-bold text-foreground">{fmtNum(mw.totalGatedDrops)}</span></span>
+                      <span>· dup skips: <span className="font-bold text-foreground">{fmtNum(mw.totalDuplicateSkips)}</span></span>
+                      <span>· unidentifiable: <span className={cn('font-bold', Number(mw.totalUnidentifiableDrops) > 0 ? 'text-rose-700' : 'text-emerald-700')}>{fmtNum(mw.totalUnidentifiableDrops)}</span></span>
+                      <span>· cap: <span className="font-bold text-foreground">{fmtNum(mw.hardCap)} docs</span></span>
+                    </div>
+                    {Object.keys(mw.byCollection ?? {}).length > 0 && (
+                      <div className="max-h-28 overflow-auto">
+                        {Object.entries(mw.byCollection as Record<string, any>).map(([name, s]) => (
+                          <div key={name} className="flex items-center justify-between gap-2 rounded-lg border-b border-border/40 px-2 py-1 font-mono text-[10px]">
+                            <span className="truncate">{name}</span>
+                            <span className="shrink-0 text-muted-foreground">{fmtNum(s.received)} recv · {fmtNum(s.pending)} pending · {s.enabled ? 'ON' : 'OFF'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {mw.lastError && <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 font-mono text-[10px] text-rose-700" title={mw.lastError}>last error: {mw.lastError}</p>}
+                  </div>
+                ) : (
+                  <p className="py-4 text-center text-xs text-muted-foreground">Market Watch doc pipeline snapshot unavailable — engine start hote hi aayega.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* STORAGE & DAILY TOTALS */}
+          <Card className="overflow-hidden shadow-soft">
+            <CardHeader className="bg-gradient-to-r from-sky-500/10 to-blue-500/5 pb-2">
+              <CardTitle className="flex items-center gap-2 text-xs">
+                <span className="rounded-lg bg-gradient-to-br from-sky-500 to-blue-600 p-1.5 text-white shadow"><HardDrive className="h-3.5 w-3.5" /></span>
+                Storage & daily totals · MongoDB
+                <Button size="sm" variant="outline" className="ml-auto h-6 gap-1 px-2 text-[11px]" onClick={() => void dbPing()} disabled={pinging}>
+                  <Stethoscope className={cn('h-3 w-3', pinging && 'animate-pulse')} /> DB ping
+                </Button>
+                {ping && (
+                  <Badge variant="outline" className={cn('font-mono', ping.ok ? 'border-emerald-500/40 text-emerald-700' : 'border-rose-500/40 text-rose-700')}>
+                    {ping.ok ? `${ping.pingMs != null ? Number(ping.pingMs).toFixed(1) : '—'} ms · ${fmtNum(ping.collections)} collections` : 'ping failed'}
+                  </Badge>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-3">
+              {collections ? (
+                <div className="space-y-2 text-xs">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="rounded-xl border border-border/50 bg-muted/30 px-2.5 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Collections</p>
+                      <p className="font-mono font-semibold">{fmtNum(collections.summary?.total_collections)}</p>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-muted/30 px-2.5 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Total storage</p>
+                      <p className="font-mono font-semibold">{fmtNum(collections.summary?.total_storage_mb)} MB</p>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-muted/30 px-2.5 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Total docs</p>
+                      <p className="font-mono font-semibold">{fmtNum(collections.summary?.total_documents)}</p>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-muted/30 px-2.5 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Tick writes</p>
+                      <p className="font-mono font-semibold">{fmtNum(data?.pipeline?.totalWritten)}</p>
+                    </div>
+                  </div>
+                  <div className="max-h-48 overflow-auto">
+                    {(collections.collections || []).map((c: any) => (
+                      <div key={c.name} className="flex items-center justify-between gap-2 rounded-lg border-b border-border/40 px-2 py-1.5">
+                        <span className="truncate font-mono text-[11px]">{c.name}</span>
+                        <span className="shrink-0 text-[11px] text-muted-foreground">{fmtNum(c.count)} docs · {c.size_mb} MB</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="py-4 text-center text-xs text-muted-foreground">Loading storage stats…</p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* LATEST TICKS BY INSTRUMENT (real live store) */}
+          <Card className="overflow-hidden shadow-soft">
+            <CardHeader className="bg-gradient-to-r from-amber-500/10 to-yellow-500/5 pb-2">
+              <CardTitle className="flex items-center gap-2 text-xs">
+                <span className="rounded-lg bg-gradient-to-br from-amber-500 to-yellow-600 p-1.5 text-white shadow"><Activity className="h-3.5 w-3.5" /></span>
+                Latest ticks by instrument · live store
+                <Badge variant="outline" className="ml-auto font-mono">{fmtNum(instr.length)} instruments</Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-3">
+              {instr.length ? (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 px-2 font-mono text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                    <span className="w-20 shrink-0">Token</span>
+                    <span className="min-w-0 flex-1">Symbol</span>
+                    <span className="w-20 shrink-0 text-right">LTP</span>
+                    <span className="w-16 shrink-0 text-right">Age</span>
+                    <span className="w-20 shrink-0 text-right">5m move</span>
+                  </div>
+                  {instr.slice(0, 10).map((t: any) => {
+                    const m5 = Number(t.momentum?.['5m']);
+                    const up = Number.isFinite(m5) && m5 > 0;
+                    const down = Number.isFinite(m5) && m5 < 0;
+                    return (
+                      <div key={t.token} className="flex items-center gap-2 rounded-lg border-b border-border/40 px-2 py-1 font-mono text-[10px] tabular-nums">
+                        <span className="w-20 shrink-0 truncate text-muted-foreground" title={t.token}>{t.token}</span>
+                        <span className="min-w-0 flex-1 truncate">{t.symbol ?? '—'}</span>
+                        <span className="w-20 shrink-0 text-right font-bold">{fmtNum(t.ltp)}</span>
+                        <span className="w-16 shrink-0 text-right text-muted-foreground">{Number.isFinite(Number(t.lastTickAgeSec)) ? `${Number(t.lastTickAgeSec).toFixed(0)}s` : '—'}</span>
+                        <span className={cn('w-20 shrink-0 text-right font-bold', up ? 'text-emerald-700' : down ? 'text-rose-700' : 'text-muted-foreground')}>
+                          {Number.isFinite(m5) ? `${m5 > 0 ? '+' : ''}${m5.toFixed(2)}%` : '—'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <p className="pt-1 text-[10px] text-muted-foreground">
+                    DB Writer ka live store — MongoDB persistence categories se alag, sirf live UI ke liye (save/drop decision alag hota hai).
+                  </p>
+                </div>
+              ) : (
+                <p className="py-4 text-center text-[11px] text-muted-foreground">
+                  Live store khali — market hours me subscribed instruments ke latest ticks yahan dikhte hain.
+                </p>
+              )}
+            </CardContent>
+          </Card>
 
           {/* AUDIT + CONFIG */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -568,7 +827,7 @@ export default function DbWriterPage() {
                 <CardTitle className="flex items-center gap-2 text-xs">
                   <span className="rounded-lg bg-gradient-to-br from-cyan-500 to-sky-600 p-1.5 text-white shadow"><CheckCircle2 className="h-3.5 w-3.5" /></span>
                   Audit pipeline · storage engine
-                  <Badge variant="outline" className={cn('ml-auto tabular-nums', Number(data.audit?.writeErrors) > 0 ? 'border-rose-500/40 text-rose-300' : 'border-emerald-500/40 text-emerald-300')}>
+                  <Badge variant="outline" className={cn('ml-auto tabular-nums', Number(data.audit?.writeErrors) > 0 ? 'border-rose-500/40 text-rose-700' : 'border-emerald-500/40 text-emerald-700')}>
                     {fmtNum(data.audit?.queueSize)} queued
                   </Badge>
                 </CardTitle>
@@ -576,8 +835,8 @@ export default function DbWriterPage() {
               <CardContent className="pt-3">
                 {data?.audit ? (
                   <div className="grid grid-cols-3 gap-2 text-center">
-                    {([['Queue', data.audit.queueSize, Number(data.audit.queueSize) > 100 ? 'text-amber-300' : ''], ['Writes', data.audit.totalWrites, 'text-teal-300'], ['Errors', data.audit.writeErrors, Number(data.audit.writeErrors) > 0 ? 'text-rose-300' : '']] as const).map(([l, v, tone]) => (
-                      <div key={l} className="rounded-xl border border-border/50 bg-white/[0.02] px-2 py-2.5">
+                    {([['Queue', data.audit.queueSize, Number(data.audit.queueSize) > 100 ? 'text-amber-700' : ''], ['Writes', data.audit.totalWrites, 'text-teal-700'], ['Errors', data.audit.writeErrors, Number(data.audit.writeErrors) > 0 ? 'text-rose-700' : '']] as const).map(([l, v, tone]) => (
+                      <div key={l} className="rounded-xl border border-border/50 bg-muted/30 px-2 py-2.5">
                         <p className={cn('font-mono text-lg font-bold tabular-nums', tone)}>{fmtNum(v as number | undefined)}</p>
                         <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{l}</p>
                       </div>
@@ -604,12 +863,12 @@ export default function DbWriterPage() {
                   ['Buffer max', fmtNum(data?.configSummary?.bufferMaxSize)],
                   ['Bulk insert', fmtNum(data?.configSummary?.bulkInsertSize)],
                 ] as [string, string][]).map(([l, v]) => (
-                  <div key={l} className="rounded-xl border border-border/50 bg-white/[0.02] px-2.5 py-2">
+                  <div key={l} className="rounded-xl border border-border/50 bg-muted/30 px-2.5 py-2">
                     <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{l}</p>
                     <p className="truncate font-mono font-semibold" title={v}>{v}</p>
                   </div>
                 ))}
-                <div className="col-span-2 rounded-xl border border-border/50 bg-white/[0.02] px-2.5 py-2">
+                <div className="col-span-2 rounded-xl border border-border/50 bg-muted/30 px-2.5 py-2">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Dependencies</p>
                   <p className="font-mono text-[11px]">{(data?.dependencies ?? []).join(', ') || '—'}</p>
                 </div>
@@ -618,7 +877,7 @@ export default function DbWriterPage() {
           </div>
 
           {data?.tickPersistence?.storageCapActive && (
-            <p className="flex items-start gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400">
+            <p className="flex items-start gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700">
               <HardDrive className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>{data.tickPersistence.storageCapReason}</span>
             </p>
@@ -626,143 +885,13 @@ export default function DbWriterPage() {
         </>
       )}
 
-      {/* SETTINGS — authoritative permissions */}
-      {settingsOpen && (
-        <Card className="overflow-hidden border-teal-500/25 shadow-soft">
-          <CardHeader className="bg-gradient-to-r from-teal-500/10 to-emerald-500/5 pb-2">
-            <CardTitle className="flex items-center gap-2 text-xs">
-              <span className="rounded-lg bg-gradient-to-br from-teal-500 to-emerald-600 p-1.5 text-white shadow"><Settings className="h-3.5 w-3.5" /></span>
-              Settings · tick persistence permissions
-              <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setSettingsOpen(false)} aria-label="Close settings">
-                <X className="h-3.5 w-3.5" />
-              </Button>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-3">
-            {permError && (
-              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
-                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
-                <span className="font-medium text-destructive">{permUnavailable ? 'Settings store unavailable' : 'Change rejected'}</span>
-                <span className="text-muted-foreground">{permError}</span>
-              </div>
-            )}
-            {!permissions ? (
-              !permError && (
-                <div className="space-y-2">
-                  {[0, 1, 2].map((i) => <div key={i} className="h-16 animate-pulse rounded-xl bg-muted/60" />)}
-                  <p className="py-1 text-center text-xs text-muted-foreground">Reading tick persistence permissions…</p>
-                </div>
-              )
-            ) : (
-              <div className="space-y-3">
-                {/* A — MASTER: DB me tick save karna hai ya nahi */}
-                <div className={cn('rounded-xl border px-3 py-2.5', masterOn ? 'border-emerald-500/40 bg-emerald-500/[0.06]' : 'border-rose-500/40 bg-rose-500/[0.06]')}>
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-bold">DB me tick save karna hai? (Master)</span>
-                        <Badge variant={masterOn ? 'default' : 'outline'} className="font-mono text-[10px]">{masterOn ? 'MASTER ON' : 'MASTER OFF'}</Badge>
-                      </div>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        {masterOn
-                          ? 'ON hai — neeche wale per-stream switches decide karenge kaunsa tick save hoga.'
-                          : 'OFF hai — koi bhi tick DB me save NAHI hoga, chahe neeche wale switches ON hi kyun na hon.'}
-                      </p>
-                      <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-                        {master?.settingKey ?? 'dbw_ticks_enabled'} · real backend kill-switch, next tick se effective
-                      </p>
-                    </div>
-                    <Switch checked={masterOn} disabled={savingKey === 'master' || savingKey === '__all__'} aria-label="Tick saving master switch" onCheckedChange={(checked) => toggleMaster(checked)} />
-                  </div>
-                </div>
-
-                {/* B — KAUN-KAUN SE tick save honge (per-stream permissions) */}
-                <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                  Kaun-kaun se tick save honge {!masterOn && <span className="text-rose-400">(master OFF — ye sab effective OFF)</span>}
-                </p>
-                {storageCapReason && (
-                  <p className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400">{storageCapReason}</p>
-                )}
-                <div className={cn(!masterOn && 'pointer-events-none opacity-60')}>
-                  {PERMISSIONS.map(({ key, label, description }) => {
-                    const perm = permissions[key] ?? {};
-                    const on = perm.enabled === true;
-                    const saving = savingKey === key || savingKey === '__all__';
-                    const locked = perm.hardCapped === true;
-                    return (
-                      <div key={key} className="mb-2 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium">{label}</span>
-                            <Badge variant={on ? 'default' : 'outline'} className="font-mono text-[10px]">{on ? 'ON' : 'OFF'}</Badge>
-                            {locked && <Badge variant="outline" className="border-amber-500/50 font-mono text-[10px] text-amber-600">CAPPED — rok laga hai</Badge>}
-                          </div>
-                          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-                          <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-                            {perm.settingKey ?? '—'} · {fmtNum(perm.accepted)} accepted · {fmtNum(perm.skipped)} skipped
-                          </p>
-                        </div>
-                        <Switch checked={on} disabled={saving || locked} aria-label={`${label} tick persistence`} onCheckedChange={(checked) => togglePermission(key, checked)} />
-                      </div>
-                    );
-                  })}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Switches show backend-confirmed state only. “1-day” session classification hai, MongoDB TTL nahi.
-                </p>
-
-                {/* C — ROK / blocks: storage-cap brake per stream (real working) */}
-                <p className="pt-1 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                  Rok (blocks) — storage-cap brake per stream
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Cap ON = us stream ko rok do, permission ON ho tab bhi koi write nahi hoga. Cap OFF = permission wapas effective.
-                </p>
-                {PERMISSIONS.map(({ key, label }) => {
-                  const perm = permissions[key] ?? {};
-                  const capKey = (perm as any).capSettingKey as string | undefined;
-                  const capped = (perm as any).hardCapped === true || capsLive[key] === true;
-                  if (!capKey) return null;
-                  return (
-                    <div key={capKey} className="mb-2 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.04] px-3 py-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-medium">{label} — rok</span>
-                          <Badge variant="outline" className={cn('font-mono text-[10px]', capped ? 'border-amber-500/50 text-amber-600' : '')}>{capped ? 'ROK LAGA HAI' : 'KHULA HAI'}</Badge>
-                        </div>
-                        <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{capKey}</p>
-                      </div>
-                      <Switch checked={capped} disabled={savingCap === capKey} aria-label={`${label} storage cap`} onCheckedChange={(checked) => toggleCap(capKey, label, checked)} />
-                    </div>
-                  );
-                })}
-                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/50 bg-muted/20 px-3 py-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium">Rok ki wajah (reason)</p>
-                    <p className="font-mono text-[10px] text-muted-foreground">dbw_storage_cap_reason · panel + API me verbatim dikhega</p>
-                  </div>
-                  <Input
-                    value={capReasonDraft ?? storageCapReason ?? ''}
-                    placeholder="jaise: Atlas 512MB quota full"
-                    onChange={(e) => setCapReasonDraft(e.target.value)}
-                    className="h-8 w-56 text-xs"
-                  />
-                  <Button size="sm" variant="outline" className="h-8" disabled={savingCap === 'reason' || (capReasonDraft ?? storageCapReason ?? '') === (storageCapReason ?? '')} onClick={saveCapReason}>
-                    Save reason
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Automatic rok (expiry / inactive / duplicate / invalid / unknown source) backend khud lagata hai — wo neeche “Save / drop decisions” chart me read-only dikhte hain.
-                </p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {/* Settings + permission CONTROL: /services/db-writer/permissions (apna connection) */}
+      {/* Runtime settings explorer: /services/db-writer/settings (apna connection) */}
 
       <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <Timer className="h-3 w-3" />
         Live over WS#2 engines channel · REST fallback once. Missing = ‘—’, fake kabhi nahi.
+        Pages: overview · storage · permissions · settings — har page ka apna connection.
       </p>
     </div>
   );

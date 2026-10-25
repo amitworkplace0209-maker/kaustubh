@@ -69,6 +69,12 @@ const HEARTBEAT_MS = 5_000;
 const DEEP_SCAN_POLL_MS = 1_500;
 /** Safety net so a lost status response can never leave the button stuck. */
 const DEEP_SCAN_MAX_WATCH_MS = 60_000;
+/**
+ * WS#2 pushes the data-center document every ~5 s while the page is open.
+ * If no push has landed for this long the 15s REST fallback takes over, so a
+ * silently dead socket degrades instead of leaving the page on stale data.
+ */
+const REALTIME_STALE_MS = 20_000;
 
 export type DcAction = 'capture' | 'deep-scan' | 'cleanup';
 
@@ -323,7 +329,15 @@ class DataCenterStore {
     if (this.slowTimer) clearInterval(this.slowTimer);
     this.liveTimer = setInterval(() => {
       if (typeof document === 'undefined' || document.hidden) return;
-      void this.refreshLive();
+      // The WS#2 `data_center` push is the primary path for the primary
+      // panels; REST only re-synchronises when the socket cannot deliver
+      // (backend down, or no push for PUSH_STALE_MS).
+      const stale =
+        !this.state.realtimeConnected ||
+        this.state.snapshotSource !== 'realtime' ||
+        (this.state.realtimeUpdatedAt != null &&
+          Date.now() - this.state.realtimeUpdatedAt > REALTIME_STALE_MS);
+      if (stale) void this.refreshLive();
     }, POLL_LIVE_MS);
     this.slowTimer = setInterval(() => {
       if (typeof document === 'undefined' || document.hidden) return;

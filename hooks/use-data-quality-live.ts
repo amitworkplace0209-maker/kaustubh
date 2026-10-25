@@ -10,7 +10,9 @@
 // aggregates internally and the UI only re-renders the metric state.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getScheduleEventsUrl } from '@/lib/api';
+import {
+  subscribeScheduleEvents, subscribeScheduleState,
+} from '@/lib/schedule-sse';
 import { dqGet } from '@/lib/data-quality-client';
 
 export interface DQEngineRef {
@@ -121,12 +123,8 @@ export function useDataQualityLive(enabled = true): UseDataQualityLiveResult {
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
-  const esRef = useRef<EventSource | null>(null);
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const staleTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFrameAt = useRef(0);
-  const enabledRef = useRef(enabled);
-  enabledRef.current = enabled;
   const mountedRef = useRef(true);
 
   const retry = useCallback(() => setNonce((n) => n + 1), []);
@@ -156,72 +154,32 @@ export function useDataQualityLive(enabled = true): UseDataQualityLiveResult {
     };
   }, [enabled, nonce]);
 
-  // 2) Single SSE subscription for `quality_live` frames.
+  // 2) Single shared schedule-events subscription for `quality_live` frames.
   useEffect(() => {
     if (!enabled) return;
 
-    const connect = () => {
-      if (esRef.current) {
-        try {
-          esRef.current.close();
-        } catch {
-          /* ignore */
-        }
-        esRef.current = null;
-      }
-      let es: EventSource;
-      try {
-        es = new EventSource(getScheduleEventsUrl());
-      } catch {
-        setSseConnected(false);
-        if (enabledRef.current && mountedRef.current) {
-          retryTimer.current = setTimeout(connect, 3000);
-        }
-        return;
-      }
-      esRef.current = es;
-
-      es.onopen = () => {
-        if (!mountedRef.current) return;
-        setSseConnected(true);
-        setError(null);
-      };
-      es.onerror = () => {
-        if (!mountedRef.current) return;
-        setSseConnected(false);
-        try {
-          es.close();
-        } catch {
-          /* ignore */
-        }
-        esRef.current = null;
-        if (enabledRef.current && mountedRef.current) {
-          retryTimer.current = setTimeout(connect, 3000);
-        }
-      };
-      es.onmessage = (event) => {
-        if (!mountedRef.current) return;
-        if (!event.data || event.data === ': heartbeat') return;
-        try {
-          const ev = JSON.parse(event.data) as Record<string, unknown>;
-          const type = String(ev?.type ?? ev?.event ?? '');
-          if (type !== 'quality_live') return;
-          const now = Date.now();
-          lastFrameAt.current = now;
-          setLastUpdateAt(now);
-          setStale(false);
-          setError(null);
-          const { type: _t, ...rest } = ev;
-          void _t;
-          setData(rest as DataQualityLive);
-        } catch {
-          /* malformed frame — ignore, next 2s frame converges */
-        }
-      };
-    };
-
     mountedRef.current = true;
-    connect();
+    // The shared module owns the EventSource + reconnect; this hook filters
+    // the frames it cares about.
+    const offState = subscribeScheduleState((s) => {
+      if (!mountedRef.current) return;
+      setSseConnected(Boolean(s.connected));
+      if (s.connected) setError(null);
+    });
+    const offEvents = subscribeScheduleEvents((raw) => {
+      if (!mountedRef.current) return;
+      const ev = raw as Record<string, unknown>;
+      const type = String(ev?.type ?? ev?.event ?? '');
+      if (type !== 'quality_live') return;
+      const now = Date.now();
+      lastFrameAt.current = now;
+      setLastUpdateAt(now);
+      setStale(false);
+      setError(null);
+      const { type: _t, ...rest } = ev;
+      void _t;
+      setData(rest as DataQualityLive);
+    });
 
     // Stale watchdog: no frame for a while => visibly STALE, never fake LIVE.
     staleTimer.current = setInterval(() => {
@@ -229,19 +187,13 @@ export function useDataQualityLive(enabled = true): UseDataQualityLiveResult {
       if (lastFrameAt.current === 0) return; // snapshot not yet arrived
       if (Date.now() - lastFrameAt.current > STALE_AFTER_MS) {
         setStale((s) => (s ? s : true));
-        setSseConnected((c) => c); // keep socket state as-is; staleness is separate
       }
     }, 1000);
 
     return () => {
       mountedRef.current = false;
-      try {
-        esRef.current?.close();
-      } catch {
-        /* ignore */
-      }
-      esRef.current = null;
-      if (retryTimer.current) clearTimeout(retryTimer.current);
+      offState();
+      offEvents();
       if (staleTimer.current) clearInterval(staleTimer.current);
       setSseConnected(false);
     };

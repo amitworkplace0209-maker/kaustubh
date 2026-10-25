@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Filter, Plus, Trash2, Save, Play, ListFilter, RefreshCw, Rows3 } from 'lucide-react';
+import { Filter, Plus, Trash2, Save, Play, ListFilter, RefreshCw, Rows3, Zap } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -41,6 +41,63 @@ const ENUM_OPS = [
   { value: 'neq', label: 'not in' },
 ];
 
+/**
+ * One-click preset screens. Every preset is just a validated criteria list —
+ * it is sent to the SAME backend `/filters/apply` endpoint as the builder, so
+ * the browser never ranks, filters or computes a value itself (doc §24).
+ *
+ * Momentum presets read the backend's flat per-timeframe % fields
+ * (`change_1m_pct` / `change_5m_pct` / `change_10m_pct` / `change_30m_pct`),
+ * which is exactly what "change 1% in 5 minutes" means.
+ */
+type PresetGroup = 'Momentum' | 'Day move' | 'Volume & liquidity' | 'Price band' | 'Quality';
+
+interface Preset {
+  id: string;
+  group: PresetGroup;
+  label: string;
+  hint: string;
+  criteria: FilterCriterion[];
+}
+
+const PRESET_GROUPS: PresetGroup[] = ['Momentum', 'Day move', 'Volume & liquidity', 'Price band', 'Quality'];
+
+const PRESETS: Preset[] = [
+  // ---- momentum: "change X% in N minutes" -------------------------------- #
+  { id: 'm1-1m', group: 'Momentum', label: '↑ 1% in 1 min', hint: 'Fast intraday burst', criteria: [{ key: 'momentum_1m', op: 'gte', value: 1 }] },
+  { id: 'm1-5m', group: 'Momentum', label: '↑ 1% in 5 min', hint: 'The classic 5-minute move screen', criteria: [{ key: 'momentum_5m', op: 'gte', value: 1 }] },
+  { id: 'm2-5m', group: 'Momentum', label: '↑ 2% in 5 min', hint: 'Stronger 5-minute momentum', criteria: [{ key: 'momentum_5m', op: 'gte', value: 2 }] },
+  { id: 'm1-10m', group: 'Momentum', label: '↑ 1% in 10 min', hint: 'Sustained 10-minute move', criteria: [{ key: 'momentum_10m', op: 'gte', value: 1 }] },
+  { id: 'm1-30m', group: 'Momentum', label: '↑ 1% in 30 min', hint: 'Half-hour trend', criteria: [{ key: 'momentum_30m', op: 'gte', value: 1 }] },
+  { id: 'd1-5m', group: 'Momentum', label: '↓ 1% in 5 min', hint: '5-minute reversal / breakdown', criteria: [{ key: 'momentum_5m', op: 'lte', value: -1 }] },
+  { id: 'd2-5m', group: 'Momentum', label: '↓ 2% in 5 min', hint: 'Sharp 5-minute sell-off', criteria: [{ key: 'momentum_5m', op: 'lte', value: -2 }] },
+
+  // ---- day move ---------------------------------------------------------- #
+  { id: 'g1', group: 'Day move', label: 'Gainers ≥ 1%', hint: 'Up on the day', criteria: [{ key: 'change_pct', op: 'gte', value: 1 }] },
+  { id: 'g3', group: 'Day move', label: 'Gainers ≥ 3%', hint: 'Strong day gainers', criteria: [{ key: 'change_pct', op: 'gte', value: 3 }] },
+  { id: 'g5', group: 'Day move', label: 'Gainers ≥ 5%', hint: 'Big day moves', criteria: [{ key: 'change_pct', op: 'gte', value: 5 }] },
+  { id: 'l1', group: 'Day move', label: 'Losers ≤ -1%', hint: 'Down on the day', criteria: [{ key: 'change_pct', op: 'lte', value: -1 }] },
+  { id: 'l3', group: 'Day move', label: 'Losers ≤ -3%', hint: 'Heavy decliners', criteria: [{ key: 'change_pct', op: 'lte', value: -3 }] },
+  { id: 'gl', group: 'Day move', label: 'Gainers + liquid', hint: 'Day gain ≥1% and volume ≥1L', criteria: [{ key: 'change_pct', op: 'gte', value: 1 }, { key: 'volume', op: 'gte', value: 100000 }] },
+
+  // ---- volume & liquidity ------------------------------------------------ #
+  { id: 'v100k', group: 'Volume & liquidity', label: 'Volume ≥ 1 lakh', hint: 'Traded quantity floor', criteria: [{ key: 'volume', op: 'gte', value: 100000 }] },
+  { id: 'v500k', group: 'Volume & liquidity', label: 'Volume ≥ 5 lakh', hint: 'Busy counters', criteria: [{ key: 'volume', op: 'gte', value: 500000 }] },
+  { id: 'tv1cr', group: 'Volume & liquidity', label: 'Turnover ≥ ₹1 Cr', hint: 'Traded value floor', criteria: [{ key: 'traded_value', op: 'gte', value: 10000000 }] },
+  { id: 'liquid', group: 'Volume & liquidity', label: 'Most liquid', hint: 'Volume ≥ 5L and turnover ≥ ₹1 Cr', criteria: [{ key: 'volume', op: 'gte', value: 500000 }, { key: 'traded_value', op: 'gte', value: 10000000 }] },
+
+  // ---- price band -------------------------------------------------------- #
+  { id: 'p800', group: 'Price band', label: 'Under ₹800', hint: 'Weekly screen price cap', criteria: [{ key: 'ltp', op: 'lte', value: 800 }] },
+  { id: 'p500', group: 'Price band', label: 'Under ₹500', hint: 'Lower-priced universe', criteria: [{ key: 'ltp', op: 'lte', value: 500 }] },
+  { id: 'p100-800', group: 'Price band', label: '₹100 – ₹800', hint: 'Mid price band', criteria: [{ key: 'ltp', op: 'between', value: [100, 800] }] },
+
+  // ---- quality ----------------------------------------------------------- #
+  { id: 'live', group: 'Quality', label: 'Live feed only', hint: 'Drop stale / pending rows', criteria: [{ key: 'freshness', op: 'in', value: ['LIVE'] }] },
+  { id: 'gainers-only', group: 'Quality', label: 'Backend GAINER class', hint: 'Engine classification', criteria: [{ key: 'classification', op: 'in', value: ['GAINER'] }] },
+  { id: 'near-circuit', group: 'Quality', label: 'Near circuit (≤2%)', hint: 'Closest valid circuit distance', criteria: [{ key: 'circuit_distance', op: 'lte', value: 2 }] },
+  { id: 'leveraged', group: 'Quality', label: 'Margin ≥ 5x', hint: 'Broker-authoritative leverage', criteria: [{ key: 'margin_multiplier', op: 'gte', value: 5 }] },
+];
+
 function num(v: string): number | undefined {
   const n = Number(v);
   return v.trim() !== '' && Number.isFinite(n) ? n : undefined;
@@ -76,6 +133,7 @@ export default function FiltersTab({ onViewInRank }: {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [result, setResult] = useState<ApplyResponse | null>(null);
+  const [activePreset, setActivePreset] = useState<string | null>(null);
 
   const meta = useMemo(() => catalog.find((c) => c.key === key), [catalog, key]);
   const effectiveOp = op === 'between' ? 'between' : meta?.type === 'minimum' ? 'gte' : meta?.type === 'text' ? 'contains' : op;
@@ -147,6 +205,7 @@ export default function FiltersTab({ onViewInRank }: {
     const draft = buildDraft();
     if (!draft) return;
     setCriteria((c) => [...c, draft]);
+    setActivePreset(null);
     setSingle(''); setLo(''); setHi(''); setEnumVals('');
   }, [buildDraft]);
 
@@ -172,6 +231,13 @@ export default function FiltersTab({ onViewInRank }: {
       setApplying(false);
     }
   }, []);
+
+  const applyPreset = useCallback((preset: Preset) => {
+    setActivePreset(preset.id);
+    setCriteria(preset.criteria);
+    setNotice(`Preset “${preset.label}” applied through the backend.`);
+    void applyCriteria(preset.criteria);
+  }, [applyCriteria]);
 
   const saveFilter = useCallback(async () => {
     if (!name.trim() || criteria.length === 0) return;
@@ -228,6 +294,53 @@ export default function FiltersTab({ onViewInRank }: {
           <button onClick={() => setNotice(null)} aria-label="Dismiss">✕</button>
         </div>
       )}
+
+      {/* Predefined screens — one click fills the builder and runs the exact
+          same backend apply call. */}
+      <SectionCard
+        title="Quick Presets"
+        icon={Zap}
+        headerRight={<Badge variant="outline" className="text-[10px]">backend-applied</Badge>}
+      >
+        <div className="space-y-3">
+          {PRESET_GROUPS.map((group) => {
+            const list = PRESETS.filter((p) => p.group === group);
+            if (!list.length) return null;
+            return (
+              <div key={group}>
+                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{group}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {list.map((preset) => {
+                    const active = activePreset === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => applyPreset(preset)}
+                        disabled={applying}
+                        title={preset.hint}
+                        className={
+                          'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50 ' +
+                          (active
+                            ? 'border-primary bg-primary/10 font-medium text-primary'
+                            : 'border-border bg-card text-muted-foreground hover:border-primary/50 hover:text-foreground')
+                        }
+                      >
+                        {active ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          A preset is just a criteria list — applying it posts to <span className="font-mono">/filters/apply</span>.
+          After applying you can add or remove criteria above to refine it, then save it for later.
+        </p>
+      </SectionCard>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
         {/* Builder */}
@@ -307,7 +420,16 @@ export default function FiltersTab({ onViewInRank }: {
                   return (
                     <div key={i} className="flex items-center justify-between rounded-md border border-border px-2.5 py-1.5 text-xs">
                       <span className="font-medium">{m?.label ?? c.key} <Badge variant="outline" className="ml-1 font-mono text-[10px]">{c.op} {label}</Badge></span>
-                      <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => setCriteria((cs) => cs.filter((_, j) => j !== i))} aria-label="Remove criterion">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6"
+                        onClick={() => {
+                          setCriteria((cs) => cs.filter((_, j) => j !== i));
+                          setActivePreset(null);
+                        }}
+                        aria-label="Remove criterion"
+                      >
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     </div>
@@ -390,9 +512,14 @@ export default function FiltersTab({ onViewInRank }: {
           {result.items.length === 0 ? (
             <EmptyState icon={Filter} title="No matches" description="No rows satisfied every criterion (rows lacking a field never fake a pass)." />
           ) : (
-            <MwTableShell headerCells={['#', 'symbol', 'ltp', 'change %', 'volume', 'turnover', 'pinned', 'status']}>
+            <MwTableShell headerCells={['#', 'symbol', 'ltp', 'change %', '5m%', 'circuit', 'margin', 'class', 'volume', 'turnover', 'pinned', 'status']}>
               {result.items.map((s, i) => (
-                <MwRowRow key={s.token} row={s} index={i} cols={{ volume: true, turnover: true }} />
+                <MwRowRow
+                  key={s.token}
+                  row={s}
+                  index={i}
+                  cols={{ momentum: true, circuit: true, classification: true, volume: true, turnover: true }}
+                />
               ))}
             </MwTableShell>
           )}

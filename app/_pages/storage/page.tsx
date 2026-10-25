@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, CheckCircle2, Cloud, Copy, Database, Download,
-  HardDrive, HeartPulse, MemoryStick, Network, RefreshCw, Save, Search,
-  Server, Settings2, Trash2, Zap,
+  Eye, EyeOff, HardDrive, HeartPulse, Lock, MemoryStick, Network, RefreshCw, Save, Search,
+  Server, Settings2, ShieldAlert, Trash2, Zap,
 } from 'lucide-react';
 import { backendFetch } from '@/lib/backend';
 import { Badge } from '@/components/ui/badge';
@@ -105,6 +105,21 @@ export default function StoragePage() {
   const [range, setRange] = useState<'5m' | '15m' | '1h' | '6h' | '24h' | 'all'>('6h');
   const [evQ, setEvQ] = useState('');
   const [evSev, setEvSev] = useState<'all' | 'high' | 'warn' | 'info'>('all');
+  // REAL data-cleanup state (atlas_cleanup authority — works on whichever DB is connected)
+  const [plan, setPlan] = useState<any>(null); // /api/system/cleanup/plan — protected classification
+  const [cleanupStatus, setCleanupStatus] = useState<any>(null); // /api/system/cleanup/status
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [docMode, setDocMode] = useState<'clear' | 'drop'>('clear');
+  const [fullPhrase, setFullPhrase] = useState('');
+  const [cleanBusy, setCleanBusy] = useState(false);
+  const [armed, setArmed] = useState<null | 'safe' | 'bulk'>(null);
+  const [armedRow, setArmedRow] = useState<string | null>(null);
+  const [cleanResult, setCleanResult] = useState<any>(null);
+  // real document preview (read-only sample viewer)
+  const [previewName, setPreviewName] = useState<string | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewData, setPreviewData] = useState<any[] | null>(null);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
 
   const say = useCallback((kind: 'ok' | 'err', text: string) => setNotice({ kind, text }), []);
 
@@ -140,6 +155,13 @@ export default function StoragePage() {
       ]);
       if (evRes.ok && evRes.data) setEvents((evRes.data as any).events ?? []);
       if (hiRes.ok && hiRes.data) setHistory((hiRes.data as any).snapshots ?? []);
+      // cleanup plane: protected classification + last/next run (real, from atlas_cleanup_log)
+      const [planRes, csRes] = await Promise.all([
+        backendFetch('/api/system/cleanup/plan', { timeoutMs: 30000 }),
+        backendFetch('/api/system/cleanup/status', { timeoutMs: 15000 }),
+      ]);
+      if (planRes.ok && planRes.data) setPlan(unwrap(planRes));
+      if (csRes.ok && csRes.data) setCleanupStatus(unwrap(csRes));
     } catch (e: unknown) {
       if (!quiet) setError(e instanceof Error ? e.message : String(e));
     }
@@ -197,6 +219,65 @@ export default function StoragePage() {
     } else say('err', res.error ?? 'Cleanup failed');
   };
 
+  // ---- REAL data cleanup (backend atlas_cleanup authority) -----------------
+  const toggleSel = (name: string) =>
+    setSel((s) => {
+      const n = new Set(s);
+      if (n.has(name)) n.delete(name);
+      else n.add(name);
+      return n;
+    });
+  const selectAllCleanable = () =>
+    setSel(new Set(collections.filter((c) => !protectedSet.has(String(c.name))).map((c) => String(c.name))));
+
+  /** One cleanup POST → real per-collection results + live post-state verification. */
+  const runClean = async (body: Record<string, unknown>) => {
+    setCleanBusy(true);
+    setNotice(null);
+    const res = await backendFetch('/api/system/cleanup/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      timeoutMs: 300000,
+    });
+    setCleanBusy(false);
+    setArmed(null);
+    setArmedRow(null);
+    if (res.ok) {
+      const d = unwrap(res) as any;
+      if (d?.ok === false) {
+        setCleanResult(d);
+        say('err', String(d?.error ?? 'Clean pass failed — verification live counts se aayi.'));
+        return;
+      }
+      setCleanResult(d);
+      say('ok', `Clean pass ${d?.status ?? 'SUCCESS'} · ${fmtNum(d?.totalDeleted ?? 0)} docs deleted · verified on live counts.`);
+      void loadAll(true);
+    } else {
+      say('err', res.error ?? 'Cleanup failed');
+      setCleanResult(null);
+    }
+  };
+
+  /** Read-only real-document preview of one collection (latest 5, sanitized). */
+  const togglePreview = async (name: string) => {
+    if (previewName === name) {
+      setPreviewName(null);
+      return;
+    }
+    setPreviewName(name);
+    setPreviewBusy(true);
+    setPreviewErr(null);
+    setPreviewData(null);
+    const res = await backendFetch(`/api/database/sample?collection=${encodeURIComponent(name)}&limit=5`, { timeoutMs: 20000 });
+    setPreviewBusy(false);
+    if (!res.ok) {
+      setPreviewErr(res.error ?? 'Preview failed');
+      return;
+    }
+    const d = unwrap(res) as any;
+    setPreviewData(Array.isArray(d?.samples) ? d.samples : []);
+  };
+
   const copySnapshot = async () => {
     try {
       await navigator.clipboard.writeText(JSON.stringify({ database: db, guard, storage: state }, null, 2));
@@ -243,6 +324,13 @@ export default function StoragePage() {
   const source = String(identity.source ?? db?.source ?? 'unknown').toLowerCase();
   const isAtlas = source.includes('atlas');
   const connected = identity.connected ?? db?.available ?? false;
+  // cleanup classification (needs `connected`) — protected set from live plan fetch
+  const protectedSet = useMemo(() => {
+    const rows = (Array.isArray(plan?.collections) ? plan.collections : []) as any[];
+    return new Set(rows.filter((r) => r.protected).map((r) => String(r.name)));
+  }, [plan]);
+  const lastClean = cleanupStatus?.last ?? null;
+  const canClean = Boolean(connected && plan?.ok);
   const usedMb = Number(guard?.usedMb ?? NaN);
   const capMb = Number(guard?.capacityMb ?? NaN);
   const usePct = Number(guard?.usagePct ?? NaN);
@@ -635,11 +723,40 @@ export default function StoragePage() {
             <p className="py-4 text-center text-xs text-muted-foreground">{db ? (q ? `No match for "${q}".` : 'No collections reported.') : 'Database plane se judte hi collections dikhenge.'}</p>
           ) : (
             <div className="max-h-[380px] space-y-1 overflow-auto">
-              {collections.slice(0, 100).map((c: any) => (
-                <div key={c.name} className="rounded-lg border border-border/50 bg-white/[0.02] px-2.5 py-2" title={`${c.count ?? 0} docs · avg ${fmtBytes(c.avgObjSizeBytes)} · idx ${c.indexes ?? 0}`}>
+              {collections.slice(0, 100).map((c: any) => {
+                const name = String(c.name);
+                const locked = protectedSet.has(name);
+                return (
+                <div key={c.name} className={cn('rounded-lg border px-2.5 py-2', locked ? 'border-amber-500/30 bg-amber-500/[0.06]' : 'border-border/50 bg-muted/[0.04]')} title={`${c.count ?? 0} docs · avg ${fmtBytes(c.avgObjSizeBytes)} · idx ${c.indexes ?? 0}`}>
                   <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <span className="min-w-0 truncate font-mono font-semibold">{c.name}{c.capped && <span className="ml-1 rounded bg-amber-500/15 px-1 text-[9px] text-amber-300">CAPPED</span>}</span>
-                    <span className="shrink-0 font-mono tabular-nums">{fmtBytes(c.storageBytes)} <span className="text-muted-foreground">· {fmtNum(c.count)} docs</span></span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {!locked && (
+                        <input type="checkbox" checked={sel.has(name)} onChange={() => toggleSel(name)} title="Cleanup ke liye select" className="h-3.5 w-3.5 shrink-0 accent-rose-600" />
+                      )}
+                      {locked && <Lock className="h-3 w-3 shrink-0 text-amber-700" />}
+                      <span className="truncate font-mono font-semibold">{c.name}</span>
+                      {c.capped && <span className="rounded bg-amber-500/15 px-1 text-[9px] text-amber-700">CAPPED</span>}
+                      {locked && <span className="rounded bg-amber-500/15 px-1 text-[9px] font-semibold text-amber-700">PROTECTED</span>}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      <span className="font-mono tabular-nums">{fmtBytes(c.storageBytes)} <span className="text-muted-foreground">· {fmtNum(c.count)} docs</span></span>
+                      <button onClick={() => void togglePreview(name)} title="Real documents dekho (latest 5)" className={cn('rounded-md border px-1.5 py-0.5 transition-colors', previewName === name ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700' : 'border-border hover:bg-muted')}>
+                        {previewName === name ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                      </button>
+                      {!locked && (
+                        <button
+                          onClick={() => {
+                            if (armedRow !== name) { setArmedRow(name); return; }
+                            void runClean({ mode: 'collection', names: [name], drop: docMode === 'drop' });
+                          }}
+                          disabled={!canClean || cleanBusy}
+                          title="Is collection ka data clean (2-click confirm) — mode: Data cleanup card me set hota hai"
+                          className={cn('rounded-md border px-1.5 py-0.5 transition-colors', armedRow === name ? 'border-rose-600 bg-rose-600 text-white' : 'border-border text-rose-700 hover:bg-rose-500/10')}
+                        >
+                          {armedRow === name ? <span className="text-[9px] font-bold">Confirm?</span> : <Trash2 className="h-3 w-3" />}
+                        </button>
+                      )}
+                    </span>
                   </div>
                   <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted/70">
                     <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-400" style={{ width: `${(Number(c.storageBytes ?? 0) / maxColl) * 100}%` }} />
@@ -648,8 +765,124 @@ export default function StoragePage() {
                     <span>data {fmtBytes(c.dataSizeBytes)} · idx {fmtBytes(c.indexSizeBytes)} ({c.indexes ?? 0})</span>
                     <span>{c.firstRecord ? `${String(c.firstRecord).slice(0, 10)} → ${String(c.lastRecord ?? '').slice(0, 10)}` : ''}</span>
                   </p>
+                  {previewName === name && (
+                    <div className="mt-1.5 rounded-lg border border-border bg-muted/30 p-2">
+                      <p className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        Real documents · latest {fmtNum(previewData?.length ?? 0)}
+                        {previewBusy && <RefreshCw className="h-3 w-3 animate-spin" />}
+                        <button onClick={() => setPreviewName(null)} className="ml-auto rounded px-1 hover:bg-muted">✕ close</button>
+                      </p>
+                      {previewErr ? (
+                        <p className="text-[10px] text-rose-700">{previewErr}</p>
+                      ) : previewData && previewData.length === 0 ? (
+                        <p className="py-1 text-center text-[10px] text-muted-foreground">Collection empty — 0 documents.</p>
+                      ) : (
+                        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-1.5 font-mono text-[10px] leading-relaxed text-foreground">{previewData ? JSON.stringify(previewData, null, 1) : 'loading…'}</pre>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* REAL DATA CLEANUP — atlas_cleanup authority, chalta hai jis DB se backend juda ho */}
+      <Card className="overflow-hidden border-rose-500/25 shadow-soft">
+        <CardHeader className="bg-gradient-to-r from-rose-500/10 to-amber-500/5 pb-2">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-lg bg-gradient-to-br from-rose-500 to-amber-600 p-1.5 text-white shadow"><ShieldAlert className="h-3.5 w-3.5" /></span>
+            Data cleanup · REAL deletion (verified)
+            <Badge variant="outline" className="ml-auto tabular-nums">
+              last run <AgeTicker ts={lastClean?.finishedAt ?? lastClean?.ts} /> · <span className="font-mono">{String(lastClean?.status ?? '—')}</span>
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-3">
+          <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed">
+            Jis database par chalega: <span className="font-mono font-semibold">{identity.source ?? '—'}{isAtlas ? ' (Atlas cloud)' : ''} · {identity.host ?? '—'} · db {identity.database ?? '—'}</span> — backend jis se abhi juda hai wahi clean hota hai (Atlas cloud, ya local/VM-local mongo). Har pass ka audit <span className="font-mono">atlas_cleanup_log</span> me likha jata hai. Protected config/operational collections (settings, stocks, watchlist, session_manager_*, dummy_*, _migrations…) delete kabhi nahi hote.
+          </p>
+          {!canClean && (
+            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700">
+              {connected ? 'Cleanup plan abhi load nahi hua — thoda rukkab refresh karo.' : 'Database connected nahi — cleanup disabled jab tak wapas judi.'}
+            </p>
+          )}
+          <div className="grid grid-cols-1 gap-2.5 md:grid-cols-3">
+            {/* SAFE */}
+            <div className="rounded-xl border border-border/60 bg-background p-2.5">
+              <p className="text-[11px] font-bold">Safe clean</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">Temporary market data + telemetry (roz 06:00 IST jise wipe hota hai). Indexes/config safe.</p>
+              <Button size="sm" variant="outline" className="mt-2 h-7 w-full gap-1 border-amber-500/40 text-amber-700" disabled={!canClean || cleanBusy}
+                onClick={() => (armed === 'safe' ? void runClean({ mode: 'safe' }) : setArmed('safe'))}>
+                <Trash2 className="h-3 w-3" /> {armed === 'safe' ? 'Confirm Safe clean?' : 'Run Safe clean'}
+              </Button>
+            </div>
+            {/* FULL */}
+            <div className="rounded-xl border border-rose-500/40 bg-rose-500/[0.05] p-2.5">
+              <p className="text-[11px] font-bold text-rose-700">Full clean</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">Safe + ticks history, notifications, alerts, events, reports. Config/operational kabhi nahi.</p>
+              <Input value={fullPhrase} onChange={(e) => setFullPhrase(e.target.value.toUpperCase())} placeholder="Type CLEAN" className="mt-2 h-7 border-rose-500/40 text-center font-mono text-[11px]" />
+              <Button size="sm" variant="destructive" className="mt-1.5 h-7 w-full gap-1" disabled={!canClean || cleanBusy || fullPhrase !== 'CLEAN'}
+                onClick={() => { void runClean({ mode: 'full' }); setFullPhrase(''); }}>
+                <Trash2 className="h-3 w-3" /> {cleanBusy ? 'Cleaning…' : 'Execute Full clean'}
+              </Button>
+            </div>
+            {/* SELECTED */}
+            <div className={cn('rounded-xl border bg-background p-2.5', docMode === 'drop' ? 'border-rose-500/40' : 'border-border/60')}>
+              <p className="text-[11px] font-bold">Selected collections</p>
+              <div className="mt-1 flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 p-0.5">
+                {([['clear', 'Clear docs'], ['drop', 'DROP whole']] as const).map(([m, l]) => (
+                  <button key={m} onClick={() => { setDocMode(m); setArmed(null); }} disabled={cleanBusy}
+                    className={cn('flex-1 rounded-md px-2 py-1 text-[10px] font-semibold transition-colors', docMode === m ? (m === 'drop' ? 'bg-rose-600 text-white shadow-sm' : 'bg-background shadow-sm ring-1 ring-border') : 'text-muted-foreground')}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+                {sel.size ? <span className="font-semibold text-foreground">{fmtNum(sel.size)} selected</span> : 'Collections card me checkbox se select karo.'}{' '}
+                {docMode === 'drop' && 'Drop = poora collection (docs+index+allocated storage wapas). 0-doc ticks/market_ticks jaisi space reclaim isi se hoti hai.'}
+              </p>
+              {!sel.size && canClean && (
+                <Button size="sm" variant="outline" className="mt-1 h-6 gap-1 text-[10px]" onClick={selectAllCleanable}>
+                  Select all cleanable ({fmtNum(collections.filter((c) => !protectedSet.has(String(c.name))).length)})
+                </Button>
+              )}
+              <Button size="sm" variant="destructive" className="mt-1.5 h-7 w-full gap-1" disabled={!canClean || cleanBusy || !sel.size}
+                onClick={() => { if (armed !== 'bulk') { setArmed('bulk'); return; } void runClean({ mode: 'collection', names: [...sel], drop: docMode === 'drop' }); }}>
+                <Trash2 className="h-3 w-3" />
+                {cleanBusy ? 'Cleaning…' : armed === 'bulk' ? `Confirm ${docMode === 'drop' ? 'DROP' : 'Clean'} of ${fmtNum(sel.size)}?` : `${docMode === 'drop' ? 'DROP' : 'Clean'} selected (${fmtNum(sel.size)})`}
+              </Button>
+            </div>
+          </div>
+          {/* result banner — REAL post-state verification (drop → gone, clear → remaining 0) */}
+          {cleanResult && (
+            <div className={cn('rounded-xl border px-3 py-2.5 text-[11px]', cleanResult.ok ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-rose-500/30 bg-rose-500/10')}>
+              <p className="flex flex-wrap items-center gap-2 font-semibold">
+                {cleanResult.ok ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : <ShieldAlert className="h-3.5 w-3.5 text-rose-600" />}
+                <span>{cleanResult.ok ? `${String(cleanResult.status ?? 'SUCCESS')} · verified` : 'FAILED / refused'}</span>
+                <span className="font-mono text-muted-foreground">{cleanResult.mode ?? '—'} · trigger {cleanResult.trigger ?? '—'} · {fmtNum(cleanResult.totalDeleted ?? 0)} docs · {fmtNum(cleanResult.collectionsCleaned ?? 0)} cols · {cleanResult.durationSec ?? '—'}s</span>
+              </p>
+              {cleanResult.error && <p className="mt-1 text-rose-700">{String(cleanResult.error)}</p>}
+              {Array.isArray(cleanResult.refused) && cleanResult.refused.length > 0 && (
+                <p className="mt-1 text-amber-700">Refused (protected): {cleanResult.refused.map(String).join(' · ')}</p>
+              )}
+              {Array.isArray(cleanResult.collections) && cleanResult.collections.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {(cleanResult.collections as any[]).slice(0, 40).map((r: any) => {
+                    const v = (Array.isArray(cleanResult.verified) ? cleanResult.verified : []).find((x: any) => x.name === r.name);
+                    return (
+                      <span key={r.name} className={cn('rounded-md border px-1.5 py-0.5 font-mono text-[10px]', r.error ? 'border-rose-500/40 text-rose-700' : 'border-emerald-500/40 text-emerald-700')}>
+                        {r.name} · {r.skipped ? 'skipped' : r.dropped ? 'dropped' : `deleted ${fmtNum(r.deleted ?? 0)}`}
+                        {v && v.gone != null ? (v.gone ? ' · gone ✓' : ' · STILL THERE ✗') : v ? ` · remaining ${fmtNum(v.remaining)}` : ''}
+                        {r.error ? ` · ${String(r.error).slice(0, 60)}` : ''}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <p className="mt-1 text-[10px] text-muted-foreground">Verification live counts se aayi hai (drop → collection gone, clear → remaining 0) — list refresh ho chuki si. Audit atlas_cleanup_log me hai.</p>
             </div>
           )}
         </CardContent>
@@ -832,7 +1065,7 @@ export default function StoragePage() {
       </Card>
 
       <p className="text-[11px] text-muted-foreground">
-        Sources: <span className="font-mono">/data-center/database · /cleanup/storage · /data-center/storage-trend · /services/storage</span> — sab real dbStats/collStats, capacity configured quota se (driver quota report nahi karta). Auto-refresh 20s (hidden paused). Missing = ‘—’, fake kabhi nahi.
+        Sources: <span className="font-mono">/data-center/database · /system/cleanup/plan · /system/cleanup/run · /system/cleanup/status · /database/sample · /cleanup/storage · /data-center/storage-trend · /services/storage</span> — sab real dbStats/collStats, cleanup verification live counts se, capacity configured quota se (driver quota report nahi karta). Auto-refresh 20s (hidden paused). Missing = ‘—’, fake kabhi nahi.
       </p>
     </div>
   );

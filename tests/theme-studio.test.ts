@@ -65,7 +65,6 @@ test('storage keys are scoped independently per terminal and phase', () => {
   assert.equal(storageKeyForApp('trading', 'shoonya'), 'kaustubh-theme.trading.shoonya');
   assert.equal(storageKeyForApp('data-saver'), 'kaustubh-theme.data-saver');
   assert.equal(storageKeyForApp('services'), 'kaustubh-theme.services');
-  assert.equal(storageKeyForApp('khumbha-ai'), 'kaustubh-theme.khumbha-ai');
 
   // Distinct scoped keys must never collide.
   const set = new Set([

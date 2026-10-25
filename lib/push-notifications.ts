@@ -225,8 +225,17 @@ export interface PushStatus {
   subscriptions: number;
 }
 
+// In-flight dedupe: the Settings page reads this on mount and again after a
+// push action. Without sharing the request, React StrictMode's double mount
+// sends two identical status calls and the second one queues behind the first.
+let _pushStatusInFlight: Promise<PushStatus> | null = null;
+
 export async function fetchPushStatus(): Promise<PushStatus> {
-  return pushApi<PushStatus>('/api/notifications/push/status');
+  if (!_pushStatusInFlight) {
+    _pushStatusInFlight = pushApi<PushStatus>('/api/notifications/push/status')
+      .finally(() => { _pushStatusInFlight = null; });
+  }
+  return _pushStatusInFlight;
 }
 
 export async function registerPushSubscription(

@@ -1,117 +1,112 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Receipt, Loader2, Shield, Zap, Calculator } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import type { TradeCapabilities } from '@/components/orders/trade/capabilities';
-import type { InstrumentSelection, TicketState } from '@/components/orders/trade/types';
+import { useMemo } from 'react';
+import { Calculator } from 'lucide-react';
+import { calculateCharges, CALCULATION_VERSION } from '@/lib/charge-engine';
+import type { InstrumentSelection, LiveQuote, TicketState } from '@/components/orders/trade/types';
 
-interface ChargesPanelProps {
-  caps: TradeCapabilities;
-  selection: InstrumentSelection | null;
+export interface ChargesPanelProps {
   ticket: TicketState;
-  price: number | null;
-  onPreview: (preview: { charges: Record<string, any> | null; total: number | null; marginRequired: number | null; freeMargin: number | null; after: number | null; sufficient: boolean | null } | null) => void;
+  quote: LiveQuote | null;
+  selection: InstrumentSelection;
+  currency: string;
 }
 
-const CHARGE_RATES = {
-  brokerage: 0.0003, brokerage_flat: 10, stt_buy: 0.001, stt_sell: 0.00025,
-  exchange_txn: 0.0000345, gst: 0.18, sebi: 0.00001, stamp_duty: 0.000015,
-};
+/**
+ * Charge estimate for the ticket.
+ *
+ * It uses the APP's canonical charge engine (`lib/charge-engine.ts`) — the same
+ * module the dashboard, positions, history and calculator use — with the
+ * statutory rates in `config/statutory-charges.ts` and the brokerage plan in
+ * `config/brokerage.ts`.
+ *
+ * The engine models EQUITY only. A non-equity product (NRML) therefore has no
+ * honest estimate and is reported as such instead of being priced with the
+ * wrong segment.
+ */
+export function ChargesPanel({ ticket, quote, selection, currency }: ChargesPanelProps) {
+  const qty = Number(ticket.quantity);
+  const price = ticket.orderType === 'L' || ticket.orderType === 'SL'
+    ? Number(ticket.price)
+    : (quote?.ltp ?? 0);
 
-const DUMMY_FLAT_BROKERAGE = process.env.NEXT_PUBLIC_DUMMY_BROKERAGE_MODE === 'flat10';
+  const calc = useMemo(() => {
+    if (!Number.isInteger(qty) || qty < 1 || !(price > 0)) return null;
+    // CASH is full-payment DELIVERY in this platform (margin factor 1.0, it
+    // settles into holdings) — map it onto the engine's delivery vocabulary.
+    const product = ticket.product === 'CASH' ? 'CNC' : ticket.product;
+    if (product !== 'MIS' && product !== 'CNC') return null;
+    return calculateCharges({
+      side: ticket.side,
+      quantity: qty,
+      price,
+      product,
+      exchange: selection.exchange,
+    });
+  }, [qty, price, ticket.side, ticket.product, selection.exchange]);
 
-function calculateCharges(side: string, price: number, quantity: number, product: string) {
-  const value = price * quantity;
-  const isDelivery = ['CNC', 'CASH', 'CO', 'MARGIN'].includes(product.toUpperCase());
-  const brokerage = DUMMY_FLAT_BROKERAGE ? CHARGE_RATES.brokerage_flat : value * CHARGE_RATES.brokerage;
-  const stt = isDelivery ? value * 0.001 : side === 'BUY' ? 0 : value * CHARGE_RATES.stt_sell;
-  const stampRate = side !== 'BUY' ? 0 : isDelivery ? 0.00015 : 0.00003;
-  const exchange_txn = value * CHARGE_RATES.exchange_txn;
-  const sebi = value * CHARGE_RATES.sebi;
-  const gst = (brokerage + exchange_txn + sebi) * CHARGE_RATES.gst;
-  const stamp_duty = value * stampRate;
-  const total = brokerage + stt + exchange_txn + gst + sebi + stamp_duty;
-  return { brokerage: +brokerage.toFixed(2), stt: +stt.toFixed(2), exchangeTxn: +exchange_txn.toFixed(2), gst: +gst.toFixed(2), sebi: +sebi.toFixed(2), stampDuty: +stamp_duty.toFixed(2), total: +total.toFixed(2) };
-}
+  if (!calc) {
+    return (
+      <section className="rounded-xl border border-border/70 bg-card p-3">
+        <Header />
+        <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
+          {!(Number.isInteger(qty) && qty > 0) || !(price > 0)
+            ? 'Enter a quantity and wait for a live price — charges are computed from the order value.'
+            : `The configured charge model covers equity products only (MIS / CNC). ${ticket.product} is not priced here.`}
+        </p>
+      </section>
+    );
+  }
 
-export function ChargesPanel({ caps, selection, ticket, price, onPreview }: ChargesPanelProps) {
-  const [preview, setPreview] = useState<{ charges: Record<string, any> | null; total: number | null; marginRequired: number | null; freeMargin: number | null; after: number | null; sufficient: boolean | null } | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const qty = parseInt(ticket.quantity, 10);
-  const needsPrice = ticket.orderType === 'L' || ticket.orderType === 'SL';
-  const refPrice = needsPrice ? parseFloat(ticket.price) : price;
-  const canCalc = selection && qty >= 1 && refPrice != null && refPrice > 0;
-
-  useEffect(() => {
-    if (!canCalc) { setPreview(null); onPreview(null); return; }
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      setLoading(true);
-      try {
-        if (caps.virtualCurrency) {
-          const charges = calculateCharges(ticket.side, refPrice!, qty, ticket.product);
-          const value = refPrice! * qty;
-          const marginFactor = { MIS: 0.2, INTRADAY: 0.2, CNC: 1, CASH: 1, CO: 0.2, BO: 0.2 }[ticket.product.toUpperCase()] || 0.2;
-          const marginRequired = value * marginFactor;
-          const res = { charges, total: charges.total, marginRequired, freeMargin: 0, after: -marginRequired, sufficient: false };
-          if (!cancelled) { setPreview(res); onPreview(res); }
-        } else {
-          // Real broker - would call margin API
-          const res = { charges: null, total: null, marginRequired: null, freeMargin: null, after: null, sufficient: null };
-          if (!cancelled) { setPreview(res); onPreview(res); }
-        }
-      } catch {
-        if (!cancelled) { setPreview(null); onPreview(null); }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, 300);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [canCalc, caps.virtualCurrency, ticket.side, ticket.product, ticket.orderType, qty, refPrice, price, selection]);
-
-  if (!selection) return <p className="text-[11px] text-muted-foreground text-center py-4">Select a stock to see charges</p>;
+  const rows: Array<[string, number]> = [
+    ['Brokerage', calc.brokerage],
+    ['STT', calc.stt],
+    ['Exchange txn', calc.exchangeTransactionCharges],
+    ['SEBI', calc.sebiCharges],
+    ['Stamp duty', calc.stampDuty],
+    ['GST', calc.gst],
+  ];
 
   return (
-    <div className="space-y-2">
-      {loading && <div className="flex items-center gap-2 text-[11px] text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Calculating charges…</div>}
-
-      {preview?.charges && (
-        <div className="rounded-xl border border-border/60 bg-card p-2.5">
-          <div className="flex items-center gap-1.5 mb-2"><Receipt className="h-4 w-4 text-primary" /><span className="text-[12px] font-extrabold tracking-tight">Charges Breakdown</span></div>
-          <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-            {[
-              ['Brokerage', preview.charges.brokerage],
-              ['STT', preview.charges.stt],
-              ['Exchange', preview.charges.exchangeTxn],
-              ['GST', preview.charges.gst],
-              ['SEBI', preview.charges.sebi],
-              ['Stamp Duty', preview.charges.stampDuty],
-            ].map(([k, v]) => (
-              <div key={k} className="flex justify-between"><span className="text-muted-foreground">{k}</span><span className="font-mono font-bold tabular-nums">₹{v.toFixed(2)}</span></div>
-            ))}
+    <section className="rounded-xl border border-border/70 bg-card p-3">
+      <Header />
+      <div className="mt-2 space-y-1">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between text-[12px]">
+            <span className="text-muted-foreground">{label}</span>
+            <span className="font-mono tabular-nums">
+              {value.toFixed(2)}
+            </span>
           </div>
-          <div className="mt-2 pt-2 border-t border-border/50 flex justify-between">
-            <span className="font-bold text-[11px]">Total</span>
-            <span className="font-mono text-[12px] font-bold tabular-nums text-primary">₹{preview.total!.toFixed(2)}</span>
-          </div>
+        ))}
+        <div className="mt-1 flex items-center justify-between border-t border-border/60 pt-1.5 text-[13px]">
+          <span className="font-semibold">Total charges</span>
+          <span className="font-mono text-[14px] font-bold tabular-nums">
+            {currency}
+            {calc.totalCharges.toFixed(2)}
+          </span>
         </div>
-      )}
-
-      {preview?.marginRequired != null && (
-        <div className="rounded-xl border border-warning/30 bg-warning/5 p-2.5">
-          <div className="flex items-center gap-1.5 mb-2"><Shield className="h-4 w-4 text-warning" /><span className="text-[12px] font-extrabold tracking-tight text-warning">Margin Required</span></div>
-          <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-            <div className="flex justify-between"><span className="text-muted-foreground">Required</span><span className="font-mono font-bold tabular-nums text-warning">₹{preview.marginRequired!.toLocaleString('en-IN')}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Free After</span><span className={cn('font-mono font-bold tabular-nums', preview.sufficient ? 'text-success' : 'text-destructive')}>{preview.after != null ? `₹${preview.after.toLocaleString('en-IN')}` : '—'}</span></div>
-          </div>
+        <div className="flex items-center justify-between text-[12px]">
+          <span className="text-muted-foreground">Turnover</span>
+          <span className="font-mono tabular-nums">
+            {currency}
+            {calc.turnover.toFixed(2)}
+          </span>
         </div>
-      )}
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/80">
+        Estimated from the configured rates (engine {CALCULATION_VERSION}). The broker&apos;s own
+        contract charges the final amount.
+      </p>
+    </section>
+  );
+}
 
-      {!canCalc && !loading && (
-        <p className="text-[10px] text-muted-foreground text-center py-2">Enter quantity and price to calculate charges</p>
-      )}
-    </div>
+function Header() {
+  return (
+    <header className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wider text-muted-foreground">
+      <Calculator className="h-3.5 w-3.5" />
+      Charges
+    </header>
   );
 }

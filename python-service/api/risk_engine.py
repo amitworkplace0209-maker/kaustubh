@@ -34,7 +34,19 @@ class ValidateOrderRequest(BaseModel):
 
 @router.post("/validate")
 async def validate_order(req: ValidateOrderRequest):
-    """Validate an order request against active risk policy."""
+    """Validate an order request against active risk policy.
+
+    This endpoint is a PREVIEW: it answers "would this order pass?" without
+    placing anything. It therefore runs the Risk Engine in ``preview`` phase —
+    every policy check is applied and the duplicate-suppression window is
+    READ, but the call never records an order intent.
+
+    That distinction matters: the trade page pre-checks the ticket while the
+    operator is still editing it. When the preview also recorded the intent,
+    the real placement a second later was rejected as "duplicate order (same
+    intent within suppression window)" — the page's own safety check made the
+    order impossible to send.
+    """
     try:
         decision = await risk_engine.validate_order(
             terminal=req.terminal,
@@ -49,6 +61,7 @@ async def validate_order(req: ValidateOrderRequest):
             trigger_price=req.trigger_price,
             expected_ltp=req.expected_ltp,
             max_order_value=req.max_order_value,
+            phase="preview",
         )
     except Exception as exc:
         return _bad(f"validation error: {exc}")

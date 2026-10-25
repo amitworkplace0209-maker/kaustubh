@@ -7,11 +7,10 @@ import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { usePhase2Theme, getPhase2ThemeStore } from '@/lib/phase2-theme';
 
-const PRODUCT_MANIFESTS: { match: string; manifest: string; themeColor: string; appId: 'trading' | 'data-saver' | 'services' | 'khumbha-ai' }[] = [
+const PRODUCT_MANIFESTS: { match: string; manifest: string; themeColor: string; appId: 'trading' | 'data-saver' | 'services' }[] = [
   { match: '/trading', manifest: '/manifest-trading.json', themeColor: '#059669', appId: 'trading' },
   { match: '/data-saver', manifest: '/manifest-data.json', themeColor: '#FF7849', appId: 'data-saver' },
   { match: '/services', manifest: '/manifest-services.json', themeColor: '#2563EB', appId: 'services' },
-  { match: '/ai', manifest: '/manifest-ai.json', themeColor: '#8B5CF6', appId: 'khumbha-ai' },
 ];
 
 const DEFAULT_MANIFEST = '/manifest.json';

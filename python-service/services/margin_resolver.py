@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional
@@ -81,11 +82,126 @@ MARGIN_FAILURE_TTL_SECONDS = 30.0
 #: "can this be traded intraday, and at what leverage".
 PRODUCT = "MIS"
 
-#: Concurrency against the broker. Deliberately modest: this is one call per
-#: symbol in the candidate universe, and a weekly scan must not look like an
-#: attack on the broker's rate limiter.
-MAX_CONCURRENCY = 6
-PER_CALL_TIMEOUT_SECONDS = 4.0
+def _env_number(name: str, default: float, minimum: float) -> float:
+    """Read an operator tuning knob without letting a typo stop the service."""
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
+#: Concurrency against the broker. Kotak disconnects large bursts of
+#: check-margin calls ("Server disconnected") and rate-limits sustained abuse
+#: (HTTP 429). The SDK client is also not reliably thread-safe, so a recovery
+#: run can drop to one worker with ``MWR_MARGIN_CONCURRENCY=1``.
+MAX_CONCURRENCY = int(_env_number("MWR_MARGIN_CONCURRENCY", 3, 1))
+MARGIN_MIN_INTERVAL_SECONDS = _env_number("MWR_MARGIN_MIN_INTERVAL", 0.2, 0.0)
+#: Kotak's margin endpoint is slow under load (especially around the close):
+#: a 4 s ceiling produced a first-attempt timeout on most symbols while the
+#: retry succeeded. Give the broker room to answer instead of manufacturing a
+#: transport failure.
+PER_CALL_TIMEOUT_SECONDS = _env_number("MWR_MARGIN_TIMEOUT", 20.0, 1.0)
+
+#: A full NSE EQ scan needs ~2,000 check-margin calls. Kotak's quota resets
+#: after a few minutes, but a sustained 3-worker run reaches the ceiling before
+#: the scan is done. When that happens, every worker shares one cooldown and the
+#: call is retried instead of being recorded as a false "margin unavailable".
+#: The backoff is deliberately gradual: a single 429 is a quota signal, not a
+#: reason to abandon the whole screen.
+RATE_LIMIT_BACKOFF_SECONDS = (30.0, 60.0, 120.0, 240.0, 300.0)
+#: Transport blips ("Server disconnected", timeouts) get a few spaced retries
+#: before the batch is declared unusable.
+TRANSIENT_BACKOFF_SECONDS = (2.0, 5.0, 10.0)
+
+
+class MarginBrokerUnavailable(RuntimeError):
+    """The broker could not answer margin, so the screen must not lock.
+
+    A partial margin answer is more dangerous than no answer: it would lock a
+    universe that silently omitted every symbol whose batch happened to land
+    after a rate limit. The scan treats this as fatal and keeps the previous
+    locked universe.
+    """
+
+
+def _text_is_rate_limit(text: str) -> bool:
+    value = str(text or "").lower()
+    return (
+        "rate limit" in value
+        or "too many request" in value
+        or "too many requests" in value
+        or "100025" in value
+    )
+
+
+def _payload_is_rate_limit(payload: Any) -> bool:
+    """Detect a quota envelope without inspecting numeric margin values.
+
+    A blanket ``json.dumps(payload)`` check would treat a legitimate required
+    margin of ``100025`` as the Kotak rate-limit code. Only status/error fields
+    are examined here.
+    """
+    if isinstance(payload, str):
+        return _text_is_rate_limit(payload)
+    if not isinstance(payload, Mapping):
+        return False
+    rows: list[Mapping[str, Any]] = [payload]
+    data = payload.get("data")
+    if isinstance(data, Mapping):
+        rows.append(data)
+    elif isinstance(data, list):
+        rows.extend(row for row in data if isinstance(row, Mapping))
+    for row in rows:
+        for key in ("stCode", "statusCode", "status_code", "code"):
+            value = row.get(key)
+            if value is not None and str(value).strip() == "100025":
+                return True
+        for key in ("error", "Error", "errMsg", "message", "stat", "status"):
+            value = row.get(key)
+            if value is not None and _text_is_rate_limit(str(value)):
+                return True
+    return False
+
+
+def _payload_error_text(payload: Any) -> str:
+    """Best-effort human-readable error text from a broker envelope."""
+    if not isinstance(payload, Mapping):
+        return str(payload or "")
+    parts: list[str] = []
+    for key in ("error", "Error", "errMsg", "message", "stat", "stCode"):
+        if key in payload and payload.get(key) is not None:
+            parts.append(f"{key}={payload.get(key)}")
+    rows = payload.get("data")
+    if isinstance(rows, Mapping):
+        for key in ("error", "Error", "errMsg", "message", "stat", "stCode"):
+            if key in rows and rows.get(key) is not None:
+                parts.append(f"data.{key}={rows.get(key)}")
+    elif isinstance(rows, list):
+        for row in rows[:1]:
+            if isinstance(row, Mapping):
+                for key in ("error", "Error", "errMsg", "message", "stat", "stCode"):
+                    if key in row and row.get(key) is not None:
+                        parts.append(f"data.{key}={row.get(key)}")
+    return " | ".join(parts)
+
+
+def _is_fatal_auth_error(text: str) -> bool:
+    value = str(text or "").lower()
+    return any(
+        marker in value
+        for marker in (
+            "session expired",
+            "invalid token",
+            "token expired",
+            "unauthorized",
+            "not logged in",
+            "session not",
+            "authentication failed",
+            "stcode=401",
+            "stcode=403",
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -150,6 +266,7 @@ class ResolverStats:
     cache_hits: int = 0
     broker_calls: int = 0
     broker_errors: int = 0
+    rate_limited: int = 0
     published: int = 0
     last_scan_at: Optional[float] = None
     last_reason: str = ""
@@ -163,6 +280,7 @@ class ResolverStats:
             "cacheHits": self.cache_hits,
             "brokerCalls": self.broker_calls,
             "brokerErrors": self.broker_errors,
+            "rateLimited": self.rate_limited,
             "published": self.published,
             "lastScanAt": self.last_scan_at,
             "lastReason": self.last_reason,
@@ -176,6 +294,9 @@ class MarginResolver:
         # token -> (resolved_at, MarginAnswer)
         self._cache: dict[str, tuple[float, MarginAnswer]] = {}
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+        self._last_broker_call_at = 0.0
+        self._cooldown_until = 0.0
+        self._rate_limit_streak = 0
         self.stats = ResolverStats()
 
     # ------------------------------------------------------------------ #
@@ -191,42 +312,141 @@ class MarginResolver:
             return None
         return kotak_session if getattr(kotak_session, "session_active", False) else None
 
+    async def _wait_for_cooldown(self) -> None:
+        """Wait for the shared rate-limit cooldown without holding a worker."""
+        while True:
+            delay = self._cooldown_until - time.monotonic()
+            if delay <= 0:
+                return
+            # Re-check periodically: another worker may extend the cooldown
+            # after this worker started sleeping.
+            await asyncio.sleep(min(delay, 5.0))
+
+    def _note_rate_limit(self) -> None:
+        self.stats.rate_limited += 1
+        now = time.monotonic()
+        if now < self._cooldown_until:
+            # Several workers can see the same quota wall within milliseconds.
+            # Keep one cooldown for the burst; only a retry AFTER the cooldown
+            # proves the quota is still exhausted and should escalate.
+            index = max(0, self._rate_limit_streak - 1)
+            delay = RATE_LIMIT_BACKOFF_SECONDS[
+                min(index, len(RATE_LIMIT_BACKOFF_SECONDS) - 1)
+            ]
+            self._cooldown_until = max(self._cooldown_until, now + delay)
+        else:
+            index = min(
+                self._rate_limit_streak, len(RATE_LIMIT_BACKOFF_SECONDS) - 1
+            )
+            delay = RATE_LIMIT_BACKOFF_SECONDS[index]
+            self._rate_limit_streak += 1
+            self._cooldown_until = now + delay
+        self.stats.last_reason = f"broker rate limit; cooling down {delay:.0f}s"
+        logger.warning("[MARGIN] broker rate limit; cooling down %.0fs", delay)
+
     async def _ask_broker(
         self, session: Any, *, token: str, segment: str, ltp: float,
     ) -> tuple[Optional[float], str]:
-        """One broker margin call. Returns ``(margin_amount, error_reason)``.
+        """One broker margin call with rate-limit and transport recovery.
 
-        ``(None, "")`` means the broker answered but the answer carried no
-        recognisable margin figure — distinguishable from a failure so the
-        operator-facing reason is accurate.
+        Returns ``(margin_amount, error_reason)``. ``(None, "")`` means the
+        broker answered but the answer carried no recognisable margin figure —
+        distinguishable from a failure so the operator-facing reason is
+        accurate.
+
+        Raises ``MarginBrokerUnavailable`` when the broker never answered after
+        retries. The caller must treat that as fatal: continuing would produce a
+        partial universe that looks complete.
         """
-        async with self._semaphore:
-            try:
-                payload = await asyncio.wait_for(
-                    session.async_margin_required(
-                        exchange=segment,
-                        token=token,
-                        product=PRODUCT,
-                        order_type="MKT",
-                        quantity="1",
-                        # Price the notional with the SAME price the broker is
-                        # asked to price, so multiplier = notional/margin is
-                        # internally consistent.
-                        price=str(round(float(ltp), 2)),
-                        transaction_type="BUY",
-                    ),
-                    timeout=PER_CALL_TIMEOUT_SECONDS,
+        rate_attempts = 0
+        transient_attempts = 0
+        while True:
+            await self._wait_for_cooldown()
+            async with self._semaphore:
+                # Serialize AND pace: the broker disconnects bursts and returns
+                # HTTP 429 when check-margin is called too quickly.
+                await self._wait_for_cooldown()
+                gap = MARGIN_MIN_INTERVAL_SECONDS - (
+                    time.monotonic() - self._last_broker_call_at
                 )
-            except asyncio.TimeoutError:
+                if gap > 0:
+                    await asyncio.sleep(gap)
+                self._last_broker_call_at = time.monotonic()
+                try:
+                    payload = await asyncio.wait_for(
+                        session.async_margin_required(
+                            exchange=segment,
+                            token=token,
+                            product=PRODUCT,
+                            order_type="MKT",
+                            quantity="1",
+                            # Price the notional with the SAME price the broker
+                            # is asked to price, so multiplier =
+                            # notional/margin is internally consistent.
+                            price=str(round(float(ltp), 2)),
+                            transaction_type="BUY",
+                        ),
+                        timeout=PER_CALL_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    payload = None
+                    error_text = (
+                        f"broker margin call timed out after "
+                        f"{PER_CALL_TIMEOUT_SECONDS}s"
+                    )
+                except Exception as exc:
+                    payload = None
+                    error_text = f"broker margin call failed: {exc}"
+
+            if payload is None:
+                if _text_is_rate_limit(error_text):
+                    self._note_rate_limit()
+                    rate_attempts += 1
+                    if rate_attempts > len(RATE_LIMIT_BACKOFF_SECONDS):
+                        raise MarginBrokerUnavailable(
+                            f"broker rate limit persisted after "
+                            f"{rate_attempts} attempts"
+                        )
+                    continue
+                if transient_attempts < len(TRANSIENT_BACKOFF_SECONDS):
+                    delay = TRANSIENT_BACKOFF_SECONDS[transient_attempts]
+                    transient_attempts += 1
+                    self.stats.broker_errors += 1
+                    logger.warning(
+                        "[MARGIN] transient broker error (%s); retrying in %.0fs",
+                        error_text, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 self.stats.broker_errors += 1
-                return None, f"broker margin call timed out after {PER_CALL_TIMEOUT_SECONDS}s"
-            except Exception as exc:
+                raise MarginBrokerUnavailable(error_text)
+
+            if _payload_is_rate_limit(payload):
+                self._note_rate_limit()
+                rate_attempts += 1
+                if rate_attempts > len(RATE_LIMIT_BACKOFF_SECONDS):
+                    raise MarginBrokerUnavailable(
+                        f"broker rate limit persisted after {rate_attempts} attempts"
+                    )
+                continue
+
+            error_text = _payload_error_text(payload)
+            if _is_fatal_auth_error(error_text):
                 self.stats.broker_errors += 1
-                return None, f"broker margin call failed: {exc}"
+                raise MarginBrokerUnavailable(
+                    f"broker margin session error: {error_text}"
+                )
+
+            # A real answer resets the quota backoff. The next burst starts at
+            # the shortest cooldown again.
+            self._rate_limit_streak = 0
             self.stats.broker_calls += 1
             margin = extract_margin_amount(payload)
             if margin is None:
-                return None, "broker returned no recognisable margin figure"
+                return None, (
+                    "broker returned no recognisable margin figure"
+                    + (f" ({error_text})" if error_text else "")
+                )
             return margin, ""
 
     # ------------------------------------------------------------------ #
@@ -321,21 +541,37 @@ class MarginResolver:
             session = self._session()
             if session is None:
                 self.stats.last_reason = "no active broker session"
-                for token, _ltp in pending:
-                    answers[token] = self._store_answer(MarginAnswer(
-                        token=token,
-                        status=MARGIN_UNAVAILABLE_STATUS,
-                        basis="none",
-                        reason="no active broker session, so margin is unverified",
-                        resolved_at=time.time(),
-                    ))
+                # Do not return a batch of per-symbol UNAVAILABLE answers here:
+                # if the session dropped after an earlier batch, the caller
+                # would see some resolved answers and could mistake the rest
+                # for a legitimate "no margin" screen. A missing session is a
+                # broker outage, and the scan must abort rather than lock a
+                # partial universe.
+                raise MarginBrokerUnavailable(
+                    "no active broker session; margin cannot be verified"
+                )
             else:
-                resolved = await asyncio.gather(*(
-                    self._resolve_one(session, token, ltp, segment, threshold)
+                tasks = [
+                    asyncio.create_task(
+                        self._resolve_one_and_store(
+                            session, token, ltp, segment, threshold
+                        )
+                    )
                     for token, ltp in pending
-                ))
+                ]
+                try:
+                    resolved = await asyncio.gather(*tasks)
+                except Exception:
+                    # A fatal broker condition invalidates the whole batch.
+                    # Cancel siblings so a 429 storm does not keep spending
+                    # quota after the decision to abort has been made.
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
                 for answer in resolved:
-                    answers[answer.token] = self._store_answer(answer)
+                    answers[answer.token] = answer
 
         self._tally(answers)
         return answers
@@ -343,6 +579,19 @@ class MarginResolver:
     def _store_answer(self, answer: MarginAnswer) -> MarginAnswer:
         self._cache[answer.token] = (time.time(), answer)
         return answer
+
+    async def _resolve_one_and_store(
+        self, session: Any, token: str, ltp: float, segment: str, threshold: float,
+    ) -> MarginAnswer:
+        """Resolve one symbol and cache the answer immediately.
+
+        Caching per answer (rather than after the whole batch) means a later
+        rate-limit abort does not throw away every completed call. A retry can
+        resume from the cached prefix instead of re-spending broker quota.
+        """
+        return self._store_answer(
+            await self._resolve_one(session, token, ltp, segment, threshold)
+        )
 
     async def _resolve_one(
         self, session: Any, token: str, ltp: float, segment: str, threshold: float,
@@ -430,6 +679,12 @@ class MarginResolver:
             "failureTtlSeconds": MARGIN_FAILURE_TTL_SECONDS,
             "product": PRODUCT,
             "maxConcurrency": MAX_CONCURRENCY,
+            "minIntervalSeconds": MARGIN_MIN_INTERVAL_SECONDS,
+            "rateLimitBackoffSeconds": list(RATE_LIMIT_BACKOFF_SECONDS),
+            "rateLimitStreak": self._rate_limit_streak,
+            "cooldownRemainingSeconds": max(
+                0.0, round(self._cooldown_until - time.monotonic(), 1)
+            ),
         }
 
 
@@ -442,6 +697,7 @@ __all__ = [
     "MARGIN_TTL_SECONDS",
     "PRODUCT",
     "MarginAnswer",
+    "MarginBrokerUnavailable",
     "MarginResolver",
     "ResolverStats",
     "margin_resolver",
