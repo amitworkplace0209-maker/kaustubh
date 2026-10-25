@@ -198,12 +198,14 @@ getent group systemd-journal >/dev/null 2>&1 || die "missing systemd-journal gro
 python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' || die "python3 >= 3.8 required"
 
 if [[ "${VM_ID}" == "vm1" ]]; then
-  if ! systemctl list-unit-files 2>/dev/null | grep -q '^kds-backend\.service'; then
+  if ! systemctl cat kds-backend.service >/dev/null 2>&1; then
     info "warning: kds-backend.service is not installed on this VM yet"
     info "         the agent will report the unit as missing until it is deployed"
   fi
 elif [[ "${VM_ID}" == "vm2" ]]; then
-  systemctl list-unit-files 2>/dev/null | grep -q '^mongod\.service' || \
+  # `systemctl cat` avoids the SIGPIPE/pipefail trap where `grep -q` exits
+  # before systemctl finishes writing and the pipeline is misread as failure.
+  systemctl cat mongod.service >/dev/null 2>&1 || \
     info "warning: mongod.service was not found; verify this is the MongoDB VM"
 fi
 
@@ -351,7 +353,7 @@ except Exception:
 metrics = doc.get("metrics") or {}
 services = ", ".join(f"{s.get('name')}={s.get('active')}" for s in doc.get("services") or [])
 print("  collected: cpu={cpu}% ram_available={ram}% disk_used={disk}% load1={load}".format(
-    cpu=metrics.get("cpu_pct"), ram=metrics.get("ram_available_pct"),
+    cpu=metrics.get("cpu_pct"), ram=metrics.get("mem_available_pct"),
     disk=metrics.get("disk_used_pct"), load=metrics.get("load1")))
 print(f"  services:  {services or 'none'}")
 PY

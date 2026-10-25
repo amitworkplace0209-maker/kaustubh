@@ -184,6 +184,12 @@ export default function DatabasePage() {
     } catch { say('err', 'Clipboard unavailable'); }
   };
 
+  const filteredCollections = useMemo(() => {
+    const q = filterQ.trim().toLowerCase();
+    if (!q) return collections;
+    return collections.filter(c => String(c.name ?? '').toLowerCase().includes(q));
+  }, [collections, filterQ]);
+
   if (loading && !info) {
     return (
       <div className="space-y-4">
@@ -204,12 +210,6 @@ export default function DatabasePage() {
   const ops = resources?.operations ?? {};
   const metrics = resources?.metrics ?? {};
   const network = resources?.network ?? {};
-
-  const filteredCollections = useMemo(() => {
-    const q = filterQ.trim().toLowerCase();
-    if (!q) return collections;
-    return collections.filter(c => String(c.name ?? '').toLowerCase().includes(q));
-  }, [collections, filterQ]);
 
   return (
     <div className="space-y-4 pb-6">

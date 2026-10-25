@@ -27,6 +27,7 @@ import {
   hostNotice,
   hostStatusTone,
   isVmId,
+  jwtExpiresAt,
   openIncidentLabel,
   serviceLabel,
   serviceTone,
@@ -208,6 +209,19 @@ test('VM ids are validated before any request is made', () => {
   assert.equal(isVmId(null), false);
 });
 
+test('operator token expiry is read but never trusted', () => {
+  const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const signed = `${b64({ alg: 'HS256' })}.${b64({ exp: 1893456000, role: 'admin' })}.sig`;
+  assert.equal(jwtExpiresAt(signed), 1893456000000);
+
+  // Anything unreadable returns null so the caller uses a short cache — not
+  // "valid forever".
+  assert.equal(jwtExpiresAt('not-a-jwt'), null);
+  assert.equal(jwtExpiresAt(''), null);
+  assert.equal(jwtExpiresAt(`${b64({ alg: 'none' })}.${b64({ sub: 'x' })}.sig`), null);
+  assert.equal(jwtExpiresAt(`${b64({ alg: 'none' })}.${b64({ exp: 'soon' })}.sig`), null);
+});
+
 test('severity and incident summary labels', () => {
   assert.equal(severityTone('critical'), 'danger');
   assert.equal(severityTone('error'), 'danger');
@@ -220,3 +234,4 @@ test('severity and incident summary labels', () => {
   assert.equal(openIncidentLabel({ critical: 0, warning: 0 }), 'No open incidents');
   assert.equal(openIncidentLabel(null), 'UNKNOWN');
 });
+

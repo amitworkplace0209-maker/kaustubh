@@ -40,9 +40,9 @@ work.
 ```
 browser ── /services/vm[/vm1|/vm2] ── Next proxy (kaustubh_session gate)
    │                                        │
-   │ same-origin /api/vm/*                   │ rewrite source /api/:path* →
-   ▼                                        ▼  BACKEND_URL (private addr)
-Next route handlers ────────────────────> Python API on VM1
+   │ same-origin /api/vm/* + Bearer JWT      │ /api/auth/trading-token mints it
+   ▼                                        ▼  (session-gated, in-memory only)
+Next rewrite /api/:path* ───────────────> Python API on VM1 (all reads need JWT)
                                             ▲        │
                     X-KDS-Agent-Token       │        │ Mongo (Atlas or VM2)
                     (per-VM, POST only)     │        ▼
@@ -117,7 +117,7 @@ the page is not visible.
 All routes are mounted under `/api/vm` in the existing FastAPI app
 (`python-service/app.py`).
 
-### Read
+### Read (operator JWT required on every row)
 
 | Method | Path | Notes |
 |---|---|---|
@@ -129,6 +129,11 @@ All routes are mounted under `/api/vm` in the existing FastAPI app
 | GET | `/api/vm/remediations` | Filters: `vm`, `limit` |
 | GET | `/api/vm/{vm_id}` | `vm1`/`vm2`: snapshot, agent state, 6 h history, incidents, events, actions, thresholds, recovery policy |
 | GET | `/api/vm/{vm_id}/history` | `hours` 0–168 (default 6), `limit` 1–1000 |
+
+All eight read routes reject a request with `401 OPERATOR_JWT_REQUIRED` when no
+valid operator JWT is present, `401 INVALID_OPERATOR_JWT` for a bad signature or
+expired token, and `403 FORBIDDEN` for a correctly signed token that is not the
+owner/admin. Agent headers do not satisfy any read route.
 
 ### Operator mutations
 
@@ -151,20 +156,31 @@ top.
 
 ### Authentication model
 
-* **Browser reads** pass through the Next proxy (`proxy.ts`), which requires a
-  live `kaustubh_session` cookie (signature **and** MongoDB session row) for
-  every `/api/*` request. No read endpoint is reachable from the browser
-  without that session.
-* **Operator writes** also fetch a short-lived JWT from
-  `/api/auth/trading-token` and send `Authorization: Bearer <jwt>`. The Python
-  layer verifies it with the existing `services.jwt_auth.verify_token`.
+Enforcement happens at the Python boundary. The Next session gate is defence in
+depth, not the only control, so reaching the port directly confers nothing.
+
+* **Browser reads and writes** first fetch a short-lived JWT from
+  `/api/auth/trading-token`, which verifies the live `kaustubh_session` cookie
+  and MongoDB session row (MPIN/biometric enrolment included). The client keeps
+  the token in memory, refreshes it shortly before expiry, and retries once on
+  a `401`. `proxy.ts` independently rejects any `/api/*` call without a
+  session, so the browser needs both controls to reach the data.
+* **Every Python VM route except the two agent endpoints** requires
+  `Authorization: Bearer <operator JWT>` (or the `X-Operator-JWT` header) and
+  the owner/admin identity. Reads are no longer anonymous: a direct
+  `curl http://10.1.1.133:8000/api/vm/overview` returns `401`.
 * **Agents** call the Python service directly on port 8000 and must present the
   per-VM token. Tokens are compared as SHA-256 digests in constant time; a VM1
-  token cannot submit as VM2. If a token is not configured the endpoint fails
-  closed with `503 AGENT_TOKEN_NOT_CONFIGURED`.
-* **Direct API access is a known residual gap.** The Python port has no
-  session check on GET routes. It must therefore stay bound to the private
-  address (see §7) and never be exposed publicly. See §12.
+  token cannot submit as VM2, an operator JWT cannot submit telemetry, and an
+  agent token cannot read human endpoints. If a token is not configured the
+  endpoint fails closed with `503 AGENT_TOKEN_NOT_CONFIGURED`.
+* **Prerequisite**: the Next server needs `APP_USERNAME` / `APP_PASSWORD` (it
+  already reads `python-service/.env.local`) to mint the operator JWT. If they
+  are missing, `/api/auth/trading-token` returns `502 NO_OPERATOR_CREDENTIALS`
+  and the VM pages show that error rather than data. Reads fail loudly; they
+  never fall back to anonymous access.
+* The Python port still stays bound to `10.1.1.133` (see §7). Authentication
+  now makes a leak survivable, but network isolation remains the first layer.
 
 Responses use `{"ok": true, "data": ...}` or
 `{"detail": {"code", "message"}}`.
@@ -491,8 +507,10 @@ systemctl show kds-agent.service -p MemoryMax -p CPUQuota -p TasksMax
 * MongoDB port 27017 is unchanged: bound to loopback + private IP, auth
   enabled. This feature does not modify `mongod.conf`, users, roles or the OCI
   security list.
-* The API stays on the private network. The browser reaches it only through the
-  session-gated Next proxy.
+* The API stays on the private network. The browser reaches it through the
+  session-gated Next layer, and every read is independently authorised by an
+  operator JWT at the Python boundary. Network isolation is a second layer, not
+  the only one.
 * Journal content is redacted for URIs/passwords/tokens and truncated; only
   priority ≤ 3 (error and worse) lines are read.
 
@@ -505,17 +523,19 @@ systemctl show kds-agent.service -p MemoryMax -p CPUQuota -p TasksMax
 3. **No authenticated MongoDB ping.** No monitor user/URI is configured, so
    VM2 shows the ping as `NOT_CONFIGURED`. TCP reachability is still real.
 4. **No backups exist on VM2.** Backup status is `NOT_CONFIGURED`, not "OK".
-5. **Direct GET access to the Python port is not session-authenticated.** It is
-   mitigated by binding to `10.1.1.133`; if port 8000 is ever exposed beyond
-   the VCN, add an internal auth header/firewall rule first.
-6. **No push channel.** Actions are delivered in the heartbeat response, so a
+5. **VM reads need the server-side operator credentials.** If `APP_USERNAME` /
+   `APP_PASSWORD` are missing from the Next server's environment, the token
+   route returns `502 NO_OPERATOR_CREDENTIALS` and the pages show it. This is
+   intentional fail-closed behaviour, not an anonymous fallback.
+6. **One shared operator identity.** The single owner account is the only
+   operator, so audit fields record that account rather than distinct humans.
+   Any valid owner session + JWT can restart the allowlisted units; there is no
+   separate read-only role.
+7. **No push channel.** Actions are delivered in the heartbeat response, so a
    manual restart can take up to 60 s to reach the agent.
-7. **No external alerting.** Incidents are visible in the UI, not emailed or
+8. **No external alerting.** Incidents are visible in the UI, not emailed or
    paged. Email/SMS is out of scope.
-8. **No log retention beyond the UI limits** (10 events/heartbeat, 30-day TTL).
-9. **Single-owner operator model.** Any valid owner session + JWT can restart
-   the allowlisted units. There is no separate "read-only" role on the Python
-   port itself.
+9. **No log retention beyond the UI limits** (10 events/heartbeat, 30-day TTL).
 10. **Topology constants.** `VM_META` (IPs, shape) and the installer's VM1
     dependency target (`10.1.2.178:27017`) are static; changing the VCN layout
     requires a code/config update.

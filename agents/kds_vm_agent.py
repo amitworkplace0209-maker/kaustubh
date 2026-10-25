@@ -49,6 +49,10 @@ MAX_QUEUE = 5
 MAX_EVENTS = 10
 MAX_EVENT_AGE_S = 900
 MAX_QUEUE_AGE_S = 1800
+#: Upper bound for all heartbeat deliveries in one run. The unit is killed at
+#: 55 s; without this, a 5-deep queue on a filtered network could spend
+#: 5 x 15 s + 15 s and be killed before state is saved.
+DELIVERY_BUDGET_S = 25
 LOCAL_RESTART_COOLDOWN_S = 600
 LOCAL_RESTART_MAX_PER_HOUR = 2
 SECRET_PATTERNS = re.compile(
@@ -682,20 +686,35 @@ def run_once(config_path: str, check_only: bool = False) -> int:
     flush_pending_result(state, api_url, headers)
 
     # Deliver a small bounded offline queue oldest-first, then the current sample.
+    # The whole attempt is time-budgeted: a filtered/unreachable backend must
+    # never make the run overrun the unit's 55 s timeout (which would kill it
+    # before the queue and sequence state are saved).
+    delivery_started = time.monotonic()
     queue = list(state.get("queue") or [])
     delivered = 0
+    network_down = False
     for queued in queue[:MAX_QUEUE]:
+        if time.monotonic() - delivery_started > DELIVERY_BUDGET_S:
+            break
         status, payload = post_json(f"{api_url}/api/vm/heartbeat", queued, headers)
         if 200 <= status < 300:
             delivered += 1
+        elif status == 0:
+            network_down = True
+            break
         elif status in (401, 403, 503):
             break
     if delivered:
         state["queue"] = queue[delivered:]
 
-    status, payload = post_json(f"{api_url}/api/vm/heartbeat", snapshot, headers)
+    if network_down or time.monotonic() - delivery_started > DELIVERY_BUDGET_S:
+        # Do not spend a second timeout on the current sample; keep it queued.
+        status, payload = 0, {"error": "queued: delivery path unavailable"}
+    else:
+        status, payload = post_json(f"{api_url}/api/vm/heartbeat", snapshot, headers)
     if status in (200, 201):
-        state["queue"] = []
+        # Keep any samples that were not delivered (budget/auth failures); the
+        # live sample is now the source of truth for the current state.
         data = payload.get("data") or {}
         handle_actions(cfg, state, data.get("actions") or [], api_url, headers)
         save_state(state_path, state)

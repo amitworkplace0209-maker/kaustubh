@@ -19,6 +19,7 @@ if _PY_ROOT not in sys.path:
 
 from api import vm_management  # noqa: E402
 from config.settings import settings  # noqa: E402
+from fastapi.routing import APIRoute  # noqa: E402
 from services.jwt_auth import issue_token  # noqa: E402
 
 VM1_TOKEN = "test-agent-token-vm1-0123456789abcdef"
@@ -68,6 +69,25 @@ def heartbeat_body(vm: str = "vm1") -> dict:
 
 def agent_headers(vm: str = "vm1", token: str = VM1_TOKEN) -> dict:
     return {"X-KDS-Agent-VM": vm, "X-KDS-Agent-Token": token}
+
+
+def operator_headers(username: str | None = None) -> dict:
+    token = issue_token(username or settings.app_username or "kaustubh")
+    return {"Authorization": f"Bearer {token}"}
+
+
+# Every human-facing read. The direct Python port must reject all of these
+# without a valid operator JWT — a reachable port is not an authorisation.
+READ_PATHS = [
+    "/api/vm/overview",
+    "/api/vm/agents",
+    "/api/vm/incidents",
+    "/api/vm/incidents/507f1f77bcf86cd799439011",
+    "/api/vm/events",
+    "/api/vm/remediations",
+    "/api/vm/vm1",
+    "/api/vm/vm1/history",
+]
 
 
 def test_agent_headers_required(client):
@@ -149,12 +169,132 @@ def test_operator_acknowledge_happy_path(client, monkeypatch):
 
 
 def test_unknown_vm_detail_404(client):
-    assert client.get("/api/vm/vm9").status_code == 404
+    assert client.get("/api/vm/vm9", headers=operator_headers()).status_code == 404
 
 
 def test_incident_filter_validation(client):
-    assert client.get("/api/vm/incidents?severity=nope").status_code == 422
-    assert client.get("/api/vm/incidents?limit=0").status_code == 422
+    assert client.get("/api/vm/incidents?severity=nope", headers=operator_headers()).status_code == 422
+    assert client.get("/api/vm/incidents?limit=0", headers=operator_headers()).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# read authorisation — the reported direct-port gap
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("path", READ_PATHS)
+def test_read_endpoints_require_operator_jwt(client, path):
+    res = client.get(path)
+    assert res.status_code == 401, f"{path} leaked without a credential"
+    body = res.json()
+    assert body["detail"]["code"] == "OPERATOR_JWT_REQUIRED"
+    assert "data" not in body
+
+
+@pytest.mark.parametrize("path", READ_PATHS)
+def test_read_endpoints_reject_agent_credentials(client, path):
+    # A valid agent token proves the caller is a VM, not an operator.
+    res = client.get(path, headers=agent_headers())
+    assert res.status_code == 401, f"{path} accepted agent credentials"
+    assert VM1_TOKEN not in res.text
+
+
+def test_read_endpoints_reject_forged_jwt(client):
+    res = client.get("/api/vm/overview", headers={"Authorization": "Bearer nope.nope.nope"})
+    assert res.status_code == 401
+    assert res.json()["detail"]["code"] == "INVALID_OPERATOR_JWT"
+
+
+def test_read_endpoints_reject_non_owner_jwt(client):
+    # Correctly signed, but not the single owner account and no admin role.
+    res = client.get("/api/vm/overview", headers=operator_headers("someone-else"))
+    assert res.status_code == 403
+    assert res.json()["detail"]["code"] == "FORBIDDEN"
+    assert "data" not in res.json()
+
+
+def test_owner_can_read_overview(client, monkeypatch):
+    async def fake_overview(_thresholds):
+        return {"hosts": [], "pending_actions": [], "generated_at": None}
+
+    monkeypatch.setattr(vm_management.vm_store, "overview", fake_overview)
+    res = client.get("/api/vm/overview", headers=operator_headers())
+    assert res.status_code == 200, res.text
+    data = res.json()["data"]
+    # No hosts means no proof of life: DISCONNECTED, never a green default.
+    assert data["overall"] == "DISCONNECTED"
+    assert data["connected_agents"] == 0
+
+
+def test_owner_can_read_vm_detail_honestly(client, monkeypatch):
+    async def refresh(_vm, _th):
+        return None
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def no_current(_vm):
+        return None
+
+    async def no_events(**_kwargs):
+        return {"events": []}
+
+    async def no_actions(**_kwargs):
+        return {"actions": []}
+
+    monkeypatch.setattr(vm_management.vm_store, "refresh_staleness", refresh)
+    monkeypatch.setattr(vm_management.vm_store, "get_current", no_current)
+    monkeypatch.setattr(vm_management.vm_store, "get_history", empty)
+    monkeypatch.setattr(vm_management.vm_store, "incidents_for_vm", empty)
+    monkeypatch.setattr(vm_management.vm_store, "list_events", no_events)
+    monkeypatch.setattr(vm_management.vm_store, "list_actions", no_actions)
+
+    res = client.get("/api/vm/vm1", headers=operator_headers())
+    assert res.status_code == 200, res.text
+    data = res.json()["data"]
+    assert data["snapshot"] is None
+    assert data["agent_state"] == "NEVER_CONNECTED"
+    assert data["history"] == []
+
+
+def test_operator_jwt_is_not_an_agent_credential(client):
+    # The two credential families are separate: a valid operator JWT cannot
+    # submit telemetry, because heartbeat requires the agent headers.
+    res = client.post("/api/vm/heartbeat", json=heartbeat_body(), headers=operator_headers())
+    assert res.status_code == 422
+    assert str(res.json()["detail"][0]["loc"][-1]).lower() == "x-kds-agent-vm"
+
+    # ... and it cannot report a remediation result either.
+    res = client.post(
+        "/api/vm/remediations/act1/result",
+        json={"success": True},
+        headers=operator_headers(),
+    )
+    assert res.status_code == 422
+
+
+def test_remediation_result_requires_agent_headers(client):
+    res = client.post("/api/vm/remediations/act1/result", json={"success": True})
+    assert res.status_code == 422
+
+
+def _dependency_names(route: APIRoute) -> set[str]:
+    names: set[str] = set()
+    stack = [route.dependant]
+    while stack:
+        dependant = stack.pop()
+        if dependant.call is not None:
+            names.add(dependant.call.__name__)
+        stack.extend(dependant.dependencies)
+    return names
+
+
+def test_every_vm_route_requires_operator_or_agent_auth():
+    """Guard against a future route shipping without an auth dependency."""
+    routes = [r for r in vm_management.router.routes if isinstance(r, APIRoute)]
+    assert len(routes) == 13, [r.path for r in routes]
+    for route in routes:
+        auth = _dependency_names(route) & {"require_agent", "require_operator"}
+        assert auth, f"{sorted(route.methods)} {route.path} has no auth dependency"
 
 
 def test_remediation_requires_confirmation(client):

@@ -662,7 +662,7 @@ def _validate_setting(key: str, value) -> None:
     raise ValueError(f"Setting {key} has an unknown type: {dtype}")
 
 
-async def set_setting(key: str, value) -> dict:
+async def set_setting(key: str, value, source: str = "api") -> dict:
     if key not in DEFAULTS:
         raise ValueError(f"Unknown setting: {key}")
     # Normalize a raw dict into the string contract for terminal_mode_presets.
@@ -675,6 +675,15 @@ async def set_setting(key: str, value) -> dict:
     _validate_setting(key, value)
     db = get_db()
     now = datetime.now(timezone.utc)
+    # Capture the previous effective value BEFORE the upsert so the audit trail
+    # can show what actually changed instead of only the new value.
+    previous = DEFAULTS.get(target, {}).get("value")
+    try:
+        prev_doc = await db.app_settings.find_one({"key": target}, {"value": 1})
+        if prev_doc is not None:
+            previous = prev_doc.get("value")
+    except Exception as exc:
+        logger.debug("Previous settings value read failed for %s: %s", target, exc)
     doc = {
         "key": target,
         "value": value,
@@ -687,6 +696,14 @@ async def set_setting(key: str, value) -> dict:
     if target != key:
         await db.app_settings.delete_one({"key": key})
     logger.info("Setting updated: %s -> %s", key, target)
+    await _record_audit(
+        "update",
+        key=target,
+        old_value=previous,
+        new_value=value,
+        source=source,
+        extra={"requestedKey": key} if key != target else None,
+    )
 
     # Live runtime propagation: refresh the TTL cache, notify the state store
     # (system SSE stream) and apply the few settings with immediate side effects.
@@ -786,11 +803,25 @@ async def reset_setting(key: str) -> dict:
         raise ValueError(f"Unknown setting: {key}")
     db = get_db()
     target = resolve_schedule_alias(key)
+    previous = None
+    try:
+        prev_doc = await db.app_settings.find_one({"key": target}, {"value": 1})
+        if prev_doc is not None:
+            previous = prev_doc.get("value")
+    except Exception:
+        previous = None
     await db.app_settings.delete_one({"key": target})
     if target != key:
         await db.app_settings.delete_one({"key": key})
     fallback = DEFAULTS[target]["value"]
     logger.info("Setting reset to default: %s -> %s", key, fallback)
+    await _record_audit(
+        "reset",
+        key=target,
+        old_value=previous,
+        new_value=fallback,
+        source="reset",
+    )
 
     # Live runtime propagation — a reset is a FIRST-CLASS change, exactly like
     # a write: flush the TTL cache, notify the state store and re-evaluate the
@@ -855,6 +886,369 @@ async def reset_setting(key: str) -> dict:
 
 async def reset_all_settings() -> dict:
     db = get_db()
+    previous = await get_all_settings()
     await db.app_settings.delete_many({})
+    await _record_audit(
+        "reset-all",
+        keys=list(DEFAULTS.keys()),
+        old_value={k: v.get("value") for k, v in previous.items()},
+        new_value="defaults",
+        source="reset",
+    )
+    await _refresh_runtime_after_write()
     return await get_all_settings()
+
+
+# ---------------------------------------------------------------------------
+# Advanced settings API support
+# ---------------------------------------------------------------------------
+# The functions below power the redesigned Settings workspace: a schema
+# catalogue (so the UI is backend-driven instead of hardcoded), a real change
+# audit trail, bulk import/export, per-category reset and a health summary.
+# Everything here is additive and never changes the storage contract.
+# ---------------------------------------------------------------------------
+
+_AUDIT_COLLECTION = "app_settings_audit"
+_AUDIT_KEEP = 1000
+_AUDIT_PRUNE_EVERY = 50
+_audit_write_count = 0
+# Matched on whole underscore-separated segments, not as raw substrings: a
+# substring match made every key containing "pin" sensitive ("mwr_max_pins",
+# "stg_database_ping_enabled"), which hid those values from the catalogue and
+# rejected their writes/imports.
+_SENSITIVE_TOKENS = frozenset({
+    "password", "passwd", "secret", "token", "pin", "credential", "private",
+})
+_SENSITIVE_SUBSTRINGS = ("mongodb_uri",)
+
+
+def _jsonable(value: Any) -> Any:
+    """Best-effort conversion of a setting value into a JSON-safe value."""
+    try:
+        json.dumps(value)
+        return value
+    except Exception:
+        try:
+            return str(value)
+        except Exception:
+            return None
+
+
+def is_sensitive_setting(key: str) -> bool:
+    """Settings whose value must never be returned to the browser."""
+    lowered = key.lower()
+    if any(hint in lowered for hint in _SENSITIVE_SUBSTRINGS):
+        return True
+    segments = [part for part in lowered.replace("-", "_").split("_") if part]
+    return any(part in _SENSITIVE_TOKENS for part in segments)
+
+
+def _infer_type(key: str, defn: dict) -> str:
+    declared = defn.get("type")
+    if declared:
+        return str(declared)
+    value = defn.get("value")
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return "number"
+    if isinstance(value, list):
+        return "select"
+    return "string"
+
+
+async def _prune_audit(db) -> None:
+    """Keep the audit collection bounded without deleting recent history."""
+    try:
+        cursor = db[_AUDIT_COLLECTION].find({}, {"_id": 1}).sort("ts", -1).skip(_AUDIT_KEEP)
+        stale = [doc["_id"] async for doc in cursor]
+        if stale:
+            await db[_AUDIT_COLLECTION].delete_many({"_id": {"$in": stale}})
+    except Exception as exc:
+        logger.debug("Settings audit prune failed: %s", exc)
+
+
+async def _record_audit(
+    action: str,
+    *,
+    key: str | None = None,
+    keys: list[str] | None = None,
+    old_value: Any = None,
+    new_value: Any = None,
+    source: str = "api",
+    extra: dict | None = None,
+) -> None:
+    """Append a settings mutation to the audit trail (best effort)."""
+    global _audit_write_count
+    try:
+        db = get_db()
+        doc: dict[str, Any] = {
+            "action": action,
+            "key": key,
+            "keys": keys or ([key] if key else []),
+            "oldValue": _jsonable(old_value),
+            "newValue": _jsonable(new_value),
+            "source": source,
+            "ts": datetime.now(timezone.utc),
+        }
+        if extra:
+            doc.update(extra)
+        await db[_AUDIT_COLLECTION].insert_one(doc)
+        _audit_write_count += 1
+        if _audit_write_count % _AUDIT_PRUNE_EVERY == 0:
+            await _prune_audit(db)
+    except Exception as exc:
+        logger.debug("Settings audit write failed: %s", exc)
+
+
+async def _refresh_runtime_after_write() -> None:
+    """Flush the live runtime cache and let the scheduler re-evaluate once."""
+    try:
+        from services.runtime_settings import refresh_runtime_settings
+        await refresh_runtime_settings()
+    except Exception as exc:
+        logger.debug("Runtime settings cache refresh failed: %s", exc)
+    try:
+        from scheduler import request_reconcile
+        request_reconcile()
+    except Exception as exc:
+        logger.debug("Scheduler reconcile request failed: %s", exc)
+
+
+def validate_settings_bulk(values: dict) -> dict[str, str]:
+    """Validate a settings patch without writing anything.
+
+    Returns ``{key: message}`` for every invalid key. An empty dict means the
+    whole patch is safe to apply atomically.
+    """
+    errors: dict[str, str] = {}
+    if not isinstance(values, dict):
+        return {"$": "Settings patch must be an object"}
+    if len(values) > 500:
+        return {"$": "Too many settings in one request (max 500)"}
+    for key, value in values.items():
+        if key not in DEFAULTS:
+            errors[str(key)] = f"Unknown setting: {key}"
+            continue
+        if is_sensitive_setting(key):
+            errors[str(key)] = "Sensitive settings cannot be written from this endpoint"
+            continue
+        try:
+            _validate_setting(key, value)
+        except ValueError as exc:
+            errors[str(key)] = str(exc)
+    return errors
+
+
+async def get_settings_schema() -> list[dict]:
+    """Return the complete settings catalogue the advanced UI renders.
+
+    Every entry carries its declared type, bounds/options, default, category,
+    live-runtime flag and the currently persisted value. Sensitive keys are
+    listed with a null value so the browser can never read them.
+    """
+    settings = await get_all_settings()
+    live_keys: set[str] = set()
+    try:
+        from services.runtime_settings import LIVE_KEYS
+        live_keys = set(LIVE_KEYS)
+    except Exception:
+        live_keys = set()
+
+    rows: list[dict] = []
+    for key, doc in settings.items():
+        defn = DEFAULTS.get(key, {})
+        sensitive = is_sensitive_setting(key)
+        updated = doc.get("updatedAt")
+        rows.append({
+            "key": key,
+            "category": doc.get("category") or "general",
+            "description": doc.get("description") or key,
+            "type": _infer_type(key, defn),
+            "value": None if sensitive else doc.get("value"),
+            "default": None if sensitive else defn.get("value"),
+            "options": defn.get("options"),
+            "min": defn.get("min"),
+            "max": defn.get("max"),
+            "unit": defn.get("unit"),
+            "live": key in live_keys,
+            "sensitive": sensitive,
+            "updatedAt": updated.isoformat() if hasattr(updated, "isoformat") else updated,
+        })
+    rows.sort(key=lambda row: (row["category"], row["key"]))
+    return rows
+
+
+async def get_settings_audit(
+    limit: int = 100,
+    key: str | None = None,
+    action: str | None = None,
+) -> list[dict]:
+    """Newest-first settings change history."""
+    db = get_db()
+    query: dict[str, Any] = {}
+    if key:
+        query["$or"] = [{"key": key}, {"keys": key}]
+    if action:
+        query["action"] = action
+    safe_limit = max(1, min(int(limit or 100), 500))
+    docs = await db[_AUDIT_COLLECTION].find(query).sort("ts", -1).limit(safe_limit).to_list(length=safe_limit)
+    out: list[dict] = []
+    for doc in docs:
+        ts = doc.get("ts")
+        out.append({
+            "id": str(doc.get("_id")),
+            "action": doc.get("action"),
+            "key": doc.get("key"),
+            "keys": doc.get("keys") or [],
+            "oldValue": doc.get("oldValue"),
+            "newValue": doc.get("newValue"),
+            "source": doc.get("source") or "api",
+            "category": doc.get("category"),
+            "ts": ts.isoformat() if hasattr(ts, "isoformat") else ts,
+        })
+    return out
+
+
+async def reset_settings_category(category: str) -> dict:
+    """Reset every setting in one category to its declared default."""
+    keys = [key for key, defn in DEFAULTS.items() if defn.get("category") == category]
+    if not keys:
+        raise ValueError(f"Unknown settings category: {category}")
+    db = get_db()
+    previous: dict[str, Any] = {}
+    try:
+        current = await get_all_settings()
+        previous = {key: current[key].get("value") for key in keys if key in current}
+    except Exception:
+        previous = {}
+    targets = sorted({resolve_schedule_alias(key) for key in keys})
+    await db.app_settings.delete_many({"key": {"$in": targets}})
+    for key in keys:
+        if key not in targets:
+            await db.app_settings.delete_one({"key": key})
+    await _refresh_runtime_after_write()
+    await _record_audit(
+        "reset-category",
+        keys=keys,
+        old_value=previous,
+        new_value="defaults",
+        source="reset",
+        extra={"category": category},
+    )
+    logger.info("Settings category reset to defaults: %s (%d keys)", category, len(keys))
+    return await get_all_settings()
+
+
+async def export_settings() -> dict:
+    """A portable snapshot of every non-sensitive effective setting."""
+    settings = await get_all_settings()
+    values = {
+        key: doc.get("value")
+        for key, doc in settings.items()
+        if not is_sensitive_setting(key)
+    }
+    return {
+        "version": 1,
+        "exportedAt": datetime.now(timezone.utc).isoformat(),
+        "count": len(values),
+        "settings": values,
+    }
+
+
+async def import_settings(values: dict, dry_run: bool = False) -> dict:
+    """Validate then apply a settings snapshot atomically.
+
+    A single invalid key rejects the whole import unless the caller retries
+    with a corrected payload, so a half-applied configuration can never occur.
+    """
+    if not isinstance(values, dict):
+        raise ValueError("Import payload must be a settings object")
+    errors = validate_settings_bulk(values)
+    if errors:
+        return {"ok": False, "dryRun": dry_run, "applied": [], "rejected": errors}
+
+    normalized: dict[str, Any] = {}
+    for key, value in values.items():
+        if key == "terminal_mode_presets" and isinstance(value, dict):
+            value = json.dumps(value)
+        normalized[key] = value
+
+    if dry_run:
+        return {"ok": True, "dryRun": True, "applied": sorted(normalized), "rejected": {}}
+
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    previous: dict[str, Any] = {}
+    try:
+        current = await get_all_settings()
+        previous = {key: current[key].get("value") for key in normalized if key in current}
+    except Exception:
+        previous = {}
+
+    for key, value in normalized.items():
+        target = resolve_schedule_alias(key)
+        defn = DEFAULTS[key]
+        doc = {
+            "key": target,
+            "value": value,
+            "category": defn["category"],
+            "description": defn["description"],
+            "updatedAt": now,
+        }
+        await db.app_settings.update_one({"key": target}, {"$set": doc}, upsert=True)
+        if target != key:
+            await db.app_settings.delete_one({"key": key})
+
+    await _refresh_runtime_after_write()
+    await _record_audit(
+        "import",
+        keys=sorted(normalized.keys()),
+        old_value=previous,
+        new_value=normalized,
+        source="import",
+    )
+    logger.info("Settings import applied: %d keys", len(normalized))
+    return {
+        "ok": True,
+        "dryRun": False,
+        "applied": sorted(normalized.keys()),
+        "rejected": {},
+        "settings": await get_all_settings(),
+    }
+
+
+async def get_settings_health() -> dict:
+    """One-shot operational summary for the Settings overview."""
+    settings = await get_all_settings()
+    db = get_db()
+    updated: list[Any] = [doc.get("updatedAt") for doc in settings.values() if doc.get("updatedAt")]
+    latest = max(updated) if updated else None
+    audit_count = 0
+    try:
+        audit_count = await db[_AUDIT_COLLECTION].count_documents({})
+    except Exception:
+        audit_count = 0
+    live_keys: list[str] = []
+    try:
+        from services.runtime_settings import LIVE_KEYS
+        live_keys = sorted(LIVE_KEYS)
+    except Exception:
+        live_keys = []
+    categories: dict[str, int] = {}
+    for doc in settings.values():
+        category = doc.get("category") or "general"
+        categories[category] = categories.get(category, 0) + 1
+    return {
+        "totalKeys": len(settings),
+        "customizedKeys": len(updated),
+        "defaultKeys": len(settings) - len(updated),
+        "categories": categories,
+        "liveKeyCount": len(live_keys),
+        "liveKeys": live_keys,
+        "auditCount": audit_count,
+        "lastChange": latest.isoformat() if hasattr(latest, "isoformat") else latest,
+        "database": "connected",
+    }
+
 

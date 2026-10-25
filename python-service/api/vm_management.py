@@ -2,15 +2,22 @@
 
 Authentication model
 --------------------
+Every endpoint is authorised at this boundary; the Next.js session gate is
+defence in depth, not the only control.
+
+* **Humans** need the operator JWT for *all* reads (overview, host detail,
+  history, incidents, events, remediation history) and for every mutation
+  (acknowledge / resolve / request restart). The JWT is minted from the single
+  owner account and is the same credential used by other terminal actions.
+  The browser obtains it from the session-gated ``/api/auth/trading-token``
+  route and keeps it in memory only. A direct request to the Python port
+  without a valid JWT is rejected with 401: the API is not readable merely
+  because the port is reachable.
 * **Agents** (VM1/VM2) POST heartbeats with ``X-KDS-Agent-VM`` and
   ``X-KDS-Agent-Token``. Each host has a separate revocable token; the backend
   stores/compares only SHA-256 digests in constant time. A token for VM1 can
-  never submit as VM2.
-* **Humans** reach the read endpoints through the Next.js session gate. The
-  mutating endpoints (acknowledge / resolve / remediation) additionally require
-  the operator JWT minted by ``/api/auth/trading-token`` — the same credential
-  used for other mutating terminal actions. The operator is the single owner
-  account, i.e. the admin role.
+  never submit as VM2. An operator JWT is not accepted in place of an agent
+  token, and agent credentials cannot read human endpoints.
 
 No endpoint ever returns an agent token, MongoDB URI, SSH key or env contents.
 """
@@ -293,7 +300,7 @@ def _host_view(host: dict) -> dict:
 
 
 @router.get("/overview")
-async def vm_overview():
+async def vm_overview(auth: dict = Depends(require_operator)):
     try:
         data = await vm_store.overview(thresholds())
     except Exception as exc:  # database down / unconfigured
@@ -335,7 +342,7 @@ async def vm_overview():
 
 
 @router.get("/agents")
-async def vm_agents():
+async def vm_agents(auth: dict = Depends(require_operator)):
     try:
         agents = await vm_store.agent_status(thresholds())
     except Exception as exc:
@@ -345,6 +352,7 @@ async def vm_agents():
 
 @router.get("/incidents")
 async def vm_incidents(
+    auth: dict = Depends(require_operator),
     vm: str = Query("", pattern="^(vm1|vm2)?$"),
     severity: str = Query("", pattern="^(info|warning|critical)?$"),
     status: str = Query("", pattern="^(open|acknowledged|resolved)?$"),
@@ -366,7 +374,7 @@ async def vm_incidents(
 
 
 @router.get("/incidents/{incident_id}")
-async def vm_incident_detail(incident_id: str):
+async def vm_incident_detail(incident_id: str, auth: dict = Depends(require_operator)):
     try:
         data = await vm_store.get_incident(incident_id)
     except Exception as exc:
@@ -412,6 +420,7 @@ async def vm_incident_resolve(
 
 @router.get("/events")
 async def vm_events(
+    auth: dict = Depends(require_operator),
     vm: str = Query("", pattern="^(vm1|vm2)?$"),
     severity: str = Query("", pattern="^(info|warning|error|critical|success)?$"),
     limit: int = Query(100, ge=1, le=300),
@@ -426,6 +435,7 @@ async def vm_events(
 
 @router.get("/remediations")
 async def vm_remediations(
+    auth: dict = Depends(require_operator),
     vm: str = Query("", pattern="^(vm1|vm2)?$"),
     limit: int = Query(50, ge=1, le=200),
 ):
@@ -437,7 +447,7 @@ async def vm_remediations(
 
 
 @router.get("/{vm_id}")
-async def vm_detail(vm_id: str):
+async def vm_detail(vm_id: str, auth: dict = Depends(require_operator)):
     if vm_id not in VM_META:
         raise HTTPException(404, detail={"code": "VM_NOT_FOUND", "message": "unknown VM"})
     th = thresholds()
@@ -493,6 +503,7 @@ async def vm_detail(vm_id: str):
 @router.get("/{vm_id}/history")
 async def vm_history(
     vm_id: str,
+    auth: dict = Depends(require_operator),
     hours: float = Query(6, gt=0, le=168),
     limit: int = Query(240, ge=1, le=1000),
 ):

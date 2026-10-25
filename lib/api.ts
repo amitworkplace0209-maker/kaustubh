@@ -201,6 +201,123 @@ export const resetAllSettings = (): Promise<any> =>
 /** Which settings keys drive the live backend runtime (scheduler/WS/tick). */
 export const getSettingsRuntime = (): Promise<any> => apiFetch(API_BASE, '/api/settings/runtime');
 
+// ---- Advanced settings workbench -------------------------------------------
+
+/** Backend-declared setting type. Unknown/legacy keys are inferred server-side. */
+export type SettingValueType = 'boolean' | 'number' | 'string' | 'text' | 'select';
+
+/** One row of the backend settings catalogue (`GET /api/settings/schema`). */
+export type SettingSchemaRow = {
+  key: string;
+  category: string;
+  description: string;
+  type: SettingValueType | string;
+  value: any;
+  default: any;
+  options: Array<string | number> | null;
+  min: number | null;
+  max: number | null;
+  unit: string | null;
+  /** True when the key is applied to the live runtime without a restart. */
+  live: boolean;
+  /** Sensitive values are always returned as null and cannot be written here. */
+  sensitive: boolean;
+  updatedAt: string | null;
+};
+
+export type SettingsSchemaResponse = {
+  settings: SettingSchemaRow[];
+  categories: string[];
+  sensitiveKeys: string[];
+};
+
+export const getSettingsSchema = (): Promise<SettingsSchemaResponse> =>
+  apiFetch(API_BASE, '/api/settings/schema');
+
+export type SettingsHealth = {
+  totalKeys: number;
+  customizedKeys: number;
+  defaultKeys: number;
+  categories: Record<string, number>;
+  liveKeyCount: number;
+  liveKeys: string[];
+  auditCount: number;
+  lastChange: string | null;
+  database: string;
+};
+
+export const getSettingsHealth = (): Promise<SettingsHealth> =>
+  apiFetch(API_BASE, '/api/settings/health');
+
+export type SettingsAuditEntry = {
+  id: string;
+  action: string;
+  key: string | null;
+  keys: string[];
+  oldValue: any;
+  newValue: any;
+  source: string;
+  category: string | null;
+  ts: string | null;
+};
+
+export const getSettingsAudit = (params?: {
+  limit?: number;
+  key?: string;
+  action?: string;
+}): Promise<{ changes: SettingsAuditEntry[]; limit: number }> =>
+  apiFetch(API_BASE, `/api/settings/audit${buildQuery(params ?? {})}`);
+
+export type SettingsExportSnapshot = {
+  version: number;
+  exportedAt: string;
+  count: number;
+  settings: Record<string, any>;
+};
+
+export const exportSettings = (): Promise<SettingsExportSnapshot> =>
+  apiFetch(API_BASE, '/api/settings/export');
+
+export type SettingsPatchResult = {
+  updated?: Record<string, boolean>;
+  dryRun?: boolean;
+  validated?: string[];
+  settings?: Record<string, any>;
+  grouped?: Record<string, Record<string, any>>;
+};
+
+/** Atomic bulk write. Validation runs for the whole patch before any write. */
+export const patchSettings = (
+  settings: Record<string, any>,
+  dryRun = false,
+): Promise<SettingsPatchResult> =>
+  apiFetch(API_BASE, '/api/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({ settings, dryRun }),
+  });
+
+export type SettingsImportResult = {
+  ok: boolean;
+  dryRun: boolean;
+  applied: string[];
+  rejected: Record<string, string>;
+  settings?: Record<string, any>;
+};
+
+export const importSettings = (
+  settings: Record<string, any>,
+  dryRun = false,
+): Promise<SettingsImportResult> =>
+  apiFetch(API_BASE, '/api/settings/import', {
+    method: 'POST',
+    body: JSON.stringify({ settings, dryRun }),
+  });
+
+export const resetSettingsCategory = (category: string): Promise<any> =>
+  apiFetch(API_BASE, `/api/settings/reset-category/${encodeURIComponent(category)}`, {
+    method: 'POST',
+  });
+
 // ---- Downloads ----
 export const getDownloadUrl = (params: Record<string, string>): string => {
   const qs = new URLSearchParams(params).toString();

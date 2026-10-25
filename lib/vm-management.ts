@@ -229,6 +229,27 @@ export function isVmId(value: unknown): value is VmId {
   return value === 'vm1' || value === 'vm2';
 }
 
+/**
+ * Expiry (ms since epoch) of a JWT, or null when it cannot be read.
+ *
+ * Used only to refresh the operator credential before it lapses. The signature
+ * is never trusted here: the Python service remains the only verifier, and a
+ * null result makes the caller cache the token for a short fixed period rather
+ * than treating it as valid forever.
+ */
+export function jwtExpiresAt(token: string): number | null {
+  try {
+    const part = token.split('.')[1] ?? '';
+    if (!part) return null;
+    const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as { exp?: unknown };
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 export function agentStateTone(state: AgentState | null | undefined): VmTone {
   switch (state) {
     case 'CONNECTED': return 'success';

@@ -4,9 +4,17 @@
  * Split from `lib/vm-management` so the presentation rules stay importable by
  * node tests with no bundler aliases involved. All calls are same-origin; the
  * Next.js rewrite forwards `/api/vm/*` to the Python service.
+ *
+ * AUTHENTICATION
+ * The Python API requires an operator JWT on every route (reads included), so a
+ * direct request to the service port cannot read host health. The browser gets
+ * that short-lived JWT from the session-gated `/api/auth/trading-token` route —
+ * the same credential the terminal already uses for mutations — and keeps it in
+ * memory only. One retry is made if the backend reports an expired token.
  */
 
 import { API_BASE } from '@/lib/api-base';
+import { jwtExpiresAt } from './vm-management';
 import type {
   VmAction, VmApiError, VmDetailData, VmId, VmIncident, VmOverviewData,
 } from './vm-management';
@@ -73,56 +81,111 @@ async function vmRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return envelope.data;
 }
 
+// ---------------------------------------------------------------------------
+// operator credential (memory only)
+// ---------------------------------------------------------------------------
+
+let cachedToken: { token: string; expiresAt: number } | null = null;
+let tokenPromise: Promise<string> | null = null;
+
+async function getOperatorToken(force = false): Promise<string> {
+  if (!force && cachedToken && cachedToken.expiresAt - 30_000 > Date.now()) {
+    return cachedToken.token;
+  }
+  if (!tokenPromise) {
+    tokenPromise = (async () => {
+      let res: Response;
+      try {
+        res = await fetch('/api/auth/trading-token', { cache: 'no-store' });
+      } catch (cause) {
+        throw new VmApiFailure({
+          code: 'NETWORK_ERROR',
+          message: `Cannot reach the auth service: ${cause instanceof Error ? cause.message : 'network error'}`,
+          status: 0,
+        });
+      }
+      const body = (await res.json().catch(() => null)) as
+        | { ok?: boolean; token?: unknown; code?: unknown; error?: unknown; message?: unknown }
+        | null;
+      if (!res.ok || body?.ok !== true || typeof body.token !== 'string' || !body.token) {
+        throw new VmApiFailure({
+          code: String(body?.code ?? body?.error ?? 'OPERATOR_JWT_REQUIRED'),
+          message: String(body?.message ?? 'Sign in again to authorise this request.'),
+          status: res.status || 401,
+        });
+      }
+      cachedToken = {
+        token: body.token,
+        // A missing/unreadable exp falls back to a short cache, never to "valid forever".
+        expiresAt: jwtExpiresAt(body.token) ?? Date.now() + 60_000,
+      };
+      return cachedToken.token;
+    })().finally(() => {
+      tokenPromise = null;
+    });
+  }
+  return tokenPromise;
+}
+
+function withBearer(init: RequestInit, token: string): RequestInit {
+  return {
+    ...init,
+    headers: {
+      ...((init.headers as Record<string, string> | undefined) ?? {}),
+      Authorization: `Bearer ${token}`,
+    },
+  };
+}
+
+/**
+ * Authenticated request. A 401 means the credential was rejected before the
+ * handler ran, so exactly one refresh-and-retry is safe (and never loops).
+ */
+async function authRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = await getOperatorToken();
+  try {
+    return await vmRequest<T>(path, withBearer(init, token));
+  } catch (cause) {
+    if (cause instanceof VmApiFailure && cause.status === 401) {
+      const fresh = await getOperatorToken(true);
+      return vmRequest<T>(path, withBearer(init, fresh));
+    }
+    throw cause;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// reads
+// ---------------------------------------------------------------------------
+
 export function getVmOverview(signal?: AbortSignal): Promise<VmOverviewData> {
-  return vmRequest<VmOverviewData>('/api/vm/overview', { signal });
+  return authRequest<VmOverviewData>('/api/vm/overview', { signal });
 }
 
 export function getVmDetail(vmId: VmId, signal?: AbortSignal): Promise<VmDetailData> {
-  return vmRequest<VmDetailData>(`/api/vm/${vmId}`, { signal });
+  return authRequest<VmDetailData>(`/api/vm/${vmId}`, { signal });
 }
 
-export async function getOperatorJwt(): Promise<string | null> {
-  try {
-    const res = await fetch('/api/auth/trading-token', { cache: 'no-store' });
-    const body = await res.json().catch(() => null);
-    if (!res.ok || body?.ok !== true) return null;
-    return typeof body.token === 'string' && body.token ? body.token : null;
-  } catch {
-    return null;
-  }
-}
-
-async function operatorRequest<T>(path: string, init: RequestInit): Promise<T> {
-  const token = await getOperatorJwt();
-  if (!token) {
-    throw new VmApiFailure({
-      code: 'OPERATOR_JWT_REQUIRED',
-      message: 'No operator credential is available. Sign in again before changing an incident.',
-      status: 401,
-    });
-  }
-  return vmRequest<T>(path, {
-    ...init,
-    headers: { ...(init.headers ?? {}), Authorization: `Bearer ${token}` },
-  });
-}
+// ---------------------------------------------------------------------------
+// operator mutations
+// ---------------------------------------------------------------------------
 
 export function acknowledgeIncident(id: string, reason = ''): Promise<VmIncident> {
-  return operatorRequest<VmIncident>(`/api/vm/incidents/${encodeURIComponent(id)}/acknowledge`, {
+  return authRequest<VmIncident>(`/api/vm/incidents/${encodeURIComponent(id)}/acknowledge`, {
     method: 'POST',
     body: JSON.stringify({ reason }),
   });
 }
 
 export function resolveIncident(id: string, reason = ''): Promise<VmIncident> {
-  return operatorRequest<VmIncident>(`/api/vm/incidents/${encodeURIComponent(id)}/resolve`, {
+  return authRequest<VmIncident>(`/api/vm/incidents/${encodeURIComponent(id)}/resolve`, {
     method: 'POST',
     body: JSON.stringify({ reason }),
   });
 }
 
 export function requestRestart(vmId: VmId, service: string, reason = ''): Promise<{ action: VmAction; message: string }> {
-  return operatorRequest<{ action: VmAction; message: string }>('/api/vm/remediations', {
+  return authRequest<{ action: VmAction; message: string }>('/api/vm/remediations', {
     method: 'POST',
     body: JSON.stringify({ vm_id: vmId, service, confirm: true, reason }),
   });
