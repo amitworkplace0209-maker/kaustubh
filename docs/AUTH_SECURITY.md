@@ -1,5 +1,10 @@
 # Single-owner authentication & device security
 
+> Full step-by-step login/signup/OTP/MPIN/WebAuthn flows, API reference, audit
+> findings, VM deployment and troubleshooting live in
+> [`AUTH_LOGIN_FULL_GUIDE.md`](./AUTH_LOGIN_FULL_GUIDE.md). This file is the
+> architecture/security reference.
+
 This document describes the security model that replaces the old loose
 PIN/password setup. It is intentionally narrow: **exactly one owner**, up to
 **two concurrent devices**, a fresh **email OTP for a second device**, and a
@@ -14,7 +19,7 @@ per-login **real client IP** audit trail in MongoDB.
 | Only name + password are new | `name` and a `scrypt` password hash are persisted. The signup MPIN is discarded so the first login forces a new MPIN. |
 | Login from anywhere | `/login` + cookie session; no IP allow-list. |
 | Max 2 concurrent devices | Distinct `deviceId` values are counted from live `app_auth_sessions`. A third device is rejected with `403 DEVICE_LIMIT_REACHED`. Re-login on a known device rotates its session (no new slot). |
-| Second device needs a fresh OTP each time | Any new device while another is active creates a single-use OTP (`app_auth_otp`, HMAC-hashed, 10 min TTL, 5 attempts, bound to the requesting IP). |
+| Second device needs a fresh OTP each time | Any new device while another is active creates a single-use OTP (`app_auth_pending_logins`, HMAC-hashed, 10 min TTL, 5 attempts, bound to the requesting IP). |
 | Real IP per login | `getClientIp()` reads `x-forwarded-for` / `x-real-ip` / `x-vercel-forwarded-for` / the socket address. Signup and login **fail closed** (`400 IP_REQUIRED`) when no IP can be resolved. Every attempt is written to `app_auth_events`. |
 | MPIN mandatory after first login | `needsMpinSetup` drives a blocking setup screen, and `proxy.ts` refuses every page/API except the setup allow-list while the server-set `kaustubh_mpin_pending` cookie is present. `requireSession({ requireMpin: true })` additionally rejects sensitive APIs until an MPIN **or** a registered WebAuthn credential exists. |
 | MPIN and/or fingerprint | Settings → Security can set/change/remove an MPIN and register/remove real WebAuthn platform credentials. Removing one method is blocked while it is the only method left. |
@@ -28,10 +33,10 @@ per-login **real client IP** audit trail in MongoDB.
 | --- | --- |
 | `app_auth_users` | The single owner: name, email, scrypt `passwordHash`, scrypt `mpinHash`, lockout counters, timestamps. |
 | `app_auth_sessions` | One document per live login: `sessionId`, `userId`, `deviceId`, `deviceLabel`, real `ip`, `userAgent`, `kind`, `createdAt`, `lastSeenAt`, `expiresAt`, `revokedAt`. |
-| `app_auth_otp` | Pending second-device logins: HMAC `otpHash`, salt, request `ip`, attempts, expiry, status. |
+| `app_auth_pending_logins` | Pending second-device logins: HMAC `otpHash`, salt, request `ip`, attempts, expiry, status. |
 | `app_auth_events` | Append-only audit: signup, login, failures, OTP, MPIN, biometric, device revocation — always with the real IP. |
-| `app_auth_credentials` | WebAuthn public keys only (credential id, public key, counter, transports, label, timestamps). |
-| `app_auth_challenges` | Short-lived WebAuthn challenges (5 min), consumed once. |
+| `app_auth_webauthn` | WebAuthn public keys only (credential id, public key, counter, transports, label, timestamps). |
+| `app_auth_webauthn_challenges` | Short-lived WebAuthn challenges (5 min), consumed once. |
 
 Indexes are created lazily by `lib/auth-db.ts` (unique owner singleton, unique
 session id, TTL on OTP/challenges, session lookups by user/device).
