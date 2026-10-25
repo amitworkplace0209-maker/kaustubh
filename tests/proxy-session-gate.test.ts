@@ -25,7 +25,7 @@ const PROXY_SOURCE = readFileSync(join(process.cwd(), 'proxy.ts'), 'utf8');
 test('proxy verifies the session through verifySessionToken', () => {
   assert.match(
     PROXY_SOURCE,
-    /import\s*\{\s*verifySessionToken\s*\}\s*from\s*'@\/lib\/auth-crypto'/,
+    /import\s*\{[^}]*verifySessionToken[^}]*\}\s*from\s*'@\/lib\/auth-crypto'/,
     'proxy.ts must import verifySessionToken from @/lib/auth-crypto',
   );
   assert.match(
@@ -96,4 +96,22 @@ test('proxy keeps API routes and assets out of the HTML redirect gate', () => {
 test('proxy redirects to /login and preserves the original path', () => {
   assert.match(PROXY_SOURCE, /NextResponse\.redirect\(loginUrl\)/);
   assert.match(PROXY_SOURCE, /loginUrl\.searchParams\.set\('from',\s*pathname\)/);
+});
+
+test('proxy keeps the app closed until the first-run MPIN is saved', () => {
+  // A session is issued at signup so the MPIN can be saved, but it is marked
+  // `kaustubh_mpin_pending`. Directly opening a page/API must not skip setup.
+  assert.match(PROXY_SOURCE, /MPIN_PENDING_COOKIE/);
+  assert.match(PROXY_SOURCE, /MPIN_SETUP_REQUIRED/);
+  assert.match(PROXY_SOURCE, /'\/api\/auth\/mpin\/setup'/);
+  assert.match(
+    PROXY_SOURCE,
+    /authenticated\s*&&\s*mpinPending\s*&&\s*!isMpinSetupPath\(pathname\)/,
+    'the gate must apply only to an authenticated, MPIN-pending session',
+  );
+  assert.match(
+    PROXY_SOURCE,
+    /setupUrl\.searchParams\.set\('from',\s*pathname\)/,
+    'the setup redirect must remember where the owner was going',
+  );
 });

@@ -11,15 +11,15 @@ let _validated = false;
 
 export function validateEnv(): void {
   if (_validated) return;
-  optionalEnv('NEXT_PUBLIC_API_BASE', 'http://127.0.0.1:8000');
+  optionalEnv('BACKEND_URL', 'http://127.0.0.1:8000');
   _validated = true;
 }
 
 export const env = {
   /** Server-side only. Optional 6-digit PIN for app lock bootstrap. */
   get APP_LOCK_PIN() { return optionalEnv('APP_LOCK_PIN'); },
-  /** Backend API base URL. */
-  get API_BASE() { return optionalEnv('NEXT_PUBLIC_API_BASE', 'http://127.0.0.1:8000'); },
+  /** Server-only private backend origin. Never expose this to the browser. */
+  get API_BASE() { return optionalEnv('BACKEND_URL', 'http://127.0.0.1:8000'); },
   /** Guest email for auto-login (optional). */
   get GUEST_EMAIL() { return optionalEnv('GUEST_EMAIL'); },
   /** Guest password for auto-login (optional). */

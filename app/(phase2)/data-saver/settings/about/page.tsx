@@ -14,14 +14,14 @@ export default function AboutPage() {
     { label: 'Profile', value: String(settings.profile_name ?? 'â€”') },
     { label: 'Trading mode', value: String(settings.trading_mode ?? 'â€”') },
     {
-      label: 'Backend API',
-      // The browser talks to its OWN origin and the Next.js rewrite forwards
-      // /api to the Python service — an absolute `127.0.0.1:8000` would point
-      // at the phone on a mobile device. Show the URL the browser really uses.
+      label: 'API route',
+      // The browser talks to its OWN origin and the Next.js server forwards
+      // /api to the Python service. The backend origin is server-only and is
+      // deliberately never shown here.
       value:
         typeof window !== 'undefined'
           ? `${window.location.origin}/api`
-          : `${process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000'}/api`,
+          : '/api (same origin)',
     },
     { label: 'Settings sections', value: String(SECTIONS.length) },
     { label: 'Live runtime keys', value: `${liveKeys.size} broadcast by backend` },

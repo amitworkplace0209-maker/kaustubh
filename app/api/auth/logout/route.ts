@@ -1,38 +1,52 @@
-import { NextRequest } from 'next/server';
-import { cookies } from 'next/headers';
-import { backendFetch } from '@/lib/backend';
+import type { NextRequest } from 'next/server';
+import { getClientIp } from '@/lib/auth-config';
+import { recordAuthEvent, revokeSessionDoc } from '@/lib/auth-db';
+import { clearAuthCookies, getSessionFromRequest } from '@/lib/auth-sessions';
+import { json } from '@/lib/auth-validation';
 
-export const revalidate = 0;
+export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 /**
- * POST /api/auth/logout
- * Proxies logout to the Python backend and clears the kaustubh_session
- * cookie so the frontend session state resets.
+ * POST / DELETE /api/auth/logout
+ *
+ * Revokes THIS device's session record in MongoDB and clears both auth cookies.
+ * Other devices stay signed in (revoke them explicitly from Settings).
  */
-export async function POST(_req: NextRequest) {
-  const cookieStore = await cookies();
-  cookieStore.delete('kaustubh_session');
+async function logout(request: NextRequest): Promise<Response> {
+  const ip = getClientIp(request) || 'unknown';
+  const userAgent = request.headers.get('user-agent') || 'unknown';
 
-  const res = await backendFetch('/api/logout', {
-    method: 'POST',
-    timeoutMs: 30000,
-  });
-  return Response.json(res.data || { ok: true, message: 'Logged out' });
+  try {
+    const active = await getSessionFromRequest(request);
+    if (active) {
+      await revokeSessionDoc(active.session.sessionId, 'logout');
+      await recordAuthEvent({
+        type: 'logout',
+        userId: String(active.user._id),
+        ip,
+        userAgent,
+        deviceId: active.session.deviceId,
+        deviceLabel: active.session.deviceLabel,
+        sessionId: active.session.sessionId,
+        success: true,
+        detail: 'Logged out',
+      });
+    }
+  } catch {
+    // Even if MongoDB is down we still clear the cookie so the browser is not
+    // stuck in a half-signed-in state.
+  }
+
+  await clearAuthCookies();
+  return json({ ok: true, authenticated: false, message: 'Logged out.' });
 }
 
-/**
- * DELETE /api/auth/logout
- * Same as POST — provides both methods for compatibility with
- * different callers in the UI layer.
- */
-export async function DELETE() {
-  const cookieStore = await cookies();
-  cookieStore.delete('kaustubh_session');
+export async function POST(request: NextRequest) {
+  return logout(request);
+}
 
-  const res = await backendFetch('/api/logout', {
-    method: 'POST',
-    timeoutMs: 30000,
-  });
-  return Response.json(res.data || { ok: true, message: 'Logged out' });
+export async function DELETE(request: NextRequest) {
+  return logout(request);
 }

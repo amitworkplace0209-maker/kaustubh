@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   images: { unoptimized: true },
+  // Never advertise the framework version to the browser.
+  poweredByHeader: false,
   // Dev-only: allow the loopback host the app is served on. The frontend
   // defaults point at IPv4 (127.0.0.1) to match the backend bind, and Next's
   // dev server refuses cross-origin /_next/* (HMR) requests from non-localhost
@@ -8,6 +10,20 @@ const nextConfig = {
   allowedDevOrigins: ['127.0.0.1', 'localhost'],
   async headers() {
     return [
+      {
+        // Baseline hardening for every response. The backend origin is never
+        // exposed to the browser; all traffic is same-origin through Next.
+        source: '/(.*)',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'X-DNS-Prefetch-Control', value: 'off' },
+          { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
+        ],
+      },
       {
         // The service worker must NEVER be served from the HTTP cache:
         // a stale worker keeps serving an old app shell forever, which is the
@@ -71,7 +87,7 @@ const nextConfig = {
     // forwards them here. `afterFiles` means real route handlers under app/api
     // (search, ticks/stream, auth, market-watch, ...) still win — this only
     // catches the paths that have no local handler.
-    const backend = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000';
+    const backend = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
     return [{ source: '/api/:path*', destination: `${backend}/api/:path*` }];
   },
   async redirects() {

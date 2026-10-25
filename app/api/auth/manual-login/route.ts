@@ -1,27 +1,38 @@
 import { NextRequest } from 'next/server';
 import { backendFetch } from '@/lib/backend';
+import { requireSession } from '@/lib/auth-sessions';
 
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 
-/** Proxies a manual login to the Python backend (POST /api/login). */
-export async function POST(_req: NextRequest) {
+/**
+ * POST /api/auth/manual-login — legacy bridge to the Python backend operator
+ * login. It used to be callable by anyone, which exposed the backend. It is now
+ * gated on a live owner session with MPIN/biometric setup completed.
+ */
+export async function POST(request: NextRequest) {
+  const auth = await requireSession(request, { requireMpin: true });
+  if (!auth.ok) return auth.response;
+
   const res = await backendFetch('/api/login', {
     method: 'POST',
     timeoutMs: 30000,
   });
   if (!res.ok && res.data === null) {
-    return new Response(
-      JSON.stringify({ ok: false, message: res.error || 'Login failed' }),
-      { status: 502, headers: { 'Content-Type': 'application/json' } },
+    return Response.json(
+      { ok: false, message: res.error || 'Login failed' },
+      { status: 502 },
     );
   }
   return Response.json(res.data || { ok: false, message: 'Login failed' });
 }
 
-/** Handles logout by proxying to the Python backend and clearing the
- *  kaustubh_session cookie so the frontend session state resets. */
-export async function DELETE() {
+/** Legacy logout bridge. */
+export async function DELETE(request: NextRequest) {
+  const auth = await requireSession(request);
+  if (!auth.ok) return auth.response;
+
   const res = await backendFetch('/api/logout', {
     method: 'POST',
     timeoutMs: 30000,

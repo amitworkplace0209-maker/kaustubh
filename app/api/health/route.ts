@@ -15,8 +15,8 @@ export async function GET() {
     checks.appLockPin = { ok: false, message: 'Not configured — first-time setup required' };
   }
 
-  // Check API base
-  checks.apiBase = { ok: true, message: env.API_BASE };
+  // The backend origin is server-only; never echo it to a public probe.
+  checks.apiBase = { ok: true, message: 'Same-origin /api (server-side proxy)' };
 
   // Try to ping the backend
   try {
@@ -27,10 +27,10 @@ export async function GET() {
       ok: res.ok,
       message: res.ok ? 'Connected' : `HTTP ${res.status}`,
     };
-  } catch (err) {
+  } catch {
     checks.backend = {
       ok: false,
-      message: err instanceof Error ? err.message : 'Unreachable',
+      message: 'Backend unreachable',
     };
   }
 

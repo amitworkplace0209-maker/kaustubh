@@ -1,9 +1,10 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
+import { backendBase } from '@/lib/backend';
 
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
 
-const BACKEND = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000';
+const BACKEND = backendBase();
 
 /**
  * Data Center export â€” relay the REAL backend CSV/JSON download

@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
  * monitor's data contract. Metrics the backend doesn't expose default to 0
  * (number-typed fields the page must render) but real values always win.
  */
-export async function GET(_req: NextRequest) {
+export async function GET(req: NextRequest) {
   const res = await backendFetch('/api/system', { timeoutMs: 6000 });
   const sys: any = res.data || {};
   const wsDetail: any = sys.websocketDetail || {};
@@ -34,7 +34,9 @@ export async function GET(_req: NextRequest) {
   return Response.json({
     connectionState,
     currentConnection: connected ? 'Kotak Neo WebSocket' : null,
-    apiEndpoint: String(process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000'),
+    // Same-origin by design: `server.mjs` tunnels `/ws/*` to the private
+    // backend, so the browser never learns the backend host.
+    apiEndpoint: `${req.nextUrl.protocol === 'https:' ? 'wss' : 'ws'}://${req.nextUrl.host}/ws/realtime`,
     sessionActive: Boolean(pythonStatus.session_active),
     heartbeat: null,
     latency: null,

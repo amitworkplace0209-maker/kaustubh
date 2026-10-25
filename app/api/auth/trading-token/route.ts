@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { verifySessionToken } from '@/lib/auth-crypto';
+import { requireSession } from '@/lib/auth-sessions';
 import { acquireOperatorJwt, operatorCredentials } from '@/lib/backend-operator';
 
 export const revalidate = 0;
@@ -36,6 +37,11 @@ export async function GET(req: NextRequest) {
       { status: 401 },
     );
   }
+
+  // The HMAC cookie alone is not enough: the session record must still be live
+  // in MongoDB and the account must have completed MPIN/biometric setup.
+  const auth = await requireSession(req, { requireMpin: true });
+  if (!auth.ok) return auth.response;
 
   if (!operatorCredentials()) {
     return Response.json(

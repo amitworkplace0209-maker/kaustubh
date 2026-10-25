@@ -6,7 +6,7 @@
  * always fed by the LIVE backend â€” never fabricated values.
  */
 
-const BACKEND = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000';
+const BACKEND = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
 
 /**
  * The backend origin, for callers that need to build an absolute URL

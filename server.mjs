@@ -24,14 +24,20 @@
  *   - LOCAL  → browser → :3000 (this server) → :8000 (backend WS)  ✓
  *   - SELF-HOSTED → same path, one origin, no CORS, no mixed content ✓
  *   - VERCEL → the frontend is serverless and CANNOT hold a socket, so the
- *     browser is pointed at a dedicated WS host via `NEXT_PUBLIC_WS_URL`
- *     (see `lib/api-base.ts`). This server is not involved there.
+ *     UI falls back to REST polling. There is no public backend/WS host to
+ *     leak (see `lib/api-base.ts`); this server is not involved there.
  *
  * The tunnel is a raw TCP relay: the client's handshake is replayed to the
  * backend, the backend's `101 Switching Protocols` response is replayed back,
  * and then both directions are piped byte-for-byte. Nothing is parsed or
  * rewritten, so WebSocket extensions (e.g. `permessage-deflate`) negotiated by
  * the backend keep working.
+ *
+ * SECURITY: `/ws/*` is only tunnelled when the request carries the
+ * HMAC-signed `kaustubh_session` cookie. The browser cannot set custom headers
+ * on a WebSocket handshake, so the cookie is the only credential that can ride
+ * along — and the same signature the Next proxy checks is verified here before
+ * a single byte reaches the backend.
  *
  * Usage:
  *   node server.mjs            → production (NODE_ENV=production)
@@ -43,6 +49,8 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import next from 'next';
 
@@ -60,11 +68,106 @@ const hostname = process.env.HOST || '0.0.0.0';
 const backendRaw =
   process.env.WS_BACKEND_URL ||
   process.env.BACKEND_URL ||
-  process.env.NEXT_PUBLIC_API_BASE ||
   'http://127.0.0.1:8000';
 
 /** Only `/ws/...` is tunnelled; everything else stays with Next.js. */
 const WS_PATH_PREFIX = '/ws/';
+
+const SESSION_COOKIE = 'kaustubh_session';
+let sessionSecretCache = null;
+
+/**
+ * Resolve the same HMAC secret as `lib/auth-crypto.ts`:
+ * AUTH_SESSION_SECRET → APP_SESSION_SECRET → `.auth/session-secret`.
+ * The file is created with `wx` so a simultaneous Next process cannot produce
+ * two different secrets; whichever writes first wins and both re-read it.
+ */
+function resolveSessionSecret() {
+  if (sessionSecretCache) return sessionSecretCache;
+
+  const fromEnv = (process.env.AUTH_SESSION_SECRET || process.env.APP_SESSION_SECRET || '').trim();
+  if (fromEnv.length >= 32) {
+    sessionSecretCache = fromEnv;
+    return sessionSecretCache;
+  }
+
+  const dir = path.join(__dirname, '.auth');
+  const file = path.join(dir, 'session-secret');
+  const readStored = () => {
+    try {
+      if (!existsSync(file)) return '';
+      const stored = readFileSync(file, 'utf-8').trim();
+      return stored.length >= 32 ? stored : '';
+    } catch {
+      return '';
+    }
+  };
+
+  const existing = readStored();
+  if (existing) {
+    sessionSecretCache = existing;
+    return sessionSecretCache;
+  }
+
+  try {
+    mkdirSync(dir, { recursive: true });
+    const generated = randomBytes(48).toString('hex');
+    try {
+      writeFileSync(file, generated, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+    }
+    sessionSecretCache = readStored() || null;
+  } catch (err) {
+    console.error('[WS-PROXY] could not initialise the session secret:', err?.message ?? err);
+    sessionSecretCache = null;
+  }
+  return sessionSecretCache;
+}
+
+function readSessionCookie(header) {
+  if (!header || typeof header !== 'string') return '';
+  for (const part of header.split(';')) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    if (trimmed.slice(0, eq) !== SESSION_COOKIE) continue;
+    try {
+      return decodeURIComponent(trimmed.slice(eq + 1));
+    } catch {
+      return trimmed.slice(eq + 1);
+    }
+  }
+  return '';
+}
+
+/** Verify the HMAC-signed session cookie before touching the backend socket. */
+function hasValidSession(req) {
+  const secret = resolveSessionSecret();
+  if (!secret) return false;
+
+  const token = readSessionCookie(req.headers.cookie);
+  if (!token) return false;
+
+  const parts = token.split('.');
+  if (parts.length !== 2) return false;
+  const [encoded, signature] = parts;
+  if (!encoded || !signature) return false;
+
+  const expected = createHmac('sha256', secret).update(encoded).digest('base64url');
+  const provided = Buffer.from(signature);
+  const wanted = Buffer.from(expected);
+  if (provided.length !== wanted.length || !timingSafeEqual(provided, wanted)) return false;
+
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf-8'));
+    if (!payload || payload.authenticated !== true) return false;
+    if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= Date.now()) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const HEADER_ALLOW_LIST = [
   'sec-websocket-protocol',
@@ -247,6 +350,16 @@ async function main() {
 
   server.on('upgrade', (req, socket, head) => {
     if (isWebSocketPath(req.url)) {
+      if (!hasValidSession(req)) {
+        console.warn(`[WS-PROXY] rejected unauthenticated upgrade for ${req.url}`);
+        try {
+          socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        } catch {
+          /* ignore */
+        }
+        socket.destroy();
+        return;
+      }
       proxyWebSocket(req, socket, head);
       return;
     }

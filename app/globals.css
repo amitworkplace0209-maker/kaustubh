@@ -577,6 +577,170 @@
   to { opacity: 1; transform: none; }
 }
 
+/* ========================================================================== */
+/* Login surface — ambient emoji field, aurora orbs, orbit rings.             */
+/* Transform/opacity only, so the login page stays smooth on a phone.         */
+/* ========================================================================== */
+
+@keyframes login-float {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-4deg); }
+  50%      { transform: translate3d(0, -22px, 0) rotate(7deg); }
+}
+
+@keyframes login-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  35%  { transform: translate3d(18px, -26px, 0) scale(1.06); }
+  70%  { transform: translate3d(-14px, 16px, 0) scale(0.96); }
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes login-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes login-ring-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50%      { opacity: 0.8; transform: scale(1.05); }
+}
+
+@keyframes login-scan {
+  0%   { transform: translateY(-110%); opacity: 0; }
+  12%  { opacity: 0.55; }
+  88%  { opacity: 0.4; }
+  100% { transform: translateY(110%); opacity: 0; }
+}
+
+@keyframes login-pop {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+.login-shell {
+  background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(56, 189, 248, 0.18), transparent 60%),
+    radial-gradient(900px 600px at 96% 8%, rgba(168, 85, 247, 0.20), transparent 62%),
+    radial-gradient(900px 700px at 50% 108%, rgba(16, 185, 129, 0.18), transparent 64%),
+    linear-gradient(160deg, #04070f 0%, #070d1a 46%, #050914 100%);
+}
+
+.login-grid {
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(ellipse at 50% 40%, #000 0%, #000 45%, transparent 82%);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 40%, #000 0%, #000 45%, transparent 82%);
+}
+
+.login-orb {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(72px);
+  pointer-events: none;
+  will-change: transform;
+}
+
+.login-glyph {
+  position: absolute;
+  line-height: 1;
+  opacity: 0.16;
+  filter: drop-shadow(0 0 18px rgba(148, 197, 255, 0.25));
+  animation: login-float var(--dur, 9s) ease-in-out infinite;
+  animation-delay: var(--delay, 0s);
+  pointer-events: none;
+  user-select: none;
+  will-change: transform;
+}
+
+.login-glyph-strong {
+  opacity: 0.28;
+  filter: drop-shadow(0 0 26px rgba(52, 211, 153, 0.45));
+}
+
+.login-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 34%;
+  background: linear-gradient(180deg, transparent, rgba(52, 211, 153, 0.10), transparent);
+  animation: login-scan 7s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.login-card {
+  position: relative;
+  border-radius: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.20);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.86), rgba(8, 13, 24, 0.94));
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+    0 30px 80px -40px rgba(2, 6, 23, 0.95),
+    0 0 0 1px rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.login-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(140deg, rgba(52, 211, 153, 0.45), rgba(59, 130, 246, 0.10) 38%, rgba(168, 85, 247, 0.35));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.65;
+}
+
+.login-pop { animation: login-pop 420ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+.login-ring {
+  position: absolute;
+  border-radius: 9999px;
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  animation: login-ring-pulse 5.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.login-orbit {
+  position: absolute;
+  border-radius: 9999px;
+  background: conic-gradient(from 0deg, transparent 0deg, rgba(52, 211, 153, 0.55) 55deg, transparent 140deg, rgba(96, 165, 250, 0.45) 230deg, transparent 320deg);
+  -webkit-mask-image: radial-gradient(circle, transparent 0 68%, #000 70% 72%, transparent 74%);
+  mask-image: radial-gradient(circle, transparent 0 68%, #000 70% 72%, transparent 74%);
+  animation: login-orbit 14s linear infinite;
+  pointer-events: none;
+}
+
+.login-input {
+  background: rgba(8, 14, 26, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.20);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.login-input:focus-within {
+  border-color: rgba(52, 211, 153, 0.55);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.12);
+  background: rgba(8, 14, 26, 0.92);
+}
+
+.login-emoji-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.66);
+  padding: 6px 11px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(203, 213, 225, 0.92);
+}
+
+
 /* Respect reduced-motion: never animate status changes or pulses */
 @media (prefers-reduced-motion: reduce) {
   .status-in,
@@ -627,6 +791,16 @@
   }
   .si-halo { opacity: 0; }
   .si-flow { background-position: 0% 0; }
+
+  /* Login ambient field: stop all motion; keep the static gradients/emoji. */
+  .login-glyph,
+  .login-scanline,
+  .login-orbit,
+  .login-ring,
+  .login-orb,
+  .login-pop {
+    animation: none !important;
+  }
 }
 
 /* AMOLED theme — true black background */

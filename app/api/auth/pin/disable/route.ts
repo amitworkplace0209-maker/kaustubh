@@ -1,40 +1,52 @@
-import { NextRequest } from 'next/server';
-import { hashPin, constantTimeCompare, loadConfig, removeConfig } from '@/lib/auth-crypto';
+import type { NextRequest } from 'next/server';
+import { getClientIp } from '@/lib/auth-config';
+import { listCredentials, recordAuthEvent } from '@/lib/auth-db';
+import { clearOwnerMpin, verifyOwnerMpin } from '@/lib/auth-mpin';
+import { requireSession } from '@/lib/auth-sessions';
+import { fail, json, readJson } from '@/lib/auth-validation';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 /**
- * POST /api/auth/pin/disable
- * Body: { pin: string }
- * Disables App Lock by removing the config file.
+ * Legacy /api/auth/pin/disable — body { pin }.
+ * MPIN removal requires a registered biometric credential (never lock yourself
+ * out of the only account).
  */
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { pin } = body;
+  const auth = await requireSession(request);
+  if (!auth.ok) return auth.response;
 
-    if (!pin || typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
-      return Response.json({ ok: false, message: 'PIN must be exactly 6 digits' }, { status: 400 });
-    }
+  if (!auth.user.mpinHash) return fail('No MPIN is configured.', 409, { code: 'MPIN_NOT_SET' });
 
-    const config = await loadConfig();
+  const body = await readJson(request);
+  if (!body) return fail('Invalid request body.', 400);
 
-    // If config file has a hash, verify against it
-    if (config?.pinHash && config?.pinSalt) {
-      const testHash = hashPin(pin, config.pinSalt);
-      if (!constantTimeCompare(testHash, config.pinHash)) {
-        return Response.json({ ok: false, message: 'Incorrect PIN' }, { status: 401 });
-      }
-    } else {
-      // Fallback to env var
-      const envPin = process.env.APP_LOCK_PIN;
-      if (!envPin || pin !== envPin) {
-        return Response.json({ ok: false, message: 'Incorrect PIN' }, { status: 401 });
-      }
-    }
-
-    await removeConfig();
-
-    return Response.json({ ok: true, message: 'App Lock disabled' });
-  } catch {
-    return Response.json({ ok: false, message: 'Failed to disable App Lock' }, { status: 500 });
+  const credentials = await listCredentials(String(auth.user._id));
+  if (credentials.length === 0) {
+    return fail(
+      'Register a fingerprint / face credential first. MPIN and biometric are alternatives.',
+      409,
+      { code: 'BIOMETRIC_REQUIRED' },
+    );
   }
+
+  const verified = await verifyOwnerMpin(auth.user, body.pin ?? body.mpin);
+  if (!verified.ok) return fail(verified.message || 'Incorrect MPIN.', verified.status ?? 401);
+
+  await clearOwnerMpin();
+  await recordAuthEvent({
+    type: 'mpin_removed',
+    userId: String(auth.user._id),
+    ip: getClientIp(request) || 'unknown',
+    userAgent: request.headers.get('user-agent') || 'unknown',
+    deviceId: auth.session.deviceId,
+    deviceLabel: auth.session.deviceLabel,
+    sessionId: auth.session.sessionId,
+    success: true,
+    detail: 'MPIN removed; biometric unlock remains active',
+  });
+
+  return json({ ok: true, configured: false, message: 'MPIN removed.' });
 }

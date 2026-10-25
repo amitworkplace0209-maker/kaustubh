@@ -1,96 +1,172 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifySessionToken } from '@/lib/auth-crypto';
+import { MPIN_PENDING_COOKIE, verifySessionToken } from '@/lib/auth-crypto';
+import { getOwner, getSessionDoc } from '@/lib/auth-db';
 
 const SESSION_COOKIE = 'kaustubh_session';
 
+/** JSON, not HTML — a fetch() caller must never receive the login page. */
+const API_PREFIX = '/api';
+
 /**
- * Paths that must NEVER be gated on authentication.
- *
- * CRITICAL (root cause of the "black screen / periodic reload / API request
- * storm"): ALL `/api/*` routes must be excluded. Before this fix the matcher
- * guarded every route, so when the `kaustubh_session` cookie was absent every
- * polling request (`/api/data-saver/dashboard`, `/api/phase2/system`,
- * `/api/phase2/websocket`, `/api/phase2/alerts`) was 307-redirected to
- * `/login`, which:
- *   - returned the login HTML instead of JSON to `fetch()`, breaking polling,
- *   - made the browser perform full document navigations to the (dark) login
- *     page — the visible "screen goes black" symptom,
- *   - and re-fetched all PWA assets (`/sw.js`, `/manifest.json`, icons) on
- *     every bounce (the repeated full-page-load requests in the network log).
- *
- * Authentication for API routes is enforced by each route (HTTP 401) instead
- * of by an HTML redirect, so a failed/absent session can never blank the page
- * or reload the browser.
+ * The first login (and the one-time signup) issues a session so the MPIN can be
+ * saved, but marks it MPIN-pending. Until the MPIN is set the app must stay
+ * closed — even if the user types a protected URL directly — so this is the
+ * only group of routes reachable with that cookie still present.
  */
-const UNGUARDED_PREFIXES = [
-  '/api',            // all API routes — never send HTML redirects to JSON callers
-  '/_next',          // Next.js assets
-  '/icon',           // PWA icons
-  '/manifest',       // PWA manifests (`.json`)
-  '/sw.js',
-  '/offline.html',
-  '/favicon.ico',
+const MPIN_SETUP_PATHS = [
+  '/api/auth/mpin/setup',
+  '/api/auth/session',
+  '/api/auth/status',
+  '/api/auth/logout',
 ];
 
-const PUBLIC_PATHS = ['/login', '/api/auth', '/api/health'];
-
-function isPublic(pathname: string): boolean {
-  if (UNGUARDED_PREFIXES.some((p) => pathname.startsWith(p))) return true;
-  if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true;
-  return false;
+function isMpinSetupPath(pathname: string): boolean {
+  return MPIN_SETUP_PATHS.includes(pathname);
 }
 
 /**
- * Root cause of "the page does not work / stock cannot be selected".
- *
- * The `kaustubh_session` cookie is an HMAC-signed token of the form
- * `base64url(payload).base64url(HMAC-SHA256(payload))` — see
- * `createSessionToken`/`verifySessionToken` in `lib/auth-crypto.ts`.
- *
- * This guard used to re-implement verification by base64-decoding the WHOLE
- * cookie and `JSON.parse`-ing it. That is wrong twice over:
- *   1. the payload is `base64url`, not `base64`, and
- *   2. the cookie also carries a `.` + signature suffix, so decoding the full
- *      value never yields the payload JSON.
- *
- * `JSON.parse` therefore always threw, the `catch` returned `false`, and EVERY
- * guarded page (including `/trading/trade`) 307-redirected back to `/login`
- * even with a perfectly valid session — `/api/auth/session` reported
- * `{"authenticated":true}` while the navigation never left `/login`.
- *
- * Verification must go through `verifySessionToken`, which checks the HMAC
- * signature in constant time and the `exp` claim. Proxy runs on the Node.js
- * runtime (Next.js 16 default) so this module — and the server-only session
- * secret it reads from `APP_SESSION_SECRET` / `.auth/session-secret` — is
- * available here. It MUST NOT be downgraded to a bare decode: that was the
- * original R-37 forgeable-cookie vulnerability.
+ * Assets that must stay reachable before login, otherwise the browser cannot
+ * render the login page itself (fonts, chunks, PWA icons, service worker).
  */
-function isAuthenticated(request: NextRequest): boolean {
-  return verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value) !== null;
+const ASSET_PREFIXES = ['/_next', '/sw.js', '/offline.html', '/manifest', '/icon-', '/apple-', '/favicon'];
+
+/**
+ * Public routes. `/login` is the only public page; the auth endpoints below are
+ * the ones needed to bootstrap the single-owner account and its session.
+ * Everything else — every page and every API route — requires a session.
+ */
+const PUBLIC_PATHS = [
+  '/login',
+  '/api/auth/login',
+  '/api/auth/signup',
+  '/api/auth/status',
+  '/api/auth/session',
+  '/api/auth/logout',
+  '/api/auth/login/verify-otp',
+  '/api/health',
+  '/offline.html',
+  '/manifest.json',
+  '/sw.js',
+];
+
+function isAsset(pathname: string): boolean {
+  return ASSET_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`) || pathname.startsWith(prefix));
 }
 
-export function proxy(request: NextRequest) {
+function isPublic(pathname: string): boolean {
+  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+}
+
+function isAuthenticated(request: NextRequest): boolean {
+  return Boolean(verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value));
+}
+
+/**
+ * The signature alone is not enough: a session can be revoked from another
+ * device, and the signed cookie would otherwise stay valid until it expires.
+ * Verify the database row too, with a short per-process cache so page and API
+ * traffic does not hammer MongoDB. Fail closed when the database is
+ * unreachable — the login page still loads and explains the outage.
+ */
+const SESSION_REVALIDATE_MS = 10_000;
+const liveSessions = new Map<string, number>();
+
+function rememberLiveSession(sessionId: string, expiresAt: number): void {
+  // Bound the cache: this app only ever has two live sessions, but a long
+  // running process must not grow the map on every new login.
+  if (liveSessions.size > 64) {
+    const oldest = liveSessions.keys().next().value;
+    if (oldest) liveSessions.delete(oldest);
+  }
+  liveSessions.set(sessionId, Math.min(Date.now() + SESSION_REVALIDATE_MS, expiresAt));
+}
+
+async function isSessionLive(request: NextRequest): Promise<boolean> {
+  if (!isAuthenticated(request)) return false;
+  const payload = verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value);
+  if (!payload?.sid) return false;
+
+  const cachedUntil = liveSessions.get(payload.sid) ?? 0;
+  if (cachedUntil > Date.now()) return true;
+
+  try {
+    const session = await getSessionDoc(payload.sid);
+    if (!session || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
+      liveSessions.delete(payload.sid);
+      return false;
+    }
+    const owner = await getOwner();
+    if (!owner || String(owner._id) !== session.userId) {
+      liveSessions.delete(payload.sid);
+      return false;
+    }
+    rememberLiveSession(payload.sid, session.expiresAt.getTime());
+    return true;
+  } catch {
+    // MongoDB unreachable: deny rather than trust an unverifiable session.
+    return false;
+  }
+}
+
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Never gate static assets, PWA files, or API routes (see top of file).
-  if (isPublic(pathname) || pathname === '/') {
+  if (isAsset(pathname) || isPublic(pathname)) {
     return NextResponse.next();
   }
 
-  if (!isAuthenticated(request)) {
-    const loginUrl = new URL('/login', request.url);
-    if (pathname !== '/') {
-      loginUrl.searchParams.set('from', pathname);
+  const authenticated = await isSessionLive(request);
+  const isApi = pathname === API_PREFIX || pathname.startsWith(`${API_PREFIX}/`);
+
+  // First-run lock: the session exists only so the owner can save the MPIN.
+  // Without this, opening a protected URL directly would skip the mandatory
+  // setup step and expose the app with a valid session.
+  const mpinPending = request.cookies.get(MPIN_PENDING_COOKIE)?.value === '1';
+  if (authenticated && mpinPending && !isMpinSetupPath(pathname)) {
+    if (isApi) {
+      return NextResponse.json(
+        {
+          ok: false,
+          authenticated: true,
+          needsMpinSetup: true,
+          code: 'MPIN_SETUP_REQUIRED',
+          error: 'MPIN_SETUP_REQUIRED',
+          message: 'Set your MPIN before using the app.',
+        },
+        { status: 403, headers: { 'Cache-Control': 'no-store' } },
+      );
     }
-    return NextResponse.redirect(loginUrl);
+
+    const setupUrl = request.nextUrl.clone();
+    setupUrl.pathname = '/login';
+    setupUrl.search = '';
+    setupUrl.searchParams.set('from', pathname);
+    return NextResponse.redirect(setupUrl);
   }
 
-  return NextResponse.next();
+  if (isApi) {
+    if (authenticated) return NextResponse.next();
+    return NextResponse.json(
+      {
+        ok: false,
+        authenticated: false,
+        code: 'UNAUTHENTICATED',
+        error: 'UNAUTHENTICATED',
+        message: 'No valid app session — log in first.',
+      },
+      { status: 401, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
+
+  if (authenticated) return NextResponse.next();
+
+  const loginUrl = request.nextUrl.clone();
+  loginUrl.pathname = '/login';
+  loginUrl.search = '';
+  loginUrl.searchParams.set('from', pathname);
+  return NextResponse.redirect(loginUrl);
 }
 
 export const config = {
-  // Match everything EXCEPT internal/static files. We still match `/api`
-  // here so the proxy runs and short-circuits via isPublic; the guard
-  // itself never redirects API routes.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|sw.js|manifest).*)'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };

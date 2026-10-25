@@ -1,52 +1,63 @@
-import { NextRequest } from 'next/server';
-import { hashPin, loadConfig, saveConfig, generateSalt } from '@/lib/auth-crypto';
+import type { NextRequest } from 'next/server';
+import { getClientIp, getSignupEmail, getSignupMpin } from '@/lib/auth-config';
+import { recordAuthEvent } from '@/lib/auth-db';
+import { setOwnerMpin } from '@/lib/auth-mpin';
+import { markMpinConfigured, requireSession } from '@/lib/auth-sessions';
+import { fail, json, readJson } from '@/lib/auth-validation';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 /**
- * GET /api/auth/setup
- * Returns whether app lock has been configured.
+ * Legacy /api/auth/setup — kept for the existing Settings → Security card.
+ * GET reports whether an unlock secret exists; POST creates the initial MPIN.
+ * New code should use /api/auth/status and /api/auth/mpin/setup.
  */
-export async function GET() {
-  const config = await loadConfig();
-  const envPin = process.env.APP_LOCK_PIN;
+export async function GET(request: NextRequest) {
+  const auth = await requireSession(request);
+  if (!auth.ok) return auth.response;
 
-  const isConfigured = Boolean(config?.pinHash) || Boolean(envPin);
-
-  return Response.json({
+  const configured = Boolean(auth.user.mpinHash);
+  return json({
     ok: true,
-    configured: isConfigured,
-    source: config?.pinHash ? 'database' : envPin ? 'environment' : 'none',
+    configured,
+    source: configured ? 'database' : getSignupMpin() ? 'environment' : 'none',
+    hasMpin: configured,
+    signupConfigured: Boolean(getSignupEmail() && getSignupMpin()),
   });
 }
 
-/**
- * POST /api/auth/setup
- * Body: { step: 'create-pin', pin: string }
- * Called from Settings → Security → App Lock to set the initial PIN.
- */
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { step, pin } = body;
+  const auth = await requireSession(request);
+  if (!auth.ok) return auth.response;
 
-    if (step === 'create-pin') {
-      if (!pin || typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
-        return Response.json({ ok: false, message: 'PIN must be exactly 6 digits' }, { status: 400 });
-      }
+  const body = await readJson(request);
+  if (!body) return fail('Invalid request body.', 400);
 
-      const config = await loadConfig();
-      if (config?.pinHash) {
-        return Response.json({ ok: false, message: 'App Lock PIN already configured' }, { status: 409 });
-      }
-
-      const salt = generateSalt();
-      const pinHash = hashPin(pin, salt);
-      await saveConfig({ pinHash, pinSalt: salt, createdAt: new Date().toISOString() });
-
-      return Response.json({ ok: true, message: 'App Lock PIN created' });
-    }
-
-    return Response.json({ ok: false, message: 'Invalid step' }, { status: 400 });
-  } catch {
-    return Response.json({ ok: false, message: 'Setup request failed' }, { status: 500 });
+  const step = String(body.step ?? 'create-pin');
+  if (step !== 'create-pin') {
+    return fail('Unsupported setup step. Use step=create-pin.', 400);
   }
+  if (auth.user.mpinHash) {
+    return fail('An MPIN is already configured. Use Change MPIN instead.', 409);
+  }
+
+  const result = await setOwnerMpin(body.pin ?? body.mpin);
+  if (!result.ok) return fail(result.message || 'Could not set the MPIN.', result.status ?? 400);
+
+  await markMpinConfigured();
+  await recordAuthEvent({
+    type: 'mpin_setup',
+    userId: String(auth.user._id),
+    ip: getClientIp(request) || 'unknown',
+    userAgent: request.headers.get('user-agent') || 'unknown',
+    deviceId: auth.session.deviceId,
+    deviceLabel: auth.session.deviceLabel,
+    sessionId: auth.session.sessionId,
+    success: true,
+    detail: 'MPIN configured (legacy setup endpoint)',
+  });
+
+  return json({ ok: true, configured: true });
 }
