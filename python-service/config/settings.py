@@ -385,6 +385,41 @@ class Settings:
     jwt_audience: str = field(default_factory=lambda: _env("JWT_AUDIENCE", "kaustubh-terminal"))
     jwt_ttl_seconds: int = field(default_factory=lambda: int(_optional("JWT_TTL_SECONDS", "28800")))  # type: ignore[arg-type]
 
+    # ---- VM monitoring / agents (backend-only) ----
+    # Per-host agent tokens. Each must be a long random value (32+ bytes hex).
+    # The API compares a SHA-256 digest in constant time; the raw token is only
+    # stored in the agent's 0600 token file and the backend's protected env.
+    vm_agent_token_vm1: str = field(default_factory=lambda: _env("VM_AGENT_TOKEN_VM1"))
+    vm_agent_token_vm2: str = field(default_factory=lambda: _env("VM_AGENT_TOKEN_VM2"))
+    # Read endpoints are gated by the Next session at the browser edge. The
+    # operator/admin JWT (same credential as other mutating terminal actions)
+    # is additionally required for acknowledge/resolve/remediation.
+    vm_stale_seconds: int = field(default_factory=lambda: int(_optional("VM_STALE_SECONDS", "180")))  # type: ignore[arg-type]
+    vm_disconnected_seconds: int = field(default_factory=lambda: int(_optional("VM_DISCONNECTED_SECONDS", "600")))  # type: ignore[arg-type]
+    vm_history_retention_days: int = field(default_factory=lambda: int(_optional("VM_HISTORY_RETENTION_DAYS", "14")))  # type: ignore[arg-type]
+    vm_event_retention_days: int = field(default_factory=lambda: int(_optional("VM_EVENT_RETENTION_DAYS", "30")))  # type: ignore[arg-type]
+    vm_cpu_warn_pct: float = field(default_factory=lambda: float(_optional("VM_CPU_WARN_PCT", "85")))  # type: ignore[arg-type]
+    vm_cpu_critical_pct: float = field(default_factory=lambda: float(_optional("VM_CPU_CRITICAL_PCT", "95")))  # type: ignore[arg-type]
+    vm_cpu_warn_sustain_s: int = field(default_factory=lambda: int(_optional("VM_CPU_WARN_SUSTAIN_SECONDS", "300")))  # type: ignore[arg-type]
+    vm_cpu_critical_sustain_s: int = field(default_factory=lambda: int(_optional("VM_CPU_CRITICAL_SUSTAIN_SECONDS", "600")))  # type: ignore[arg-type]
+    vm_ram_warn_pct: float = field(default_factory=lambda: float(_optional("VM_RAM_WARN_AVAILABLE_PCT", "15")))  # type: ignore[arg-type]
+    vm_ram_critical_pct: float = field(default_factory=lambda: float(_optional("VM_RAM_CRITICAL_AVAILABLE_PCT", "8")))  # type: ignore[arg-type]
+    vm_ram_sustain_s: int = field(default_factory=lambda: int(_optional("VM_RAM_SUSTAIN_SECONDS", "120")))  # type: ignore[arg-type]
+    vm_disk_warn_pct: float = field(default_factory=lambda: float(_optional("VM_DISK_WARN_PCT", "80")))  # type: ignore[arg-type]
+    vm_disk_critical_pct: float = field(default_factory=lambda: float(_optional("VM_DISK_CRITICAL_PCT", "90")))  # type: ignore[arg-type]
+    vm_inode_warn_pct: float = field(default_factory=lambda: float(_optional("VM_INODE_WARN_PCT", "80")))  # type: ignore[arg-type]
+    vm_inode_critical_pct: float = field(default_factory=lambda: float(_optional("VM_INODE_CRITICAL_PCT", "90")))  # type: ignore[arg-type]
+    vm_backup_max_age_hours: float = field(default_factory=lambda: float(_optional("VM_BACKUP_MAX_AGE_HOURS", "30")))  # type: ignore[arg-type]
+    # Automatic recovery defaults to ON but is deliberately narrow: only
+    # allowlisted units, only a confirmed service failure, max 2 attempts per
+    # incident and 2 restarts/hour per service with a 10 minute cooldown.
+    # Set VM_AUTO_RECOVERY_ENABLED=false to disable all automatic restarts.
+    vm_auto_recovery_enabled: bool = field(default_factory=lambda: _env("VM_AUTO_RECOVERY_ENABLED", "true").lower() in {"1", "true", "yes", "on"})
+    vm_recovery_allowlist: str = field(default_factory=lambda: _env("VM_RECOVERY_ALLOWLIST", "kds-backend,mongod"))
+    vm_recovery_cooldown_seconds: int = field(default_factory=lambda: int(_optional("VM_RECOVERY_COOLDOWN_SECONDS", "600")))  # type: ignore[arg-type]
+    vm_recovery_max_per_incident: int = field(default_factory=lambda: int(_optional("VM_RECOVERY_MAX_PER_INCIDENT", "2")))  # type: ignore[arg-type]
+    vm_recovery_max_per_hour: int = field(default_factory=lambda: int(_optional("VM_RECOVERY_MAX_PER_HOUR", "2")))  # type: ignore[arg-type]
+
     # ---- WebSocket reconnect ----
     ws_reconnect_initial_delay: float = field(default_factory=lambda: float(_optional("WS_RECONNECT_INITIAL_DELAY", "1.0")))  # type: ignore[arg-type]
     ws_reconnect_max_delay: float = field(default_factory=lambda: float(_optional("WS_RECONNECT_MAX_DELAY", "60.0")))  # type: ignore[arg-type]

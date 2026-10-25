@@ -114,6 +114,7 @@ from api.session_manager import router as session_manager_router
 from api.risk_engine import router as risk_engine_router
 from api.order_engine import router as order_engine_router
 from api.local_connect import router as local_connect_router
+from api.vm_management import router as vm_management_router
 
 # Configure logging
 logging.basicConfig(
@@ -1395,6 +1396,7 @@ app.include_router(session_manager_router)
 app.include_router(risk_engine_router)
 app.include_router(order_engine_router)
 app.include_router(local_connect_router)
+app.include_router(vm_management_router)
 app.include_router(trade_instruments_router)
 
 

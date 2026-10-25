@@ -1,0 +1,6 @@
+# Linux-hosted agent assets must keep LF endings on every checkout, even when
+# core.autocrlf is enabled. A CRLF shell script fails on the VMs.
+agents/*.sh text eol=lf
+agents/*.py text eol=lf
+agents/*.service text eol=lf
+agents/*.timer text eol=lf

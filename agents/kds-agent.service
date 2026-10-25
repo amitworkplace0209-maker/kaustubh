@@ -1,0 +1,43 @@
+[Unit]
+Description=KDS VM monitoring agent (one heartbeat)
+Documentation=https://github.com/amitworkplace0209-maker/kaustubh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=kds-agent
+Group=kds-agent
+SupplementaryGroups=systemd-journal
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/kds-agent/kds_vm_agent.py --once
+TimeoutStartSec=55
+Nice=10
+StateDirectory=kds-agent
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/kds-agent
+
+# Hardening. NoNewPrivileges stays off because the agent may invoke exactly one
+# allowlisted `sudo -n /usr/bin/systemctl restart <unit>` (see
+# /etc/sudoers.d/kds-agent). Everything else is read-only.
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+MemoryMax=96M
+CPUQuota=25%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

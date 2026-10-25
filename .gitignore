@@ -103,3 +103,42 @@ python-service/services/status/
 
 # Runtime single-instance bookkeeping (pid/state files are advisory, process-local)
 python-service/runtime/
+
+# ==========================
+# Secrets & credentials (never commit)
+# ==========================
+# Every env file except the committed templates.
+.env.*
+!.env.example
+!.env.sample
+!**/.env.example
+!**/.env.sample
+
+# SSH / TLS / cloud keys and provisioning material.
+*.key
+*.pem
+*.ppk
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+known_hosts
+
+# VM agent runtime config, tokens and local state.
+agents/*.env
+agents/secrets/
+agents/state/
+kds-agent.json
+agent-token
+
+# Database dumps and archives (contain production data).
+*.dump
+*.bson
+*.archive
+dump/
+dump-*/
+mongodump-*/
+backups/
+python-service/backups/
+db-backups/

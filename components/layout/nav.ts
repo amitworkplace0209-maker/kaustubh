@@ -39,6 +39,7 @@ import {
   ShieldCheck,
   FlaskConical,
   Sprout,
+  Server,
 } from 'lucide-react';
 import { PHASE2_NAV } from '@/lib/phase2-nav';
 
@@ -447,6 +448,11 @@ export const SERVICES_SHELL: ShellConfig = {
         label: 'System',
         items: [
           { id: 'system', href: '/services/system', label: 'System Status', icon: Activity, keywords: ['status', 'health', 'uptime', 'info'] },
+          { id: 'vm-management', href: '/services/vm', label: 'VM Management', icon: Server, keywords: ['vm', 'vm1', 'vm2', 'server', 'host', 'health', 'cpu', 'ram', 'disk', 'agent', 'monitoring', 'mongo', 'recovery', 'incident'], children: [
+            { id: 'vm-overview', href: '/services/vm', label: 'Overview', icon: Activity, keywords: ['vm', 'overview', 'hosts', 'health', 'incidents', 'agents'] },
+            { id: 'vm-1', href: '/services/vm/vm1', label: 'VM1 · Backend', icon: Server, keywords: ['vm1', 'backend', 'api', '10.1.1.133', '130.210.55.165', 'kds-backend'] },
+            { id: 'vm-2', href: '/services/vm/vm2', label: 'VM2 · MongoDB', icon: Database, keywords: ['vm2', 'mongo', 'mongodb', 'database', '10.1.2.178', 'mongod', 'backup'] },
+          ] },
           { id: 'session-manager', href: '/services/session-manager', label: 'Session Manager', icon: Database, keywords: ['session', 'manager', 'instruments', 'subscribe', 'pin', 'expiry', 'feed', 'revision', 'phase3'], children: [
             { id: 'session-manager-overview', href: '/services/session-manager', label: 'Overview', icon: Activity, keywords: ['session manager', 'overview', 'counts', 'health', 'summary'] },
             { id: 'session-manager-session', href: '/services/session-manager/session', label: 'Session', icon: Layers, keywords: ['session manager', 'session', 'identity', 'lifecycle', 'terminal', 'jwt'] },
