@@ -293,21 +293,22 @@ class Settings:
     cors_origins: str = field(default_factory=lambda: _optional("CORS_ORIGINS", "http://localhost:3000"))
 
     # ---- Scheduler (IST) ----
-    # 08:50 automatic broker login; 08:55 WebSocket connection;
-    # 08:59 tick collection starts. No 08:25 WebSocket preparation.
-    login_hour: int = field(default_factory=lambda: int(_optional("LOGIN_HOUR", "8")))
-    login_minute: int = field(default_factory=lambda: int(_optional("LOGIN_MINUTE", "50")))
+    # 09:00 automatic broker login; 09:13 WebSocket connection; 15:31 WebSocket
+    # disconnect on trading days. Session login and WebSocket scheduling are
+    # separate scheduled events. No 08:25 WebSocket preparation.
+    login_hour: int = field(default_factory=lambda: int(_optional("LOGIN_HOUR", "9")))
+    login_minute: int = field(default_factory=lambda: int(_optional("LOGIN_MINUTE", "0")))
     logout_hour: int = field(default_factory=lambda: int(_optional("LOGOUT_HOUR", "16")))
     logout_minute: int = field(default_factory=lambda: int(_optional("LOGOUT_MINUTE", "0")))
     # ---- WebSocket trading window (IST) ----
-    # 08:55 WebSocket connection; 08:59 tick collection starts.
-    ws_start_hour: int = field(default_factory=lambda: int(_optional("WS_START_HOUR", "8")))
-    ws_start_minute: int = field(default_factory=lambda: int(_optional("WS_START_MINUTE", "55")))
+    # 09:13 WebSocket connect/subscribe; 15:31 WebSocket disconnect.
+    ws_start_hour: int = field(default_factory=lambda: int(_optional("WS_START_HOUR", "9")))
+    ws_start_minute: int = field(default_factory=lambda: int(_optional("WS_START_MINUTE", "13")))
     ws_stop_hour: int = field(default_factory=lambda: int(_optional("WS_STOP_HOUR", "15")))
     ws_stop_minute: int = field(default_factory=lambda: int(_optional("WS_STOP_MINUTE", "31")))
     # ---- Tick collection (IST) ----
-    tick_collection_hour: int = field(default_factory=lambda: int(_optional("TICK_COLLECTION_HOUR", "8")))
-    tick_collection_minute: int = field(default_factory=lambda: int(_optional("TICK_COLLECTION_MINUTE", "59")))
+    tick_collection_hour: int = field(default_factory=lambda: int(_optional("TICK_COLLECTION_HOUR", "9")))
+    tick_collection_minute: int = field(default_factory=lambda: int(_optional("TICK_COLLECTION_MINUTE", "14")))
     # ---- Trading-day phases (IST) — Scheduler Engine #01 ----
     # 08:55-09:00 readiness, 09:00 pre-market, 09:05 limit-order window,
     # 09:10 equilibrium, 09:12 buffer, 09:15 live feed, 15:16 square-off,

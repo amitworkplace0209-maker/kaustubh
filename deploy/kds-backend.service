@@ -1,0 +1,53 @@
+[Unit]
+Description=KDS Kaustubh FastAPI Backend (VM1)
+Documentation=file:///opt/kds/repo/python-service/app.py
+Wants=network-online.target
+After=network-online.target
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+# Run as unprivileged user if permissions allow; change to `kds-backend`
+# once that user exists and owns /opt/kds/repo/python-service.
+# User=kds-backend
+# Group=kds-backend
+
+WorkingDirectory=/opt/kds/repo/python-service
+EnvironmentFile=/etc/kds/backend.env
+ExecStart=/opt/kds/venv/bin/python start_backend.py run
+ExecStop=/bin/kill -TERM $MAINPID
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+# No auto-reload in production (single process only).
+# Environment=PYTHONUNBUFFERED=1
+
+# Hardening (adjust if the service user cannot read /opt/kds/repo).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kds/repo/python-service/runtime /opt/kds/repo/python-service/logs /opt/kds/repo/python-service/downloads
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# VM1 has ~1 GB RAM — single uvicorn process, no multiple workers.
+MemoryMax=768M
+CPUQuota=50%
+TasksMax=512
+
+# Logging to journald (systemd captures stdout/stderr).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kds-backend
+
+[Install]
+WantedBy=multi-user.target

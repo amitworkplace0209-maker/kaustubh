@@ -98,11 +98,19 @@ __pycache__/
 *.before-*
 
 # Local service/debug files
-python-service/services/status/
+# These directories contain application code that must be tracked for
+# reproducible deployment. Only runtime state files inside are ignored.
+!python-service/services/status/
+!python-service/runtime/
+python-service/services/status/__pycache__/
+python-service/runtime/__pycache__/
+python-service/runtime/backend.pid
+python-service/runtime/backend.state
+python-service/runtime/degraded.txt
+python-service/runtime/backend-singleton-*.lock
+python-service/runtime/*.log
+python-service/runtime/*.err
 *.backup2
-
-# Runtime single-instance bookkeeping (pid/state files are advisory, process-local)
-python-service/runtime/
 
 # ==========================
 # Secrets & credentials (never commit)
