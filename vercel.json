@@ -37,21 +37,5 @@
       "source": "/api/:path*",
       "destination": "${BACKEND_URL}/api/:path*"
     }
-  ],
-  "env": {
-    "BACKEND_URL": "@backend_url",
-    "WS_BACKEND_URL": "@backend_url",
-    "AUTH_SESSION_SECRET": "@auth_session_secret",
-    "AUTH_MONGODB_URI": "@auth_mongodb_uri",
-    "AUTH_MONGODB_DB": "kaustubh",
-    "AUTH_SIGNUP_EMAIL": "@auth_signup_email",
-    "AUTH_SIGNUP_MPIN": "@auth_signup_mpin",
-    "AUTH_OTP_DEV_FALLBACK": "false",
-    "AUTH_OTP_WEBHOOK_URL": "@auth_otp_webhook_url",
-    "AUTH_RP_ID": "@auth_rp_id",
-    "AUTH_ORIGIN": "@auth_origin",
-    "AUTH_RP_NAME": "KAUSTUBH Trading Platform",
-    "NEXT_PUBLIC_API_BASE": "",
-    "NEXT_PUBLIC_WS_URL": ""
-  }
+  ]
 }
