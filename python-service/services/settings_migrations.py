@@ -1,10 +1,10 @@
 """Startup migrations for persisted settings.
 
-The session-lifecycle schedule moved to a 08:50 login / 08:55 WebSocket
-connect / 08:59 tick collection sequence (Phase 3). Fresh installs pick
-the new values up from ``settings_service.DEFAULTS`` automatically;
-existing installs may have already persisted the OLD default times into
-MongoDB. This module bumps ONLY values that still equal the legacy
+The session-lifecycle schedule uses 09:00 login / 09:13 WebSocket connect /
+09:14 tick collection (required market-day schedule). Fresh installs pick
+these values up from ``settings_service.DEFAULTS`` automatically; existing
+installs may have already persisted the OLD default times (08:50/08:55/08:59)
+into MongoDB. This module bumps ONLY values that still equal the legacy
 default, so a genuine operator override is never clobbered. It is safe
 and idempotent.
 """
@@ -14,17 +14,19 @@ import logging
 
 logger = logging.getLogger("runtime_settings")
 
-LEGACY_LOGIN_DEFAULT = "09:00"   # old persisted default -> new 08:50
-LEGACY_WS_DEFAULT = "09:13"      # old persisted default -> new 08:55
+LEGACY_LOGIN_DEFAULT = "08:50"   # old persisted default -> new 09:00
+LEGACY_WS_DEFAULT = "08:55"      # old persisted default -> new 09:13
 LEGACY_PREP_DEFAULT = "08:25"    # old persisted prep time -> removed
+LEGACY_TICK_DEFAULT = "08:59"    # old persisted tick collection -> new 09:14
 
 
 async def migrate_scheduler_times() -> None:
-    """Migrate legacy-default scheduler times in MongoDB to the new defaults.
+    """Migrate legacy-default scheduler times in MongoDB to the required defaults.
 
-    - ``sched_login_time`` == "09:00"  -> "08:50"
-    - ``sched_ws_start_time`` == "09:13" -> "08:55"
-    - ``sched_ws_start_time`` == "08:25" (prep) -> "08:55"
+    - ``sched_login_time`` == "08:50"  -> "09:00"
+    - ``sched_ws_start_time`` == "08:55" -> "09:13"
+    - ``sched_ws_start_time`` == "08:25" (prep) -> "09:13"
+    - ``sched_tick_collection_start_time`` == "08:59" -> "09:14"
 
     Only exact legacy-default matches are migrated (operator overrides are
     left untouched), and running it repeatedly is a no-op.
@@ -37,17 +39,20 @@ async def migrate_scheduler_times() -> None:
         applied: list[str] = []
         docs = {
             d["key"]: d["value"]
-            async for d in db.app_settings.find({"key": {"$in": ["sched_login_time", "sched_ws_start_time"]}})
+            async for d in db.app_settings.find({"key": {"$in": ["sched_login_time", "sched_ws_start_time", "sched_tick_collection_start_time"]}})
         }
         if docs.get("sched_login_time") == LEGACY_LOGIN_DEFAULT:
-            await set_setting("sched_login_time", "08:50")
+            await set_setting("sched_login_time", "09:00")
             applied.append("sched_login_time")
         if docs.get("sched_ws_start_time") in {LEGACY_WS_DEFAULT, LEGACY_PREP_DEFAULT}:
-            await set_setting("sched_ws_start_time", "08:55")
+            await set_setting("sched_ws_start_time", "09:13")
             applied.append("sched_ws_start_time")
+        if docs.get("sched_tick_collection_start_time") == LEGACY_TICK_DEFAULT:
+            await set_setting("sched_tick_collection_start_time", "09:14")
+            applied.append("sched_tick_collection_start_time")
         if applied:
             logger.info(
-                "Migrated legacy scheduler times to the 08:50/08:55/08:59 schedule: %s",
+                "Migrated legacy scheduler times to the 09:00/09:13/09:14 schedule: %s",
                 ", ".join(applied),
             )
     except Exception as exc:

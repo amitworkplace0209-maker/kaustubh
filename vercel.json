@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev:next",
+  "installCommand": "npm ci",
+  "regions": ["iad1"],
+  "github": {
+    "enabled": true,
+    "autoAssignCustomDomains": true
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "X-DNS-Prefetch-Control", "value": "off" },
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" },
+        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
+        { "key": "Pragma", "value": "no-cache" },
+        { "key": "Expires", "value": "0" },
+        { "key": "Service-Worker-Allowed", "value": "/" }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "${BACKEND_URL}/api/:path*"
+    }
+  ],
+  "env": {
+    "BACKEND_URL": "@backend_url",
+    "WS_BACKEND_URL": "@backend_url",
+    "AUTH_SESSION_SECRET": "@auth_session_secret",
+    "AUTH_MONGODB_URI": "@auth_mongodb_uri",
+    "AUTH_MONGODB_DB": "kaustubh",
+    "AUTH_SIGNUP_EMAIL": "@auth_signup_email",
+    "AUTH_SIGNUP_MPIN": "@auth_signup_mpin",
+    "AUTH_OTP_DEV_FALLBACK": "false",
+    "AUTH_OTP_WEBHOOK_URL": "@auth_otp_webhook_url",
+    "AUTH_RP_ID": "@auth_rp_id",
+    "AUTH_ORIGIN": "@auth_origin",
+    "AUTH_RP_NAME": "KAUSTUBH Trading Platform",
+    "NEXT_PUBLIC_API_BASE": "",
+    "NEXT_PUBLIC_WS_URL": ""
+  }
+}

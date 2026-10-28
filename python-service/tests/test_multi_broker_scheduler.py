@@ -408,7 +408,7 @@ class MultiBrokerReconcileTest(unittest.IsolatedAsyncioTestCase):
     async def test_both_brokers_driven_kotak_keeps_working(self):
         import scheduler  # noqa: PLC0415
         _sched, sc, kotak, sh_adapter, _l, events = self._setup(
-            clock=lambda: _ist(hour=8, minute=50))
+            clock=lambda: _ist(hour=9, minute=0))
         await sc._reconcile()
         # Kotak: the legacy login still fires exactly as before.
         self.assertEqual(self.login_calls["n"], 1)
@@ -429,7 +429,7 @@ class MultiBrokerReconcileTest(unittest.IsolatedAsyncioTestCase):
         sh_adapter = FakeAdapter()
         sh_adapter._pending_auth_code = "abc123"
         _sched, sc, kotak, sh_adapter, _l, events = self._setup(
-            clock=lambda: _ist(hour=8, minute=52), adapter=sh_adapter)
+            clock=lambda: _ist(hour=9, minute=0), adapter=sh_adapter)
         await sc._reconcile()
         self.assertGreaterEqual(sh_adapter.logins, 1,
                                 "shoonya logs in once its OAuth code is provided")

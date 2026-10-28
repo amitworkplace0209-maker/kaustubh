@@ -208,11 +208,11 @@ class ReconcileLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.login_calls["n"], 0)
         self.assertEqual(ws.start_calls, 0)
 
-    # ---- CASE 08:50 — login window opens -------------------------------
-    async def test_0850_login_fires(self):
+    # ---- CASE 09:00 — login window opens ------------------------------
+    async def test_0900_login_fires(self):
         import scheduler
         _sched, sc, kotak, ws, _sm, _l = self._setup(
-            clock=lambda: _ist(hour=8, minute=50))
+            clock=lambda: _ist(hour=9, minute=0))
         await sc._reconcile()
         self.assertEqual(self.login_calls["n"], 1)
         self.assertTrue(kotak.session_active)

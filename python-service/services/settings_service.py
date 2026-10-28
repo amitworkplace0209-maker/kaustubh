@@ -162,7 +162,7 @@ DEFAULTS: dict[str, dict] = {
     "auto_logout": {"value": True, "category": "python", "description": "Auto Logout Enable"},
     "auto_reconnect": {"value": True, "category": "python", "description": "Auto Reconnect Enable"},
     "scheduler_enabled": {"value": True, "category": "python", "description": "Scheduler Enable"},
-    "scheduler_login_time": {"value": "08:50", "category": "python", "description": "Scheduler Login Time (HH:MM) - mirrors 'Scheduled login time' (sched_login_time)"},
+    "scheduler_login_time": {"value": "09:00", "category": "python", "description": "Scheduler Login Time (HH:MM) - mirrors 'Scheduled login time' (sched_login_time)"},
     "scheduler_logout_time": {"value": "16:00", "category": "python", "description": "Scheduler Logout Time (HH:MM) - mirrors 'Scheduled logout time' (sched_logout_time)"},
     "python_service_url": {"value": "http://localhost:8000", "category": "python", "description": "Python Service URL"},
     # ---- Data Saver ----
@@ -175,9 +175,9 @@ DEFAULTS: dict[str, dict] = {
     "flush_interval_ms": {"value": 1000, "category": "data_saver", "description": "Flush Interval (ms)"},
     "auto_save": {"value": True, "category": "data_saver", "description": "Auto Save"},
     "save_path": {"value": "./downloads", "category": "data_saver", "description": "Save Path"},
-    "data_collection_start": {"value": "08:59", "category": "data_saver", "description": "Data Collection Start (HH:MM) - mirrors 'Scheduled tick collection start time' (sched_tick_collection_start_time)"},
+    "data_collection_start": {"value": "09:14", "category": "data_saver", "description": "Data Collection Start (HH:MM) - mirrors 'Scheduled tick collection start time' (sched_tick_collection_start_time)"},
     "data_collection_stop": {"value": "15:31", "category": "data_saver", "description": "Data Collection Stop (HH:MM) - mirrors 'Scheduled WebSocket stop time' (sched_ws_stop_time)"},
-    "auto_login_time": {"value": "08:50", "category": "data_saver", "description": "Auto Login Time (HH:MM) - mirrors 'Scheduled login time' (sched_login_time)"},
+    "auto_login_time": {"value": "09:00", "category": "data_saver", "description": "Auto Login Time (HH:MM) - mirrors 'Scheduled login time' (sched_login_time)"},
     # ---- MongoDB ----
     # The connection string is a backend-only secret supplied through the
     # MONGODB_URI environment variable and is deliberately NOT stored or
@@ -389,9 +389,9 @@ DEFAULTS: dict[str, dict] = {
     "ws_history_retention_days": {"value": 7, "category": "websocket", "type": "number", "min": 1, "max": 90, "description": "WebSocket history retention (days)"},
     # ---- Scheduler ----
     "sched_enabled": {"value": True, "category": "scheduler", "type": "boolean", "description": "Enable scheduler"},
-    "sched_login_time": {"value": "08:50", "category": "scheduler", "type": "string", "description": "Scheduled login time (HH:MM)"},
-    "sched_ws_start_time": {"value": "08:55", "category": "scheduler", "type": "string", "description": "Scheduled WebSocket connection time (HH:MM)"},
-    "sched_tick_collection_start_time": {"value": "08:59", "category": "scheduler", "type": "string", "description": "Scheduled tick collection start time (HH:MM)"},
+    "sched_login_time": {"value": "09:00", "category": "scheduler", "type": "string", "description": "Scheduled login time (HH:MM)"},
+    "sched_ws_start_time": {"value": "09:13", "category": "scheduler", "type": "string", "description": "Scheduled WebSocket connection time (HH:MM)"},
+    "sched_tick_collection_start_time": {"value": "09:14", "category": "scheduler", "type": "string", "description": "Scheduled tick collection start time (HH:MM)"},
     "sched_ws_stop_time": {"value": "15:31", "category": "scheduler", "type": "string", "description": "Scheduled WebSocket stop time (HH:MM)"},
     "sched_logout_time": {"value": "16:00", "category": "scheduler", "type": "string", "description": "Scheduled logout time (HH:MM)"},
     "sched_pre_market_start_time": {"value": "09:00", "category": "scheduler", "type": "string", "description": "Pre-market phase start time (HH:MM)"},

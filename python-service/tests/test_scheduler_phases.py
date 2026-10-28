@@ -37,12 +37,12 @@ class TradingPhaseTest(unittest.TestCase):
 
     def test_before_login_closed(self):
         self.assertEqual(self._phase(8, 0), sched.PHASE_CLOSED)
+        self.assertEqual(self._phase(8, 55), sched.PHASE_CLOSED)
+        self.assertEqual(self._phase(8, 59), sched.PHASE_CLOSED)
 
-    def test_readiness_window(self):
-        self.assertEqual(self._phase(8, 55), sched.PHASE_READINESS)
-        self.assertEqual(self._phase(8, 59), sched.PHASE_READINESS)
-
-    def test_pre_market(self):
+    def test_readiness_at_login_instant(self):
+        # With login 09:00 and pre_market 09:00, readiness is instantaneous:
+        # at 09:00 the phase machine moves straight to PRE_MARKET.
         self.assertEqual(self._phase(9, 0), sched.PHASE_PRE_MARKET)
         self.assertEqual(self._phase(9, 4), sched.PHASE_PRE_MARKET)
 

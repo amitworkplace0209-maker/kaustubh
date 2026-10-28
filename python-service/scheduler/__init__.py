@@ -8,9 +8,9 @@ start/stop is exact and duplicate runs cannot leak.
 
 Normal market-day lifecycle (Asia/Kolkata always):
 
-    08:50  automatic Kotak login
-    08:55  WebSocket connection
-    08:59  Tick collection start
+    09:00  automatic Kotak login
+    09:13  WebSocket connection
+    09:14  Tick collection start
     15:31  broker WebSocket disconnect (scheduled_disconnect)
     16:00  Kotak logout
 
@@ -26,7 +26,7 @@ State machine:
                                                 │              │
                                                 │              ▼
                                         TICK_COLLECTION ─▶ TICK_COLLECTION_RUNNING
-                                          (08:59 start)         │
+                                          (09:14 start)         │
                                                 │              │
                                                 ▼              │
                                         WS_DISCONNECTING (15:31)│
@@ -35,9 +35,8 @@ State machine:
                                         LOGGING_OUT ─▶ LOGGED_OUT
                                        (16:00 logout)   / MARKET_CLOSED
 
-    WS_PREPARING state has been removed. The 08:25 WebSocket preparation
-    timing no longer exists. The scheduler goes directly from login to
-    WebSocket connection.
+    Session login and WebSocket scheduling are separate scheduled events.
+    Session login at 09:00, WS connect/subscribe at 09:13, disconnect at 15:31.
 
 Manual sessions are independent: they may be started on any day / any time and
 last 60 minutes, surviving automatic teardown until their own expiry.
@@ -173,8 +172,12 @@ PHASE_LOGOUT = "LOGOUT"
 PHASE_DAY_COMPLETE = "DAY_COMPLETE"
 
 # Ordered phase boundaries: (phase_name, key in ``_sched_times()``).
+# Readiness starts at login time (not ws_start): with the required schedule
+# (login 09:00, pre_market 09:00, ws_start 09:13), keying readiness to ws_start
+# would report READINESS during the pre-market window. Keying to login keeps
+# the phase machine monotonically correct.
 _PHASE_ORDER = [
-    (PHASE_READINESS, "ws_start"),
+    (PHASE_READINESS, "login"),
     (PHASE_PRE_MARKET, "pre_market"),
     (PHASE_LIMIT_ORDER_WINDOW, "limit_order"),
     (PHASE_EQUILIBRIUM, "equilibrium"),
