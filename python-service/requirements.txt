@@ -1,15 +1,18 @@
-# Kotak Neo official SDK (import module: neo_api_client). 3.0.7 is the current
-# PyPI release and is REQUIRED over 3.0.6 for two defects in the exact live-feed
-# paths this project uses:
-#   * SFeedWebSocket._handle_disconnect recursed on itself, adding one stack
-#     frame per failed reconnect attempt -> RecursionError during a broker
-#     outage instead of continuing to retry.
-#   * OrderFeedWebSocket.__anext__ recursed per 1s idle timeout -> RecursionError
-#     on a quiet order/position feed.
-# Both are now flat `while True` loops. No public API was removed: the NeoAPI
-# REST surface, SFeedWebSocket subscribe_* / unsubscribe_* family and the
-# OrderFeedWebSocket constructor are unchanged from 3.0.6.
-kotakneoapi==3.0.7
+# Kotak Neo official SDK (import module: neo_api_client). 3.0.13 is the latest
+# stable release on PyPI (kotakneoapi). Verified against this project's usage:
+#   * NeoAPI(totp_login, totp_validate, place_order, modify_order, cancel_order,
+#     order_history, order_report, trade_report, positions, holdings, limits,
+#     quotes, search_scrip, margin_required, scrip_master, logout) — signatures
+#     match exactly what auth/kotak_client.py and brokers/kotak_adapter.py call.
+#   * neo_api_client.websocket.feed.SFeedWebSocket (connect, close,
+#     subscribe_scrips/subscribe_index/subscribe_full_depth/subscribe_depth and
+#     the matching unsubscribe_* family, is_connected property) — matches
+#     ws_socket/ws_manager.py.
+#   * WsToken model fields: exchange_segment, instrument_token — matches
+#     ws_socket/ws_manager.py::_ws_token.
+# No public API used by this project was removed or renamed between 3.0.7 and
+# 3.0.13. The pin is kept exact for reproducible VM installs.
+kotakneoapi==3.0.13
 # Shoonya official OAuth SDK (published dist name "NorenRestApiOAuth"; its
 # import module is NorenRestApiPy.NorenApi). Implementation verified against
 # 0.0.41: class NorenApi(host, websocket) with OAuth getOAuthURL/getAccessToken/
