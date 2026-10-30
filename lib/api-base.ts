@@ -30,12 +30,27 @@ export const API_BASE =
  * Python backend, so the browser works from a phone on the LAN, behind a
  * reverse proxy and over HTTPS without mixed-content errors.
  *
- * There is intentionally NO public WebSocket host knob: exposing a backend
- * hostname to the browser would defeat the point of keeping the service
- * private. On serverless hosts (Vercel) a persistent socket is impossible —
- * the UI degrades to REST polling rather than leaking a backend address.
+ * Serverless (Vercel): there is no long-lived process to tunnel the upgrade,
+ * so an explicitly configured `NEXT_PUBLIC_WS_URL` (the public HTTPS tunnel's
+ * `wss://.../ws/realtime`) is used instead. The gateway still requires a
+ * short-lived `?token=` for every connection, and no credential is embedded
+ * in this URL. When it is unset the browser keeps the same-origin behaviour;
+ * on Vercel realtime then degrades to REST polling, which is the honest
+ * fallback rather than a socket that can never open.
  */
 export function realtimeSocketUrl(): string {
+  const configured = (process.env.NEXT_PUBLIC_WS_URL || '').trim();
+  if (configured) {
+    try {
+      const parsed = new URL(configured);
+      if (parsed.protocol === 'wss:' || parsed.protocol === 'ws:') {
+        return parsed.toString();
+      }
+    } catch {
+      /* invalid override — fall through to the same-origin URL */
+    }
+  }
+
   if (typeof window !== 'undefined' && window.location) {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/ws/realtime`;

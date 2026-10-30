@@ -1,5 +1,13 @@
 # Single-owner authentication & device security
 
+> **2026-10-30 architecture note:** the owner-auth implementation now runs on
+> **VM1** (`python-service/api/auth_app.py`). Vercel routes are thin proxies;
+> Vercel has no MongoDB credentials and needs no `APP_PASSWORD`. The flow,
+> security model and collection layout below remain accurate, but environment
+> variables live in `/etc/kds/backend.env` on VM1. See
+> [`auth-vm1-migration.md`](./auth-vm1-migration.md) and
+> [`vercel-deployment.md`](./vercel-deployment.md).
+
 > Full step-by-step login/signup/OTP/MPIN/WebAuthn flows, API reference, audit
 > findings, VM deployment and troubleshooting live in
 > [`AUTH_LOGIN_FULL_GUIDE.md`](./AUTH_LOGIN_FULL_GUIDE.md). This file is the

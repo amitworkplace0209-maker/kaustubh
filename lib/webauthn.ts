@@ -7,21 +7,17 @@ import {
   type AuthenticationResponseJSON,
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
+import { backendAuthJson } from '@/lib/auth-proxy';
 import { getAllowedOrigins, getRpId, getRpName, requestContext } from '@/lib/auth-config';
-import {
-  getCredential,
-  listCredentials,
-  saveChallenge,
-  takeChallenge,
-  updateCredentialCounter,
-  type WebAuthnCredentialDoc,
-} from '@/lib/auth-db';
 
 /**
  * Real WebAuthn (passkey / fingerprint / face) support.
  *
- * Challenges are generated server-side, persisted in MongoDB with a short TTL,
- * and consumed exactly once by the matching verify call. The browser only ever
+ * The cryptography stays in this Node layer (`@simplewebauthn/server`), but all
+ * persistent state — credentials, one-time challenges and signature counters —
+ * lives in MongoDB behind the VM1 backend. Vercel has no database credentials,
+ * so every storage operation calls the session-gated data-plane endpoints under
+ * `/api/auth/webauthn/*` with the browser's own cookies. The browser only ever
  * receives public options — never a secret.
  */
 
@@ -32,6 +28,14 @@ export interface WebAuthnContext {
   rpName: string;
   expectedOrigin: string[];
   origin: string;
+}
+
+interface StoredCredential {
+  credentialId: string;
+  publicKey: string;
+  counter: number;
+  transports: string[];
+  deviceLabel: string;
 }
 
 function devOriginAliases(origin: string): string[] {
@@ -77,7 +81,96 @@ export function assertWebAuthnSupported(context: WebAuthnContext): string | null
   return null;
 }
 
-function toCredential(doc: WebAuthnCredentialDoc) {
+/* -------------------------------------------------------------------------
+ * Backend data plane (VM1 owns MongoDB; Vercel owns the WebAuthn crypto).
+ * ---------------------------------------------------------------------- */
+
+function backendFailure(action: string, status: number): Error {
+  if (status === 401 || status === 403) {
+    return new Error('Your session has expired. Please log in again.');
+  }
+  if (status === 503 || status === 0) {
+    return new Error('The authentication service is unavailable right now. Retry in a moment.');
+  }
+  return new Error(`${action} failed. Please try again.`);
+}
+
+async function fetchCredentials(request: NextRequest): Promise<StoredCredential[]> {
+  const result = await backendAuthJson(request, '/api/auth/webauthn/credentials', { method: 'GET' });
+  if (!result.response || !result.ok) {
+    throw backendFailure('Loading biometric credentials', result.status);
+  }
+  const data = (result.data || {}) as { credentials?: unknown };
+  if (!Array.isArray(data.credentials)) return [];
+  return data.credentials
+    .filter((cred): cred is Record<string, unknown> => Boolean(cred) && typeof cred === 'object')
+    .map((cred) => ({
+      credentialId: String(cred.id ?? ''),
+      publicKey: String(cred.publicKey ?? ''),
+      counter: Number(cred.counter ?? 0) || 0,
+      transports: Array.isArray(cred.transports) ? cred.transports.map(String) : [],
+      deviceLabel: String(cred.deviceLabel ?? ''),
+    }))
+    .filter((cred) => Boolean(cred.credentialId) && Boolean(cred.publicKey));
+}
+
+async function fetchCredential(
+  request: NextRequest,
+  credentialId: string,
+): Promise<StoredCredential | null> {
+  const credentials = await fetchCredentials(request);
+  return credentials.find((cred) => cred.credentialId === credentialId) ?? null;
+}
+
+async function saveChallenge(
+  request: NextRequest,
+  challenge: string,
+  type: 'registration' | 'authentication',
+): Promise<void> {
+  const result = await backendAuthJson(request, '/api/auth/webauthn/challenge', {
+    method: 'POST',
+    body: JSON.stringify({ challenge, type }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!result.response || !result.ok) {
+    throw backendFailure('Saving the WebAuthn challenge', result.status);
+  }
+}
+
+async function takeChallenge(
+  request: NextRequest,
+  type: 'registration' | 'authentication',
+): Promise<string | null> {
+  const result = await backendAuthJson(request, '/api/auth/webauthn/challenge/take', {
+    method: 'POST',
+    body: JSON.stringify({ type }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!result.response || !result.ok) {
+    throw backendFailure('Consuming the WebAuthn challenge', result.status);
+  }
+  const challenge = String((result.data as { challenge?: unknown } | null)?.challenge ?? '');
+  return challenge || null;
+}
+
+async function recordBiometricEvent(
+  request: NextRequest,
+  payload: { credentialId?: string; counter?: number; success: boolean; detail?: string },
+): Promise<void> {
+  // Best effort: the WebAuthn result must not be discarded because the audit
+  // write failed. The next login re-verifies liveness anyway.
+  await backendAuthJson(request, '/api/auth/webauthn/counters', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Content-Type': 'application/json' },
+  }).catch(() => undefined);
+}
+
+/* -------------------------------------------------------------------------
+ * Registration / authentication flows.
+ * ---------------------------------------------------------------------- */
+
+function toCredential(doc: StoredCredential) {
   return {
     id: doc.credentialId,
     publicKey: Buffer.from(doc.publicKey, 'base64url'),
@@ -96,7 +189,7 @@ export async function registrationOptions(options: {
   const unsupported = assertWebAuthnSupported(context);
   if (unsupported) return { ok: false as const, message: unsupported };
 
-  const existing = await listCredentials(options.userId);
+  const existing = await fetchCredentials(options.request);
   const generated = await generateRegistrationOptions({
     rpName: context.rpName,
     rpID: context.rpID,
@@ -116,13 +209,7 @@ export async function registrationOptions(options: {
     timeout: CHALLENGE_TTL_MS,
   });
 
-  await saveChallenge({
-    challenge: generated.challenge,
-    type: 'registration',
-    userId: options.userId,
-    createdAt: new Date(),
-    expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS),
-  });
+  await saveChallenge(options.request, generated.challenge, 'registration');
 
   return { ok: true as const, options: generated };
 }
@@ -139,13 +226,18 @@ export async function verifyRegistration(options: {
   const unsupported = assertWebAuthnSupported(context);
   if (unsupported) return { ok: false, message: unsupported };
 
-  const challenge = await takeChallenge('registration');
+  let challenge: string | null;
+  try {
+    challenge = await takeChallenge(options.request, 'registration');
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Could not load the challenge.' };
+  }
   if (!challenge) return { ok: false, message: 'This registration challenge expired. Please try again.' };
 
   try {
     const verification = await verifyRegistrationResponse({
       response: options.response,
-      expectedChallenge: challenge.challenge,
+      expectedChallenge: challenge,
       expectedOrigin: context.expectedOrigin,
       expectedRPID: context.rpID,
       requireUserVerification: true,
@@ -177,7 +269,12 @@ export async function authenticationOptions(options: {
   const unsupported = assertWebAuthnSupported(context);
   if (unsupported) return { ok: false as const, message: unsupported };
 
-  const credentials = await listCredentials(options.userId);
+  let credentials: StoredCredential[];
+  try {
+    credentials = await fetchCredentials(options.request);
+  } catch (err) {
+    return { ok: false as const, message: err instanceof Error ? err.message : 'Could not load biometric credentials.' };
+  }
   if (!credentials.length) {
     return { ok: false as const, message: 'No biometric credential is registered on this account yet.' };
   }
@@ -192,13 +289,7 @@ export async function authenticationOptions(options: {
     timeout: CHALLENGE_TTL_MS,
   });
 
-  await saveChallenge({
-    challenge: generated.challenge,
-    type: 'authentication',
-    userId: options.userId,
-    createdAt: new Date(),
-    expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS),
-  });
+  await saveChallenge(options.request, generated.challenge, 'authentication');
 
   return { ok: true as const, options: generated };
 }
@@ -215,30 +306,55 @@ export async function verifyAuthentication(options: {
   const unsupported = assertWebAuthnSupported(context);
   if (unsupported) return { ok: false, message: unsupported };
 
-  const challenge = await takeChallenge('authentication');
+  let challenge: string | null;
+  try {
+    challenge = await takeChallenge(options.request, 'authentication');
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Could not load the challenge.' };
+  }
   if (!challenge) return { ok: false, message: 'This biometric challenge expired. Please try again.' };
 
   const credentialId = String(options.response?.id ?? '');
   if (!credentialId) return { ok: false, message: 'The biometric response is missing a credential id.' };
 
-  const stored = await getCredential(credentialId);
+  let stored: StoredCredential | null;
+  try {
+    stored = await fetchCredential(options.request, credentialId);
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Could not load the credential.' };
+  }
   if (!stored) return { ok: false, message: 'That biometric credential is not registered on this account.' };
 
   try {
     const verification = await verifyAuthenticationResponse({
       response: options.response,
-      expectedChallenge: challenge.challenge,
+      expectedChallenge: challenge,
       expectedOrigin: context.expectedOrigin,
       expectedRPID: context.rpID,
       credential: toCredential(stored),
       requireUserVerification: true,
     });
     if (!verification.verified) {
+      await recordBiometricEvent(options.request, {
+        credentialId: stored.credentialId,
+        success: false,
+        detail: 'Biometric verification failed',
+      });
       return { ok: false, message: 'The biometric verification failed.' };
     }
-    await updateCredentialCounter(stored.credentialId, verification.authenticationInfo.newCounter);
+    await recordBiometricEvent(options.request, {
+      credentialId: stored.credentialId,
+      counter: verification.authenticationInfo.newCounter,
+      success: true,
+      detail: 'App unlocked with biometrics',
+    });
     return { ok: true, credentialId: stored.credentialId };
   } catch (err) {
+    await recordBiometricEvent(options.request, {
+      credentialId: stored.credentialId,
+      success: false,
+      detail: err instanceof Error ? err.message.slice(0, 200) : 'Biometric verification failed',
+    });
     return {
       ok: false,
       message: err instanceof Error ? err.message : 'The biometric verification failed.',

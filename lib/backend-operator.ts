@@ -52,15 +52,35 @@ export function parseEnvFile(contents: string): Record<string, string> {
 }
 
 /** Env files in ascending priority; later files win. Missing files are skipped. */
-const BACKEND_ENV_FILES = ['.env', 'python-service/.env', 'python-service/.env.local', '.env.local'];
+function backendEnvFiles(): string[] {
+  const root = process.cwd();
+  // Literal path segments keep Turbopack's tracing scoped to the two known
+  // env directories instead of tracing the whole repository.
+  return [
+    join(root, '.env'),
+    join(root, 'python-service', '.env'),
+    join(root, 'python-service', '.env.local'),
+    join(root, '.env.local'),
+  ];
+}
+
+// Vercel's serverless filesystem is immutable and does not contain the gitignored
+// backend env files. Reading them there is pointless and trips build tracing, so
+// on Vercel credentials come exclusively from the project environment.
+const IS_VERCEL = Boolean(process.env.VERCEL);
 
 function backendEnvFile(): Record<string, string> {
   if (cachedBackendEnv) return cachedBackendEnv;
+  if (IS_VERCEL) {
+    cachedBackendEnv = {};
+    return cachedBackendEnv;
+  }
   let merged: Record<string, string> = {};
-  for (const rel of BACKEND_ENV_FILES) {
+  for (const file of backendEnvFiles()) {
     try {
-      const file = join(process.cwd(), rel);
-      if (existsSync(file)) merged = { ...merged, ...parseEnvFile(readFileSync(file, 'utf-8')) };
+      if (existsSync(/* turbopackIgnore: true */ file)) {
+        merged = { ...merged, ...parseEnvFile(readFileSync(/* turbopackIgnore: true */ file, 'utf-8')) };
+      }
     } catch {
       // Unreadable candidate — ignore and keep looking.
     }

@@ -1,5 +1,12 @@
 # KDS Project — Final Deployment Report
 
+> **Superseded for auth/Vercel status (2026-10-30):** owner auth now runs on
+> VM1 (`python-service/api/auth_app.py`) and Vercel only needs `BACKEND_URL`
+> (plus optional `NEXT_PUBLIC_WS_URL`). See
+> [`auth-vm1-migration.md`](./auth-vm1-migration.md) and
+> [`vercel-deployment.md`](./vercel-deployment.md). The sections below remain
+> the record of the 2026-10-27 VM1 service recovery.
+
 **Date:** 2026-10-27  
 **Repository:** https://github.com/amitworkplace0209-maker/kaustubh (private)  
 **Branch:** main  

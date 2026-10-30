@@ -113,6 +113,9 @@ REQUIRED_VARS=(
   APP_USERNAME
   APP_PASSWORD
   JWT_SECRET
+  AUTH_SESSION_SECRET
+  AUTH_SIGNUP_EMAIL
+  AUTH_SIGNUP_MPIN
   HOST
   PORT
   BROKER_MODE
@@ -133,7 +136,7 @@ if [[ ${MISSING} -gt 0 ]]; then
 fi
 
 # Warn on placeholder values (do not print the values)
-for var in MONGODB_URI APP_PASSWORD JWT_SECRET CORS_ORIGINS; do
+for var in MONGODB_URI APP_PASSWORD JWT_SECRET AUTH_SESSION_SECRET AUTH_SIGNUP_EMAIL AUTH_SIGNUP_MPIN CORS_ORIGINS; do
   if grep -q "^${var}=.*<REPLACE" "${ENV_FILE}" 2>/dev/null; then
     log "WARNING: ${var} still contains a placeholder value — replace before production use"
   fi
@@ -220,6 +223,27 @@ systemctl is-enabled "${SERVICE_UNIT}" --quiet && log "Service: enabled" || log 
 # ---------------------------------------------------------------------------
 log "Step 8: MongoDB connectivity is verified via /api/system/health (database.connected field)"
 log "Do not print the MongoDB URI. Check the health response for database.connected=true"
+
+# Verify the VM1 owner-auth surface is really deployed (no secrets printed).
+AUTH_STATUS_URL="http://${HOST_VAL:-127.0.0.1}:${PORT_VAL:-8000}/api/auth/status"
+AUTH_STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${AUTH_STATUS_URL}" 2>/dev/null || echo "000")
+if [[ "${AUTH_STATUS_CODE}" == "200" ]]; then
+  log "Owner auth status endpoint: HTTP 200"
+elif [[ "${AUTH_STATUS_CODE}" == "503" ]]; then
+  log "WARNING: Owner auth status endpoint returned 503 (MongoDB unavailable)"
+else
+  log "WARNING: Owner auth status endpoint returned HTTP ${AUTH_STATUS_CODE} — expected 200"
+fi
+
+OPERATOR_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -X POST \
+  "http://${HOST_VAL:-127.0.0.1}:${PORT_VAL:-8000}/api/auth/operator-token" 2>/dev/null || echo "000")
+if [[ "${OPERATOR_CODE}" == "401" || "${OPERATOR_CODE}" == "403" ]]; then
+  log "Owner-token endpoint is session-gated: HTTP ${OPERATOR_CODE}"
+elif [[ "${OPERATOR_CODE}" == "404" || "${OPERATOR_CODE}" == "405" ]]; then
+  log "WARNING: Owner-token endpoint missing (HTTP ${OPERATOR_CODE}) — deployed code predates /api/auth/operator-token"
+else
+  log "WARNING: Unexpected owner-token response HTTP ${OPERATOR_CODE}"
+fi
 
 # ---------------------------------------------------------------------------
 # 9. Verify restart behavior (bounded)

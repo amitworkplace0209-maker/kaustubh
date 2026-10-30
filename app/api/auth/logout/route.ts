@@ -1,52 +1,21 @@
 import type { NextRequest } from 'next/server';
-import { getClientIp } from '@/lib/auth-config';
-import { recordAuthEvent, revokeSessionDoc } from '@/lib/auth-db';
-import { clearAuthCookies, getSessionFromRequest } from '@/lib/auth-sessions';
-import { json } from '@/lib/auth-validation';
+import { proxyAuth } from '@/lib/auth-proxy';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 /**
- * POST / DELETE /api/auth/logout
+ * POST/DELETE /api/auth/logout — revoke the current app session on VM1 and
+ * clear both auth cookies (the backend returns the clearing Set-Cookie headers).
  *
- * Revokes THIS device's session record in MongoDB and clears both auth cookies.
- * Other devices stay signed in (revoke them explicitly from Settings).
+ * The broker logout lives at /api/logout and is handled by manual-login; this
+ * endpoint only ends the app session.
  */
-async function logout(request: NextRequest): Promise<Response> {
-  const ip = getClientIp(request) || 'unknown';
-  const userAgent = request.headers.get('user-agent') || 'unknown';
-
-  try {
-    const active = await getSessionFromRequest(request);
-    if (active) {
-      await revokeSessionDoc(active.session.sessionId, 'logout');
-      await recordAuthEvent({
-        type: 'logout',
-        userId: String(active.user._id),
-        ip,
-        userAgent,
-        deviceId: active.session.deviceId,
-        deviceLabel: active.session.deviceLabel,
-        sessionId: active.session.sessionId,
-        success: true,
-        detail: 'Logged out',
-      });
-    }
-  } catch {
-    // Even if MongoDB is down we still clear the cookie so the browser is not
-    // stuck in a half-signed-in state.
-  }
-
-  await clearAuthCookies();
-  return json({ ok: true, authenticated: false, message: 'Logged out.' });
-}
-
 export async function POST(request: NextRequest) {
-  return logout(request);
+  return proxyAuth(request, '/api/auth/session/revoke', { method: 'POST' });
 }
 
 export async function DELETE(request: NextRequest) {
-  return logout(request);
+  return proxyAuth(request, '/api/auth/session/revoke', { method: 'POST' });
 }

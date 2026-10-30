@@ -23,20 +23,23 @@ import { join } from 'node:path';
 const read = (rel: string) => readFileSync(join(process.cwd(), rel), 'utf8');
 
 const ROUTE = read('app/api/auth/trading-token/route.ts');
+const AUTH_PROXY = read('lib/auth-proxy.ts');
 const OPERATOR = read('lib/backend-operator.ts');
 const REALTIME_ROUTE = read('app/api/realtime/token/route.ts');
 const SERVICE = read('lib/terminal-service.ts');
 const TRADE = read('components/trading/trade-page.tsx');
 const HISTORY = read('components/orders/history/history-page.tsx');
 
-test('the JWT handoff is cookie-gated before it mints anything', () => {
-  // Same HMAC cookie check as the proxy gate — an unauthenticated caller must
-  // never reach the operator login.
-  const gateIdx = ROUTE.indexOf('verifySessionToken');
+test('the JWT handoff is session-gated before it mints anything', () => {
+  // The app session is now owned by VM1: the gate asks the backend whoami and
+  // also requires MPIN/biometric setup. An unauthenticated caller must never
+  // reach the operator login.
+  const gateIdx = ROUTE.indexOf('requireBackendSession');
   const loginIdx = ROUTE.indexOf('acquireOperatorJwt()');
-  assert.ok(gateIdx >= 0, 'the route must verify the session cookie');
-  assert.ok(loginIdx > gateIdx, 'the session cookie must be verified BEFORE the operator login');
-  assert.match(ROUTE, /status: 401/, 'a missing/invalid session must answer 401');
+  assert.ok(gateIdx >= 0, 'the route must require a backend-validated app session');
+  assert.ok(loginIdx > gateIdx, 'the session must be validated BEFORE the operator login');
+  assert.match(ROUTE, /requireMpin: true/, 'the handoff must require MPIN/biometric setup');
+  assert.match(AUTH_PROXY, /status = result\.status \|\| 401/, 'a missing/invalid session must answer 401');
 });
 
 /** Structural assertions run against code with comments removed (the file's

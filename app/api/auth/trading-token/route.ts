@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
-import { verifySessionToken } from '@/lib/auth-crypto';
-import { requireSession } from '@/lib/auth-sessions';
-import { acquireOperatorJwt, operatorCredentials } from '@/lib/backend-operator';
+import { backendAuthJson, requireBackendSession } from '@/lib/auth-proxy';
+import { acquireOperatorJwt } from '@/lib/backend-operator';
 
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
@@ -19,46 +18,48 @@ export const runtime = 'nodejs';
  * sign-in card existed but was never mounted anywhere in the app.
  *
  * WHAT IT DOES
- * Verifies the Next-layer `kaustubh_session` cookie (HMAC-signed, same check as
- * the proxy gate) and then returns the backend operator JWT that the Next layer
- * already obtains for server-side calls. The password (`APP_PASSWORD`) never
- * leaves the server; the browser only receives the short-lived JWT it was
- * previously expected to hold after typing the password itself.
+ * Requires a live app session on VM1 (signature AND session row, with MPIN or
+ * biometric setup completed) and then asks VM1 to mint the backend operator JWT
+ * for that session. VM1 owns the signing secret, so Vercel does NOT need a copy
+ * of APP_PASSWORD. The older `acquireOperatorJwt()` path remains only as a
+ * rollout fallback for a backend that does not yet expose
+ * `/api/auth/operator-token`.
  *
  * The token is served over same-origin fetch only (cookies are SameSite=Lax),
  * is used in memory (never localStorage), and the backend still enforces a
  * valid unexpired JWT on every mutation — this route grants nothing that the
  * signed-in operator could not already do from this browser.
  */
-export async function GET(req: NextRequest) {
-  if (!verifySessionToken(req.cookies.get('kaustubh_session')?.value)) {
-    return Response.json(
-      { ok: false, error: 'UNAUTHENTICATED', message: 'No valid app session — log in first.' },
-      { status: 401 },
-    );
-  }
-
-  // The HMAC cookie alone is not enough: the session record must still be live
-  // in MongoDB and the account must have completed MPIN/biometric setup.
-  const auth = await requireSession(req, { requireMpin: true });
+export async function GET(request: NextRequest) {
+  const auth = await requireBackendSession(request, { requireMpin: true });
   if (!auth.ok) return auth.response;
 
-  if (!operatorCredentials()) {
+  const minted = await backendAuthJson(request, '/api/auth/operator-token', { method: 'POST' });
+  const mintedData = (minted.data ?? {}) as Record<string, unknown>;
+  const mintedToken = typeof mintedData.token === 'string' ? mintedData.token : '';
+
+  if (minted.ok && mintedToken) {
+    return Response.json({ ok: true, token: mintedToken });
+  }
+
+  // Only fall back for an older backend without the endpoint. Any other
+  // failure is real and must not be hidden behind a duplicate credential path.
+  if (minted.response && minted.status !== 404 && minted.status !== 405) {
     return Response.json(
-      {
-        ok: false,
-        error: 'NO_OPERATOR_CREDENTIALS',
-        message:
-          'Backend trading auth is enabled but no operator credentials are configured on the app layer (APP_USERNAME / APP_PASSWORD).',
-      },
-      { status: 502 },
+      mintedData.ok === false ? mintedData : { ok: false, error: 'OPERATOR_TOKEN_FAILED' },
+      { status: minted.status },
     );
   }
 
   const token = await acquireOperatorJwt();
   if (!token) {
     return Response.json(
-      { ok: false, error: 'OPERATOR_LOGIN_FAILED', message: 'Backend operator login failed.' },
+      {
+        ok: false,
+        error: 'OPERATOR_TOKEN_UNAVAILABLE',
+        message:
+          'VM1 could not mint a trading token for this session and no operator credentials are configured on the app layer.',
+      },
       { status: 502 },
     );
   }

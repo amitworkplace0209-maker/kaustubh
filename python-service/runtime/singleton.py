@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import ctypes
 import datetime as _dt
-import fcntl
 import hashlib
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any
+
+if sys.platform != "win32":  # fcntl does not exist on Windows
+    import fcntl
 
 WAIT_OBJECT_0 = 0x00000000
 WAIT_ABANDONED = 0x00000080

@@ -22,42 +22,47 @@ import { createSessionToken, verifySessionToken } from '../lib/auth-crypto.ts';
 
 const PROXY_SOURCE = readFileSync(join(process.cwd(), 'proxy.ts'), 'utf8');
 
-test('proxy verifies the session through verifySessionToken', () => {
-  assert.match(
+test('proxy validates the session through the VM1 backend, not MongoDB', () => {
+  // Vercel has no database credentials. The proxy may decode the signed cookie
+  // to learn the session id, but the authority on whether that session is live
+  // is the backend that owns `app_auth_sessions`.
+  assert.doesNotMatch(
     PROXY_SOURCE,
-    /import\s*\{[^}]*verifySessionToken[^}]*\}\s*from\s*'@\/lib\/auth-crypto'/,
-    'proxy.ts must import verifySessionToken from @/lib/auth-crypto',
+    /from\s*'@\/lib\/auth-db'/,
+    'proxy.ts must not import the MongoDB auth layer',
+  );
+  assert.doesNotMatch(
+    PROXY_SOURCE,
+    /getOwner|getSessionDoc/,
+    'proxy.ts must not read owner/session documents directly',
   );
   assert.match(
     PROXY_SOURCE,
-    /verifySessionToken\(\s*request\.cookies\.get\(SESSION_COOKIE\)\?\.value\s*\)/,
-    'isAuthenticated must delegate to verifySessionToken with the raw cookie',
+    /\/api\/auth\/live\?sid=/,
+    'proxy.ts must ask the backend whether the session id is live',
+  );
+  assert.match(
+    PROXY_SOURCE,
+    /data\.live\s*===\s*true/,
+    'proxy.ts must require an explicit live=true answer',
+  );
+  assert.match(
+    PROXY_SOURCE,
+    /payload\.sid/,
+    'proxy.ts must require the backend session id from the cookie payload',
   );
 });
 
-test('proxy no longer base64-decodes the cookie itself', () => {
-  // The exact anti-pattern that caused the outage. Base64url decoding must only
-  // ever happen inside auth-crypto, never on the raw cookie in the proxy.
-  assert.doesNotMatch(
-    PROXY_SOURCE,
-    /Buffer\.from\(\s*sessionCookie\.value/,
-    'proxy.ts must not base64-decode the raw session cookie',
-  );
-  assert.doesNotMatch(
-    PROXY_SOURCE,
-    /JSON\.parse\(\s*Buffer\.from\(/,
-    'proxy.ts must not hand-parse the session payload',
-  );
-  assert.doesNotMatch(
-    PROXY_SOURCE,
-    /\.toString\('base64'\)/,
-    "proxy.ts must not use standard 'base64' (the payload is base64url)",
-  );
-  assert.doesNotMatch(
-    PROXY_SOURCE,
-    /Date\.now\(\)\s*>\s*payload\.exp/,
-    'proxy.ts must not re-implement expiry checking; verifySessionToken does it',
-  );
+test('proxy decodes only the payload to find the session id', () => {
+  // The raw cookie is `base64url(payload).base64url(sig)`. We deliberately do
+  // NOT verify the HMAC here: the backend validates the token on every gated
+  // endpoint, and the sid must name a real unrevoked session. This keeps the
+  // proxy free of Node crypto/fs imports while still failing closed.
+  assert.match(PROXY_SOURCE, /parts\[0\]/, 'only the payload segment is decoded');
+  assert.match(PROXY_SOURCE, /Buffer\.from\(parts\[0\], 'base64url'\)/);
+  assert.match(PROXY_SOURCE, /payload\.authenticated !== true/);
+  assert.match(PROXY_SOURCE, /Number\(payload\.exp\)\s*<=\s*Date\.now\(\)/);
+  assert.doesNotMatch(PROXY_SOURCE, /\.toString\('base64'\)/, 'the payload is base64url');
 });
 
 test('a real signed token passes the crypto the proxy relies on', () => {

@@ -1,5 +1,11 @@
 # KAUSTUBH — Auth & Security: Full Audit + Working Guide
 
+> **2026-10-30 architecture note:** the owner-auth code now runs on **VM1**
+> (`python-service/api/auth_app.py`); the Vercel `/api/auth/*` routes proxy to
+> it. The flows described here are still the reference, but all auth env vars
+> (`AUTH_*`, `APP_PASSWORD`, `MONGODB_URI`) belong in `/etc/kds/backend.env` on
+> VM1 — not in Vercel. See [`auth-vm1-migration.md`](./auth-vm1-migration.md).
+
 > **Audience:** owner/operator (tum) + future maintainer.
 > **Scope:** single-owner login, one-time signup, max 2 devices, email OTP, MPIN, real WebAuthn biometric, IP audit, backend hiding, VM deployment.
 > **Last audited:** 2026-10-25 (local repo, commit `bb20417` + local `.env`).

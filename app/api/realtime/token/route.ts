@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { backendFetch } from '@/lib/backend';
-import { verifySessionToken } from '@/lib/auth-crypto';
+import { backendAuthJson, requireBackendSession } from '@/lib/auth-proxy';
 import { acquireOperatorJwt } from '@/lib/backend-operator';
 
 export const revalidate = 0;
@@ -14,10 +14,10 @@ export const runtime = 'nodejs';
  * handed out REST-first and passed as `?token=` on the WebSocket URL.
  *
  * Auth model:
- *   1. The Next-layer session cookie (`kaustubh_session`) is verified FIRST via
- *      the HMAC signature minted by `lib/auth-crypto`. Unauthenticated callers
- *      get an honest 401 and NEVER touch the backend — this stops the
- *      unauthenticated token spam on /login.
+ *   1. The live app session is verified FIRST against the VM1 backend (which
+ *      owns the session rows), exactly like every other session-gated route.
+ *      Unauthenticated callers get an honest 401 and NEVER touch the backend
+ *      token endpoint — this stops the unauthenticated token spam on /login.
  *   2. When the caller already holds an operator JWT (Authorization /
  *      x-kaustubh-token) it is forwarded unchanged.
  *   3. Otherwise the Next layer obtains an operator JWT from the backend
@@ -36,16 +36,8 @@ export const runtime = 'nodejs';
  * never returned to the client and never logged.
  */
 export async function GET(req: NextRequest) {
-  if (!verifySessionToken(req.cookies.get('kaustubh_session')?.value)) {
-    return Response.json(
-      {
-        ok: false,
-        error: 'UNAUTHENTICATED',
-        message: 'No valid app session — log in first.',
-      },
-      { status: 401 },
-    );
-  }
+  const session = await requireBackendSession(req);
+  if (!session.ok) return session.response;
 
   const auth = req.headers.get('authorization');
   const xtoken = req.headers.get('x-kaustubh-token');
@@ -58,7 +50,24 @@ export async function GET(req: NextRequest) {
   } else if (xtoken) {
     headers['x-kaustubh-token'] = xtoken;
   } else {
-    const jwt = await acquireOperatorJwt();
+    let jwt = await acquireOperatorJwt();
+
+    // Vercel does not hold APP_PASSWORD: ask VM1 to mint the operator JWT from
+    // the already-validated app session. Only fall through for an older
+    // backend that predates /api/auth/operator-token.
+    if (!jwt) {
+      const minted = await backendAuthJson(req, '/api/auth/operator-token', { method: 'POST' });
+      const mintedData = (minted.data ?? {}) as Record<string, unknown>;
+      if (minted.ok && typeof mintedData.token === 'string' && mintedData.token) {
+        jwt = mintedData.token;
+      } else if (minted.response && minted.status !== 404 && minted.status !== 405) {
+        return Response.json(
+          mintedData.ok === false ? mintedData : { ok: false, error: 'OPERATOR_TOKEN_FAILED' },
+          { status: minted.status },
+        );
+      }
+    }
+
     if (jwt) {
       headers.authorization = `Bearer ${jwt}`;
     } else {
@@ -69,7 +78,7 @@ export async function GET(req: NextRequest) {
             ok: false,
             error: 'BACKEND_SECURE_NO_CREDS',
             message:
-              'Backend realtime auth is enabled but no operator credentials are configured on the app layer (APP_USERNAME / APP_PASSWORD).',
+              'Backend realtime auth is enabled but VM1 could not mint an operator token for this session.',
           },
           { status: 502 },
         );

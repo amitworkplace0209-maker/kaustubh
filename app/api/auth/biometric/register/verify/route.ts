@@ -1,12 +1,5 @@
 import type { NextRequest } from 'next/server';
-import { getClientIp } from '@/lib/auth-config';
-import {
-  addCredential,
-  getCredential,
-  listCredentials,
-  recordAuthEvent,
-} from '@/lib/auth-db';
-import { requireSession } from '@/lib/auth-sessions';
+import { backendAuthJson, requireBackendSession } from '@/lib/auth-proxy';
 import { fail, json, readJson, safeDeviceLabel } from '@/lib/auth-validation';
 import { verifyRegistration } from '@/lib/webauthn';
 
@@ -17,9 +10,13 @@ export const revalidate = 0;
 /**
  * POST /api/auth/biometric/register/verify
  * Body: { response: RegistrationResponseJSON, deviceLabel?: string }
+ *
+ * The attestation is verified here (Node keeps the WebAuthn crypto); the public
+ * key + device label are persisted by the VM1 data plane, which also records
+ * the audit event.
  */
 export async function POST(request: NextRequest) {
-  const auth = await requireSession(request, { requireMpin: true });
+  const auth = await requireBackendSession(request, { requireMpin: true });
   if (!auth.ok) return auth.response;
 
   const body = await readJson(request);
@@ -34,46 +31,27 @@ export async function POST(request: NextRequest) {
     });
     if (!result.ok) return fail(result.message, 400, { code: 'WEBAUTHN_VERIFY_FAILED' });
 
-    const existing = await getCredential(result.credentialId);
-    if (existing) {
-      return json({ ok: true, alreadyRegistered: true, message: 'This biometric is already registered.' });
-    }
-
     const deviceLabel = safeDeviceLabel(
       body.deviceLabel,
-      auth.session.deviceLabel || 'This device',
+      (auth.session.deviceLabel as string) || 'This device',
     );
-    await addCredential({
-      credentialId: result.credentialId,
-      userId: String(auth.user._id),
-      publicKey: result.publicKey,
-      counter: result.counter,
-      transports: result.transports,
-      deviceLabel,
-      createdAt: new Date(),
-      lastUsedAt: null,
-    });
 
-    await recordAuthEvent({
-      type: 'biometric_registered',
-      userId: String(auth.user._id),
-      ip: getClientIp(request) || 'unknown',
-      userAgent: request.headers.get('user-agent') || 'unknown',
-      deviceId: auth.session.deviceId,
-      deviceLabel,
-      sessionId: auth.session.sessionId,
-      success: true,
-      detail: 'WebAuthn credential registered',
+    const stored = await backendAuthJson(request, '/api/auth/webauthn/credentials', {
+      method: 'POST',
+      body: JSON.stringify({
+        credentialId: result.credentialId,
+        publicKey: result.publicKey,
+        counter: result.counter,
+        transports: result.transports,
+        deviceLabel,
+      }),
+      headers: { 'Content-Type': 'application/json' },
     });
-
-    const credentials = await listCredentials(String(auth.user._id));
-    return json({
-      ok: true,
-      registered: true,
-      credentialId: result.credentialId,
-      biometricCount: credentials.length,
-      message: 'Fingerprint / face unlock is now registered.',
-    });
+    if (!stored.response) return fail('The authentication service is unavailable.', 503);
+    if (!stored.ok) {
+      return fail('Could not save the biometric credential.', stored.status || 500);
+    }
+    return json(stored.data as Record<string, unknown>, stored.status);
   } catch (err) {
     return fail(err instanceof Error ? err.message : 'Could not save the biometric credential.', 500);
   }

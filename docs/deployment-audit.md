@@ -1,5 +1,10 @@
 # KDS Project — Deployment Audit Report
 
+> **Superseded for auth/Vercel status (2026-10-30):** owner auth moved to VM1;
+> Vercel no longer needs MongoDB credentials. See
+> [`auth-vm1-migration.md`](./auth-vm1-migration.md). This file remains the
+> record of the 2026-10-27 service-recovery audit.
+
 **Date:** 2026-10-27  
 **Auditor:** AI Agent (OpenCode)  
 **Status:** IN PROGRESS — Audit complete, fixes applied, deployment BLOCKED on operator input

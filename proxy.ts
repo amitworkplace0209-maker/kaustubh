@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { MPIN_PENDING_COOKIE, verifySessionToken } from '@/lib/auth-crypto';
-import { getOwner, getSessionDoc } from '@/lib/auth-db';
 
 const SESSION_COOKIE = 'kaustubh_session';
+const MPIN_PENDING_COOKIE = 'kaustubh_mpin_pending';
 
 /** JSON, not HTML — a fetch() caller must never receive the login page. */
 const API_PREFIX = '/api';
@@ -57,54 +56,97 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 }
 
-function isAuthenticated(request: NextRequest): boolean {
-  return Boolean(verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value));
+function backendBase(): string | null {
+  const raw = (process.env.BACKEND_URL || (process.env.VERCEL ? '' : 'http://127.0.0.1:8000')).trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+interface SessionPayload {
+  authenticated?: boolean;
+  sid?: string;
+  exp?: number;
 }
 
 /**
- * The signature alone is not enough: a session can be revoked from another
- * device, and the signed cookie would otherwise stay valid until it expires.
- * Verify the database row too, with a short per-process cache so page and API
- * traffic does not hammer MongoDB. Fail closed when the database is
- * unreachable — the login page still loads and explains the outage.
+ * Read the signed-cookie payload without importing the Node crypto/fs modules.
+ *
+ * The signature is verified authoritatively by the VM1 backend on every
+ * session-gated endpoint (`/api/auth/whoami`). Here we only need the session id
+ * to ask the backend whether that row is still live, so a forged cookie can
+ * never unlock a page: the sid has to belong to a real, unrevoked session.
+ */
+function readSessionPayload(token: string | undefined): SessionPayload | null {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf-8')) as SessionPayload;
+    if (!payload || payload.authenticated !== true) return null;
+    if (!payload.sid || !Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= Date.now()) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The signed cookie alone is not enough: a session can be revoked from another
+ * device, and the signature would otherwise stay valid until it expires. Ask
+ * the VM1 backend (which owns the session rows) whether the session is live,
+ * with a short per-process cache so page and API traffic does not hammer the
+ * backend. Fail closed when the backend is unreachable — the login page still
+ * loads and explains the outage.
  */
 const SESSION_REVALIDATE_MS = 10_000;
 const liveSessions = new Map<string, number>();
 
-function rememberLiveSession(sessionId: string, expiresAt: number): void {
-  // Bound the cache: this app only ever has two live sessions, but a long
-  // running process must not grow the map on every new login.
-  if (liveSessions.size > 64) {
+function rememberLiveSession(sessionId: string, live: boolean): void {
+  if (liveSessions.size > 256) {
     const oldest = liveSessions.keys().next().value;
     if (oldest) liveSessions.delete(oldest);
   }
-  liveSessions.set(sessionId, Math.min(Date.now() + SESSION_REVALIDATE_MS, expiresAt));
+  liveSessions.set(sessionId, live ? Date.now() + SESSION_REVALIDATE_MS : 0);
 }
 
-async function isSessionLive(request: NextRequest): Promise<boolean> {
-  if (!isAuthenticated(request)) return false;
-  const payload = verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value);
-  if (!payload?.sid) return false;
+async function isSessionLive(request: NextRequest, payload: SessionPayload): Promise<boolean> {
+  const sid = payload.sid;
+  if (!sid) return false;
 
-  const cachedUntil = liveSessions.get(payload.sid) ?? 0;
+  const cachedUntil = liveSessions.get(sid) ?? 0;
   if (cachedUntil > Date.now()) return true;
+  // A negative result is not cached: the owner may log in again immediately.
 
+  const base = backendBase();
+  if (!base) return false;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
   try {
-    const session = await getSessionDoc(payload.sid);
-    if (!session || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
-      liveSessions.delete(payload.sid);
-      return false;
-    }
-    const owner = await getOwner();
-    if (!owner || String(owner._id) !== session.userId) {
-      liveSessions.delete(payload.sid);
-      return false;
-    }
-    rememberLiveSession(payload.sid, session.expiresAt.getTime());
-    return true;
+    const response = await fetch(`${base}/api/auth/live?sid=${encodeURIComponent(sid)}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!response.ok) return false;
+    const data = (await response.json().catch(() => null)) as { ok?: boolean; live?: boolean } | null;
+    const live = data?.ok === true && data.live === true;
+    if (live) rememberLiveSession(sid, true);
+    return live;
   } catch {
-    // MongoDB unreachable: deny rather than trust an unverifiable session.
+    // Backend unreachable: deny rather than trust an unverifiable session.
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -115,7 +157,8 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const authenticated = await isSessionLive(request);
+  const payload = readSessionPayload(request.cookies.get(SESSION_COOKIE)?.value);
+  const authenticated = payload ? await isSessionLive(request, payload) : false;
   const isApi = pathname === API_PREFIX || pathname.startsWith(`${API_PREFIX}/`);
 
   // First-run lock: the session exists only so the owner can save the MPIN.

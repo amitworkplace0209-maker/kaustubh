@@ -31,11 +31,5 @@
         { "key": "Service-Worker-Allowed", "value": "/" }
       ]
     }
-  ],
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "${BACKEND_URL}/api/:path*"
-    }
   ]
 }

@@ -65,6 +65,7 @@ if _get_guard() is None:
 # Import all routers
 from api.routes import router as session_router
 from api.auth import router as auth_router
+from api.auth_app import router as auth_app_router
 from api.stocks import router as stocks_router
 from api.ticks import router as ticks_router
 from api.downloads import router as downloads_router
@@ -1355,6 +1356,7 @@ async def _assertion_error_handler(request: Request, exc: AssertionError):
 # Mount all routers
 app.include_router(session_router)
 app.include_router(auth_router)
+app.include_router(auth_app_router)
 app.include_router(stocks_router)
 app.include_router(ticks_router)
 app.include_router(downloads_router)

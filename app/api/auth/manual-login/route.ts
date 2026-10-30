@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { backendFetch } from '@/lib/backend';
-import { requireSession } from '@/lib/auth-sessions';
+import { requireBackendSession } from '@/lib/auth-proxy';
 
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
@@ -12,7 +12,7 @@ export const runtime = 'nodejs';
  * gated on a live owner session with MPIN/biometric setup completed.
  */
 export async function POST(request: NextRequest) {
-  const auth = await requireSession(request, { requireMpin: true });
+  const auth = await requireBackendSession(request, { requireMpin: true });
   if (!auth.ok) return auth.response;
 
   const res = await backendFetch('/api/login', {
@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
 
 /** Legacy logout bridge. */
 export async function DELETE(request: NextRequest) {
-  const auth = await requireSession(request);
+  const auth = await requireBackendSession(request);
   if (!auth.ok) return auth.response;
 
   const res = await backendFetch('/api/logout', {
