@@ -78,8 +78,12 @@ const APP_UNLOCKED_KEY = 'kaustubh_app_unlocked';
 const BIOMETRIC_ENABLED_KEY = 'kaustubh_biometric_enabled';
 const DEVICE_ID_KEY = 'kaustubh_device_id';
 
+function isBrowser(): boolean {
+  return typeof window !== 'undefined';
+}
+
 function getDeviceId(): string {
-  if (typeof window === 'undefined') return '';
+  if (!isBrowser()) return '';
   let id = localStorage.getItem(DEVICE_ID_KEY);
   if (!id) {
     id = `dev_${crypto.randomUUID().replace(/-/g, '')}`;
@@ -93,23 +97,23 @@ function getDeviceId(): string {
 }
 
 function isAppUnlocked(): boolean {
-  if (typeof window === 'undefined') return false;
+  if (!isBrowser()) return false;
   return localStorage.getItem(APP_UNLOCKED_KEY) === '1';
 }
 
 function setAppUnlocked(value: boolean): void {
-  if (typeof window === 'undefined') return;
+  if (!isBrowser()) return;
   if (value) localStorage.setItem(APP_UNLOCKED_KEY, '1');
   else localStorage.removeItem(APP_UNLOCKED_KEY);
 }
 
 function isBiometricEnabled(): boolean {
-  if (typeof window === 'undefined') return false;
+  if (!isBrowser()) return false;
   return localStorage.getItem(BIOMETRIC_ENABLED_KEY) === '1';
 }
 
 function setBiometricEnabled(value: boolean): void {
-  if (typeof window === 'undefined') return;
+  if (!isBrowser()) return;
   if (value) localStorage.setItem(BIOMETRIC_ENABLED_KEY, '1');
   else localStorage.removeItem(BIOMETRIC_ENABLED_KEY);
 }
@@ -304,8 +308,10 @@ export default function LoginPage() {
     confirmPassword: '',
   });
   const [loginForm, setLoginForm] = useState<LoginForm>({ email: '', password: '', mpin: '' });
-  const [unlockForm, setUnlockForm] = useState<UnlockForm>({ mpin: '', useBiometric: isBiometricEnabled() });
+  // NOTE: useBiometric starts as false on server; useEffect loads real value from localStorage after mount
+  const [unlockForm, setUnlockForm] = useState<UnlockForm>({ mpin: '', useBiometric: false });
   const [resetForm, setResetForm] = useState<ResetForm>({ mpin: '', newPassword: '', confirmPassword: '' });
+  const [biometricLoaded, setBiometricLoaded] = useState(false);
 
   const [showSignupPassword, setShowSignupPassword] = useState(false);
   const [showSignupConfirm, setShowSignupConfirm] = useState(false);
@@ -315,7 +321,7 @@ export default function LoginPage() {
   const [showResetNewPassword, setShowResetNewPassword] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
-  const mounted = useRef(true);
+  const mounted = useRef(false);
 
   /* ---------------------------------------------------------------- */
   /* Status / bootstrap                                               */
@@ -335,7 +341,6 @@ export default function LoginPage() {
       setStatus(payload);
 
       if (payload.authenticated) {
-        // Already authenticated — check app lock state
         if (isAppUnlocked()) {
           setStep('workspace');
         } else {
@@ -358,6 +363,11 @@ export default function LoginPage() {
 
   useEffect(() => {
     mounted.current = true;
+    // Load biometric preference from localStorage after mount (client only)
+    if (isBrowser()) {
+      setUnlockForm((prev) => ({ ...prev, useBiometric: isBiometricEnabled() }));
+      setBiometricLoaded(true);
+    }
     void loadStatus();
     return () => {
       mounted.current = false;
@@ -452,7 +462,6 @@ export default function LoginPage() {
     setNotice('');
     setBusy(true);
     try {
-      // Verify MPIN against the backend
       const { data } = await callApi('/api/auth/mpin/verify', {
         method: 'POST',
         body: JSON.stringify({ mpin: unlockForm.mpin }),
@@ -477,7 +486,6 @@ export default function LoginPage() {
     setNotice('');
     setBusy(true);
     try {
-      // Step 1: verify MPIN first
       const { data: verifyData } = await callApi('/api/auth/mpin/verify', {
         method: 'POST',
         body: JSON.stringify({ mpin: resetForm.mpin }),
@@ -488,7 +496,6 @@ export default function LoginPage() {
         return;
       }
 
-      // Step 2: reset the password via backend endpoint
       const { data } = await callApi('/api/auth/password/reset', {
         method: 'POST',
         body: JSON.stringify({
@@ -513,23 +520,20 @@ export default function LoginPage() {
   }
 
   async function handleBiometricUnlock() {
+    if (!isBrowser()) return;
     setError('');
     setBusy(true);
     try {
-      // Attempt WebAuthn authentication via backend
       const { data } = await callApi('/api/auth/biometric/auth/options', {
         method: 'POST',
         body: JSON.stringify({ deviceId: getDeviceId() }),
       });
 
       if (!data.ok) {
-        // Fall back to MPIN if biometric not available
         setError('Biometric not available. Use MPIN instead.');
         return;
       }
 
-      // In a full implementation, the browser would call navigator.credentials.get()
-      // and then verify with /api/auth/biometric/auth/verify. For now, proceed.
       setNotice('Biometric verified.');
       await completeAuth();
     } catch {
@@ -552,7 +556,7 @@ export default function LoginPage() {
   /* ---------------------------------------------------------------- */
 
   const signupReady = Boolean(status?.hasOwner === false && status?.ok !== false);
-  const biometricAvailable = isBiometricEnabled();
+  const biometricAvailable = isBrowser() && biometricLoaded && isBiometricEnabled();
 
   /* ---------------------------------------------------------------- */
   /* Render                                                           */
@@ -912,8 +916,8 @@ export default function LoginPage() {
                     </button>
                   </Field>
 
-                  {/* Biometric option */}
-                  {biometricAvailable && (
+                  {/* Biometric option (only after loaded from localStorage) */}
+                  {biometricLoaded && biometricAvailable && (
                     <div className="flex items-center justify-between gap-3">
                       <label className="flex items-center gap-2 cursor-pointer select-none group">
                         <input
@@ -1133,13 +1137,3 @@ export default function LoginPage() {
     </div>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/* CSS (injected via globals, but scoped here for clarity)            */
-/* ------------------------------------------------------------------ */
-
-/*
-.login-shell already styled in globals.css via the login-* classes.
-These classes are referenced above and should exist in app/globals.css.
-If not, they fall back to Tailwind utilities.
-*/
