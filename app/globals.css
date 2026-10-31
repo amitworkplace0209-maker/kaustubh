@@ -727,7 +727,8 @@
   background: rgba(8, 14, 26, 0.92);
 }
 
-.login-emoji-chip {
+.login-emoji-chip,
+.login-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;

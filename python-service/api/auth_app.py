@@ -412,6 +412,16 @@ def get_signup_full_email() -> str:
     return _env("AUTH_SIGNUP_EMAIL")
 
 
+def get_owner_email() -> str:
+    """Fixed owner email from server-side configuration (OWNER_EMAIL env var)."""
+    return _env("OWNER_EMAIL")
+
+
+def get_owner_mpin() -> str:
+    """Fixed owner MPIN from server-side configuration (OWNER_MPIN env var)."""
+    return _env("OWNER_MPIN")
+
+
 def get_max_active_sessions() -> int:
     configured = _env_int("AUTH_MAX_ACTIVE_SESSIONS", 2)
     return min(max(configured, MAX_ACTIVE_SESSIONS_CLAMP[0]), MAX_ACTIVE_SESSIONS_CLAMP[1])
@@ -1446,11 +1456,10 @@ def _event_base(request: Request) -> dict[str, Any]:
 async def app_signup(request: Request, response: Response) -> JSONResponse:
     """POST /api/auth/signup — the ONE-TIME owner bootstrap.
 
-    Only exists while ``app_auth_users`` is empty. The submitted email + MPIN
-    must match AUTH_SIGNUP_EMAIL / AUTH_SIGNUP_MPIN from the server-side env;
-    only the name and password are new values (scrypt-hashed). The MPIN itself
-    is NOT stored here — the first login forces a fresh MPIN setup, exactly as
-    the frontend route required.
+    Only exists while ``app_auth_users`` is empty. The owner email is fixed
+    from OWNER_EMAIL (server-side config); the client submits name + password
+    + confirmPassword only. The MPIN is validated server-side against OWNER_MPIN
+    at login time and is never stored in MongoDB.
     """
     ip = _get_client_ip(request)
     if not ip:
@@ -1464,18 +1473,18 @@ async def app_signup(request: Request, response: Response) -> JSONResponse:
 
     _rate_limit_or_429("signup", ip, 5, 60 * 60 * 1000, "Too many signup attempts.")
 
-    name = normalize_name(body.get("name"))
-    email = normalize_email(body.get("email"))
-    password = str(body.get("password") or "")
-    mpin = str(body.get("mpin") or "")
-
-    expected_email = get_signup_email()
-    expected_mpin = get_signup_mpin()
-    if not expected_email or not expected_mpin:
-        fail("Signup is not configured on the server. Set AUTH_SIGNUP_EMAIL and AUTH_SIGNUP_MPIN in the backend env.", 503, {
-            "code": "SIGNUP_NOT_CONFIGURED",
+    owner_email = get_owner_email()
+    owner_mpin = get_owner_mpin()
+    if not owner_email or not owner_mpin:
+        fail("Owner configuration is missing on the server. Set OWNER_EMAIL and OWNER_MPIN in the backend env.", 503, {
+            "code": "OWNER_NOT_CONFIGURED",
         })
 
+    name = normalize_name(body.get("name"))
+    password = str(body.get("password") or "")
+    confirm_password = str(body.get("confirmPassword") or "")
+
+    # Atomic guard: owner must not already exist (unique singleton index enforces this at DB level too).
     try:
         if await has_owner():
             fail("The owner account already exists. Please log in.", 409, {"code": "OWNER_EXISTS"})
@@ -1484,21 +1493,22 @@ async def app_signup(request: Request, response: Response) -> JSONResponse:
     except Exception as exc:
         raise _db_down_error(exc) from exc
 
+    # Validate inputs.
     name_error = valid_name(name)
     if name_error:
         fail(name_error, 400)
-    email_error = valid_email(email)
+
+    email_error = valid_email(owner_email)
     if email_error:
-        fail(email_error, 400)
+        fail("Owner email is not configured correctly.", 503, {"code": "OWNER_EMAIL_INVALID"})
+
     password_error = validate_password(password)
     if password_error:
         fail(password_error, 400)
 
-    if email != expected_email or not _constant_time_compare(mpin, expected_mpin):
-        fail("Those details do not match the owner configuration.", 401, {"code": "SIGNUP_MISMATCH"})
+    if password != confirm_password:
+        fail("Password and confirm password do not match.", 400)
 
-    device_id = safe_device_id(body.get("deviceId")) or new_device_id()
-    device_label = safe_device_label(body.get("deviceLabel"), "This device")
     event_base = _event_base(request)
 
     try:
@@ -1507,18 +1517,20 @@ async def app_signup(request: Request, response: Response) -> JSONResponse:
             "singleton": "owner",
             "name": name,
             "nameLower": name.lower(),
-            "email": email,
-            "emailLower": email,
+            "email": owner_email,
+            "emailLower": owner_email.lower(),
             "passwordHash": password_hash,
+            # MPIN is NOT stored in MongoDB — it is validated against OWNER_MPIN env at login.
             "mpinHash": None,
             "mpinUpdatedAt": None,
             "mpinFailedAttempts": 0,
             "mpinLockedUntil": None,
             "passwordFailedAttempts": 0,
             "passwordLockedUntil": None,
+            "status": "active",
             "createdAt": _now_iso(),
             "updatedAt": _now_iso(),
-            "lastLoginAt": _now_iso(),
+            "lastLoginAt": None,
         })
 
         await record_auth_event({
@@ -1526,28 +1538,28 @@ async def app_signup(request: Request, response: Response) -> JSONResponse:
             "userId": _owner_id(owner),
             "ip": event_base["ip"],
             "userAgent": event_base["userAgent"],
-            "deviceId": device_id,
-            "deviceLabel": device_label,
             "success": True,
             "detail": "One-time owner account created",
         })
 
+        device_id = new_device_id()
+        device_label = "This device"
         session_doc, token = await issue_session_for_user(request, owner, device_id, device_label, "primary")
         _set_session_cookie(response, token, request)
-        # Signup always needs the first MPIN — set the pending marker (parity).
-        _set_mpin_pending_cookie(response, request)
 
         return json_ok({
             "ok": True,
             "authenticated": True,
-            "needsMpinSetup": True,
+            "hasOwner": True,
+            "needsSignup": False,
+            "needsMpinSetup": False,
             "needsUnlock": False,
             "user": public_user(owner),
             "deviceId": device_id,
             "sessionId": str(session_doc["sessionId"]),
             "deviceCount": 1,
-            "maxDevices": get_max_active_sessions(),
-            "message": "Owner account created. Set your MPIN to open the app.",
+            "maxDevices": 1,
+            "message": "Owner account created successfully.",
         }, 201, carry=response)
     except HTTPException:
         raise
@@ -1559,13 +1571,17 @@ async def app_signup(request: Request, response: Response) -> JSONResponse:
 
 @router.post("/login")
 async def app_login(request: Request, response: Response) -> JSONResponse:
-    """POST /api/auth/login — password login for the single owner.
+    """POST /api/auth/login — single-owner login with Email + Password + MPIN.
 
-    Device policy (server-side, never in the UI):
-      * first device            -> session, no OTP
-      * second distinct device  -> fresh email OTP EVERY time, then a session
-      * third distinct device   -> blocked (max 2 concurrent devices)
-      * repeat login on a known device -> cookie rotation, no OTP
+    All three factors are validated server-side:
+      1. Email must match OWNER_EMAIL (server-side config).
+      2. Password must match the stored scrypt hash in MongoDB.
+      3. MPIN must match OWNER_MPIN (server-side config).
+
+    On ANY failure, a generic authentication error is returned — the client
+    cannot tell which factor was incorrect.
+
+    No OTP, no second-device verification, no WebAuthn, no device limits.
     """
     ip = _get_client_ip(request)
     if not ip:
@@ -1579,14 +1595,19 @@ async def app_login(request: Request, response: Response) -> JSONResponse:
     if not body:
         fail("Invalid request body.", 400)
 
-    identifier = normalize_email(body.get("email")) or str(body.get("name") or "").strip().lower()
+    email = normalize_email(body.get("email")) or ""
     password = str(body.get("password") or "")
-    if not identifier or not password:
-        fail("Enter your email and password.", 400)
+    mpin = str(body.get("mpin") or "")
 
-    device_id = safe_device_id(body.get("deviceId")) or new_device_id()
-    device_label = safe_device_label(body.get("deviceLabel"), get_request_ua(request))
-    event_base = _event_base(request)
+    if not email or not password or not mpin:
+        fail("Email, password and MPIN are all required.", 400)
+
+    owner_email = get_owner_email()
+    owner_mpin = get_owner_mpin()
+    if not owner_email or not owner_mpin:
+        fail("Owner configuration is missing on the server.", 503, {
+            "code": "OWNER_NOT_CONFIGURED",
+        })
 
     try:
         owner = await get_owner()
@@ -1594,24 +1615,20 @@ async def app_login(request: Request, response: Response) -> JSONResponse:
         raise _db_down_error(exc) from exc
 
     if not owner:
-        fail("No owner account exists yet. Create it once, then log in.", 409, {
-            "code": "NO_OWNER",
-            "needsSignup": True,
-        })
+        fail("Authentication failed.", 401, {"code": "AUTH_FAILED"})
 
-    locked_until = _epoch_ms(owner.get("passwordLockedUntil"))
-    if locked_until and locked_until > time.time() * 1000:
-        fail(
-            f"Too many failed logins. Try again in {int((locked_until - time.time() * 1000) / 60_000)} minute(s).",
-            429,
-        )
+    event_base = _event_base(request)
 
-    identifier_matches = identifier in (str(owner.get("emailLower") or ""), str(owner.get("nameLower") or ""))
-    password_matches = identifier_matches and _verify_secret(password, owner.get("passwordHash"))
-    if not password_matches:
-        attempts = int(owner.get("passwordFailedAttempts") or 0) + 1
-        lock = attempts >= MAX_PASSWORD_FAILURES
+    # Validate all three factors. Any mismatch produces the SAME generic error.
+    email_matches = _constant_time_compare(email, owner_email)
+    password_matches = _verify_secret(password, owner.get("passwordHash"))
+    mpin_matches = _constant_time_compare(mpin, owner_mpin)
+
+    if not (email_matches and password_matches and mpin_matches):
+        # Record failed attempt for audit but never reveal which factor failed.
         try:
+            attempts = int(owner.get("passwordFailedAttempts") or 0) + 1
+            lock = attempts >= MAX_PASSWORD_FAILURES
             await update_owner({
                 "passwordFailedAttempts": 0 if lock else attempts,
                 "passwordLockedUntil": None if not lock else time.time() * 1000 + PASSWORD_LOCK_MS,
@@ -1621,18 +1638,16 @@ async def app_login(request: Request, response: Response) -> JSONResponse:
                 "userId": _owner_id(owner),
                 "ip": event_base["ip"],
                 "userAgent": event_base["userAgent"],
-                "deviceId": device_id,
-                "deviceLabel": device_label,
                 "success": False,
-                "detail": "Password locked for 15 minutes" if lock else f"Failed password attempt {attempts}",
+                "detail": "Authentication failed (generic)",
             })
         except Exception:
-            pass  # audit failure must not mask the auth verdict
-        fail(
-            "Too many failed logins. Locked for 15 minutes." if lock else "Incorrect email or password.",
-            429 if lock else 401,
-        )
+            pass
+        fail("Authentication failed. Please check your credentials and try again.", 401, {
+            "code": "AUTH_FAILED",
+        })
 
+    # All factors valid — reset failure counter and issue session.
     try:
         await update_owner({
             "passwordFailedAttempts": 0,
@@ -1642,106 +1657,8 @@ async def app_login(request: Request, response: Response) -> JSONResponse:
     except Exception:
         pass  # non-fatal
 
-    active = await list_active_sessions_or_fail(_owner_id(owner))
-    active_device_ids = {str(s.get("deviceId")) for s in active}
-    max_devices = get_max_active_sessions()
-    is_new_device = device_id not in active_device_ids
-
-    if is_new_device and len(active_device_ids) >= max_devices:
-        await record_auth_event({
-            "type": "login_failed",
-            "userId": _owner_id(owner),
-            "ip": event_base["ip"],
-            "userAgent": event_base["userAgent"],
-            "deviceId": device_id,
-            "deviceLabel": device_label,
-            "success": False,
-            "detail": f"Device limit reached ({len(active_device_ids)}/{max_devices})",
-        })
-        fail(
-            f"All {max_devices} device slots are in use. Sign out on another device "
-            "(or revoke it in Settings → Security) before signing in here.",
-            403,
-            {
-                "code": "DEVICE_LIMIT_REACHED",
-                "deviceCount": len(active_device_ids),
-                "maxDevices": max_devices,
-                "sessions": [public_session(s) for s in active],
-            },
-        )
-
-    if is_new_device and len(active_device_ids) > 0:
-        otp = f"{secrets.randbelow(1_000_000):06d}"
-        pending_id = str(uuid.uuid4())
-        salt = _b64url_encode(os.urandom(16))
-        otp_hash = _b64url_encode(
-            hmac.new(_require_session_secret().encode("utf-8"), f"{salt}:{otp}".encode("utf-8"), hashlib.sha256).digest()
-        )
-        to = get_signup_full_email() or str(owner.get("email") or "")
-
-        try:
-            await _ensure_auth_indexes()
-            await _pending().insert_one({
-                "pendingId": pending_id,
-                "userId": _owner_id(owner),
-                "deviceId": device_id,
-                "deviceLabel": device_label,
-                "ip": ip,
-                "userAgent": event_base["userAgent"],
-                "otpSalt": salt,
-                "otpHash": otp_hash,
-                "attempts": 0,
-                "createdAt": datetime.now(timezone.utc),
-                "expiresAt": datetime.now(timezone.utc) + timedelta(milliseconds=OTP_TTL_MS),
-                "status": "pending",
-            })
-        except Exception as exc:
-            raise _db_down_error(f"Could not start OTP verification: {_redact(exc)}") from exc
-
-        delivery = await deliver_otp(otp, device_label, ip, to)
-        await record_auth_event({
-            "type": "login_otp_requested",
-            "userId": _owner_id(owner),
-            "ip": event_base["ip"],
-            "userAgent": event_base["userAgent"],
-            "deviceId": device_id,
-            "deviceLabel": device_label,
-            "success": bool(delivery.get("delivered")),
-            "detail": (
-                f"OTP sent via {delivery['channel']}" if delivery.get("delivered")
-                else (delivery.get("reason") or "OTP delivery failed")
-            ),
-        })
-
-        if not delivery.get("delivered"):
-            try:
-                await _pending().update_one({"pendingId": pending_id}, {"$set": {"status": "denied"}})
-            except Exception:
-                pass
-            fail(
-                delivery.get("reason") or "Could not deliver the login code. Configure AUTH_SMTP_* or AUTH_OTP_WEBHOOK_URL.",
-                503,
-                {"code": "OTP_DELIVERY_FAILED"},
-            )
-
-        return AuthJSONResponse({
-            "ok": False,
-            "authenticated": False,
-            "needsOtp": True,
-            "pendingId": pending_id,
-            "deviceId": device_id,
-            "deviceLabel": device_label,
-            "maskedEmail": mask_email(to),
-            "channel": delivery.get("channel", "none"),
-            "devOtp": delivery.get("devOtp"),
-            "expiresInSec": OTP_TTL_MS // 1000,
-            "maxDevices": max_devices,
-            "activeDevices": len(active_device_ids),
-            "message": (
-                f"A fresh 6-digit code was sent to {mask_email(to)}. "
-                "Enter it to sign in on this second device."
-            ),
-        }, 202)
+    device_id = new_device_id()
+    device_label = "This device"
 
     try:
         session_doc, token = await issue_session_for_user(
@@ -1749,19 +1666,8 @@ async def app_login(request: Request, response: Response) -> JSONResponse:
             owner,
             device_id,
             device_label,
-            "primary" if len(active_device_ids) == 0 else "secondary",
+            "primary",
         )
-    except Exception as exc:
-        raise _db_down_error(exc) from exc
-
-    try:
-        needs_mpin_setup = not owner.get("mpinHash")
-        credentials = await credentials_or_fail(_owner_id(owner))
-        needs_mpin_setup = needs_mpin_setup and len(credentials) == 0
-        if needs_mpin_setup:
-            _set_mpin_pending_cookie(response, request)
-        else:
-            _delete_cookie(response, MPIN_PENDING_COOKIE)
         _set_session_cookie(response, token, request)
 
         await record_auth_event({
@@ -1776,26 +1682,108 @@ async def app_login(request: Request, response: Response) -> JSONResponse:
             "detail": f"Login from {ip}",
         })
 
-        sessions = await list_active_sessions_or_fail(_owner_id(owner))
-        devices = {str(s.get("deviceId")) for s in sessions}
-
         return json_ok({
             "ok": True,
             "authenticated": True,
-            "needsMpinSetup": needs_mpin_setup,
-            "needsUnlock": bool(owner.get("mpinHash")) or len(credentials) > 0,
+            "hasOwner": True,
+            "needsSignup": False,
+            "needsMpinSetup": False,
+            "needsUnlock": False,
             "user": public_user(owner),
             "deviceId": device_id,
             "sessionId": str(session_doc["sessionId"]),
-            "deviceCount": len(devices),
-            "maxDevices": max_devices,
-            "sessions": [public_session(s, str(session_doc["sessionId"])) for s in sessions],
-            "message": "Set your MPIN to open the app." if needs_mpin_setup else "Welcome back.",
+            "deviceCount": 1,
+            "maxDevices": 1,
+            "message": "Login successful.",
         }, carry=response)
     except HTTPException:
         raise
     except Exception as exc:
-        fail("Login failed." if not str(exc) else _redact(str(exc)), 500)
+        fail("Authentication failed." if not str(exc) else _redact(str(exc)), 500)
+
+
+@router.post("/password/reset")
+async def app_password_reset(request: Request, response: Response) -> JSONResponse:
+    """POST /api/auth/password/reset — verify MPIN, then set a new password.
+
+    Allows the owner to recover a forgotten password by proving knowledge of
+    the MPIN (validated against OWNER_MPIN server-side config). On success the
+    stored scrypt password hash is rotated in MongoDB.
+    """
+    ip = _get_client_ip(request)
+    if not ip:
+        fail("Cannot verify your IP address, so password reset is blocked.", 400, {
+            "code": "IP_REQUIRED",
+        })
+
+    _rate_limit_or_429("password_reset", ip, 5, 60 * 60 * 1000, "Too many password reset attempts.")
+
+    body = await read_json(request)
+    if not body:
+        fail("Invalid request body.", 400)
+
+    owner_email = get_owner_email()
+    owner_mpin = get_owner_mpin()
+    if not owner_email or not owner_mpin:
+        fail("Owner configuration is missing on the server.", 503, {
+            "code": "OWNER_NOT_CONFIGURED",
+        })
+
+    mpin = str(body.get("mpin") or "")
+    new_password = str(body.get("newPassword") or "")
+    confirm_password = str(body.get("confirmPassword") or "")
+
+    if not mpin or not new_password or not confirm_password:
+        fail("MPIN, new password and confirm password are all required.", 400)
+
+    # Verify MPIN against server config
+    if not _constant_time_compare(mpin, owner_mpin):
+        fail("Incorrect MPIN.", 401, {"code": "MPIN_INVALID"})
+
+    # Validate new password
+    password_error = validate_password(new_password)
+    if password_error:
+        fail(password_error, 400)
+
+    if new_password != confirm_password:
+        fail("New password and confirm password do not match.", 400)
+
+    try:
+        owner = await get_owner()
+    except Exception as exc:
+        raise _db_down_error(exc) from exc
+
+    if not owner:
+        fail("Authentication failed.", 401, {"code": "AUTH_FAILED"})
+
+    event_base = _event_base(request)
+
+    try:
+        await update_owner({
+            "passwordHash": _hash_secret(new_password),
+            "passwordFailedAttempts": 0,
+            "passwordLockedUntil": None,
+            "updatedAt": _now_iso(),
+        })
+
+        await record_auth_event({
+            "type": "login_failed",  # reuse closest type; a dedicated "password_reset" type can be added
+            "userId": _owner_id(owner),
+            "ip": event_base["ip"],
+            "userAgent": event_base["userAgent"],
+            "success": True,
+            "detail": "Password reset via MPIN verification",
+        })
+
+        return json_ok({
+            "ok": True,
+            "authenticated": True,
+            "message": "Password reset successfully.",
+        }, 200, carry=response)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _db_down_error(exc) from exc
 
 
 @router.post("/login/verify-otp")
@@ -1975,16 +1963,16 @@ async def app_verify_otp(request: Request, response: Response) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 def _status_base() -> dict[str, Any]:
-    signup_email = get_signup_full_email()
-    signup_mpin = get_signup_mpin()
-    configured = bool(signup_email and signup_mpin)
+    owner_email = get_owner_email()
+    owner_mpin = get_owner_mpin()
+    configured = bool(owner_email and owner_mpin)
     return {
         "ok": True,
-        "signupConfigured": configured,
-        "signupEmailMasked": mask_email(signup_email) if configured else "",
+        "ownerConfigured": configured,
+        "ownerEmailMasked": mask_email(owner_email) if configured else "",
         "mailerConfigured": mailer_configured(),
-        "devOtp": allow_dev_otp(),
-        "maxDevices": get_max_active_sessions(),
+        "devOtp": False,
+        "maxDevices": 1,
     }
 
 
@@ -2010,6 +1998,7 @@ async def app_status(request: Request) -> JSONResponse:
                 **_status_base(),
                 "hasOwner": False,
                 "needsSignup": True,
+                "signupOpen": True,
                 "authenticated": False,
                 "needsMpinSetup": False,
                 "needsUnlock": False,
@@ -2023,27 +2012,29 @@ async def app_status(request: Request) -> JSONResponse:
             return json_ok({
                 **_status_base(),
                 "hasOwner": True,
+                "needsSignup": False,
+                "signupOpen": False,
                 **_status_not_authenticated(),
             })
 
         _, session, config_owner = active
         sessions = await list_active_sessions_or_fail(_owner_id(config_owner))
         devices = {str(s.get("deviceId")) for s in sessions}
-        credentials = await credentials_or_fail(_owner_id(config_owner))
 
         return json_ok({
             **_status_base(),
             "hasOwner": True,
             "needsSignup": False,
+            "signupOpen": False,
             "authenticated": True,
-            "needsMpinSetup": not config_owner.get("mpinHash") and len(credentials) == 0,
-            "needsUnlock": bool(config_owner.get("mpinHash")) or len(credentials) > 0,
+            "needsMpinSetup": False,
+            "needsUnlock": False,
             "user": public_user(config_owner),
             "deviceId": str(session.get("deviceId") or ""),
             "sessionId": str(session.get("sessionId") or ""),
             "deviceCount": len(devices),
             "sessions": [public_session(s, str(session.get("sessionId"))) for s in sessions],
-            "biometricCount": len(credentials),
+            "biometricCount": 0,
             "currentSession": public_session(session, str(session.get("sessionId"))),
         })
     except Exception as exc:
@@ -2061,6 +2052,7 @@ async def app_session(request: Request) -> JSONResponse:
                 "authenticated": False,
                 "hasOwner": False,
                 "needsSignup": True,
+                "signupOpen": True,
                 "needsMpinSetup": False,
                 "needsUnlock": False,
             })
@@ -2071,6 +2063,7 @@ async def app_session(request: Request) -> JSONResponse:
                 "authenticated": False,
                 "hasOwner": True,
                 "needsSignup": False,
+                "signupOpen": False,
                 "needsMpinSetup": False,
                 "needsUnlock": False,
             })
@@ -2078,7 +2071,6 @@ async def app_session(request: Request) -> JSONResponse:
         _, session, config_owner = active
         sessions = await list_active_sessions_or_fail(_owner_id(config_owner))
         devices = {str(s.get("deviceId")) for s in sessions}
-        credentials = await credentials_or_fail(_owner_id(config_owner))
         session_id = str(session.get("sessionId") or "")
 
         return json_ok({
@@ -2086,15 +2078,16 @@ async def app_session(request: Request) -> JSONResponse:
             "authenticated": True,
             "hasOwner": True,
             "needsSignup": False,
-            "needsMpinSetup": not config_owner.get("mpinHash") and len(credentials) == 0,
-            "needsUnlock": bool(config_owner.get("mpinHash")) or len(credentials) > 0,
+            "signupOpen": False,
+            "needsMpinSetup": False,
+            "needsUnlock": False,
             "user": public_user(config_owner),
             "deviceId": str(session.get("deviceId") or ""),
             "sessionId": session_id,
             "deviceCount": len(devices),
-            "maxDevices": get_max_active_sessions(),
+            "maxDevices": 1,
             "sessions": [public_session(s, session_id) for s in sessions],
-            "biometricCount": len(credentials),
+            "biometricCount": 0,
         })
     except Exception as exc:
         raise _db_down_error(exc) from exc
